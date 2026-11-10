@@ -1,4 +1,4 @@
-# chatwoot-rs worker contract
+# Pulsar worker contract
 
 Goal: Rust (axum 0.8 + sqlx 0.8 + Postgres) backend that serves the UNCHANGED Chatwoot Vue dashboard.
 Original Rails app (read-only reference): `../chatwoot`. Never edit `../chatwoot`.

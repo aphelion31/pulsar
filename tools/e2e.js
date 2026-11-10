@@ -1,4 +1,4 @@
-// E2E: login via the real Vue UI on chatwoot-rs, open a conversation, send a reply, verify it renders,
+// E2E: login via the real Vue UI on Pulsar, open a conversation, send a reply, verify it renders,
 // then inject a message via API and verify it arrives over the websocket without reload.
 // Usage: BASE=http://127.0.0.1:3000 node tools/e2e.js   (needs `npm i playwright` and one existing conversation)
 const { chromium } = require('playwright');

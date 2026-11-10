@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# API smoke test for chatwoot-rs. Usage: BASE=http://127.0.0.1:3098 tools/smoke.sh
+# API smoke test for Pulsar. Usage: BASE=http://127.0.0.1:3098 tools/smoke.sh
 set -euo pipefail
 B=${BASE:-http://127.0.0.1:3000}
 H=$(mktemp)

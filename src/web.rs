@@ -157,7 +157,7 @@ pub async fn health() -> Json<Value> {
 /// Fallback for unported API routes: explicit 501 so gaps are visible, not silent.
 pub async fn not_implemented(OriginalUri(uri): OriginalUri) -> Response {
     tracing::warn!("unported endpoint: {}", uri.path());
-    (axum::http::StatusCode::NOT_IMPLEMENTED, Json(json!({ "error": "Not implemented in chatwoot-rs", "path": uri.path() })))
+    (axum::http::StatusCode::NOT_IMPLEMENTED, Json(json!({ "error": "Not implemented in Pulsar", "path": uri.path() })))
         .into_response()
 }
 

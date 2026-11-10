@@ -1,4 +1,4 @@
-//! `chatwoot-rs seed <email> <password> [account name]`: creates confirmed admin + account + API inbox.
+//! `pulsar seed <email> <password> [account name]`: creates confirmed admin + account + API inbox.
 use sqlx::PgPool;
 
 pub async fn run(db: &PgPool, args: &[String]) -> anyhow::Result<()> {

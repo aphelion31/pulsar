@@ -1,11 +1,11 @@
 {
-  "INSTALLATION_NAME": "Chatwoot",
+  "INSTALLATION_NAME": "Pulsar",
   "LOGO_THUMBNAIL": "/brand-assets/logo_thumbnail.svg",
   "LOGO": "/brand-assets/logo.svg",
   "LOGO_DARK": "/brand-assets/logo_dark.svg",
   "BRAND_URL": "https://www.chatwoot.com",
   "WIDGET_BRAND_URL": "https://www.chatwoot.com",
-  "BRAND_NAME": "Chatwoot",
+  "BRAND_NAME": "Pulsar",
   "TERMS_URL": "https://www.chatwoot.com/terms-of-service",
   "PRIVACY_URL": "https://www.chatwoot.com/privacy-policy",
   "DISPLAY_MANIFEST": true,

@@ -62,7 +62,7 @@ pub fn app(state: AppState) -> Router {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into())).init();
-    let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/chatwoot_rs".into());
+    let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/pulsar".into());
     let db = sqlx::postgres::PgPoolOptions::new().max_connections(10).connect(&url).await?;
 
     let args: Vec<String> = std::env::args().collect();
@@ -77,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
         frontend_url: std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
     };
     let addr = std::env::var("BIND").unwrap_or_else(|_| "0.0.0.0:3000".into());
-    tracing::info!("chatwoot-rs listening on {addr}");
+    tracing::info!("pulsar listening on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app(state)).await?;
     Ok(())
