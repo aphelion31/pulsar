@@ -376,7 +376,7 @@ async fn macros_execute(
     u: CurrentUser,
     Json(v): Json<Value>,
 ) -> ApiResult {
-    require_account(&st.db, &u, a).await?;
+    let au = require_account(&st.db, &u, a).await?;
     let mac = macro_get(&st.db, a, id, u.id).await?;
     let ids = v["conversation_ids"]
         .as_array()
@@ -393,6 +393,15 @@ async fn macros_execute(
         .bind(display_id)
         .fetch_one(&st.db)
         .await?;
+        // agents may only act on conversations in inboxes they belong to (same rule as conversations.rs)
+        if !au.is_admin() {
+            let member: Option<i32> = sqlx::query_scalar("SELECT 1 FROM inbox_members WHERE inbox_id = $1 AND user_id = $2")
+                .bind(conv.inbox_id)
+                .bind(u.id)
+                .fetch_optional(&st.db)
+                .await?;
+            member.ok_or_else(ApiError::not_found)?;
+        }
         for action in mac["actions"]
             .as_array()
             .ok_or_else(|| ApiError::bad("Invalid actions"))?
