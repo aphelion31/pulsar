@@ -1,0 +1,22 @@
+[package]
+name = "chatwoot-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+axum = { version = "0.8", features = ["ws", "macros"] }
+base64 = "0.23.1"
+bcrypt = "0.19.3"
+chrono = { version = "0.4.45", features = ["serde"] }
+dashmap = "6.2.1"
+futures = "0.3.34"
+rand = "0.8"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "json", "uuid"] }
+tokio = { version = "1.54.1", features = ["full"] }
+tower-http = { version = "0.7.1", features = ["fs", "trace", "cors"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.29.2", features = ["v4"] }
