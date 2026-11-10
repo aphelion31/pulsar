@@ -57,62 +57,62 @@ fn num(v: &Value) -> Option<i64> {
 // ---------- rows ----------
 
 #[derive(sqlx::FromRow, Clone)]
-struct Conv {
-    id: i64,
-    account_id: i64,
-    inbox_id: i64,
-    status: i32,
-    assignee_id: Option<i64>,
-    created_at: NaiveDateTime,
-    updated_at: NaiveDateTime,
-    contact_id: Option<i64>,
-    display_id: i64,
-    contact_last_seen_at: Option<NaiveDateTime>,
-    agent_last_seen_at: Option<NaiveDateTime>,
-    additional_attributes: Option<Value>,
-    contact_inbox_id: Option<i64>,
-    uuid: String,
-    last_activity_at: NaiveDateTime,
-    team_id: Option<i64>,
-    snoozed_until: Option<NaiveDateTime>,
-    custom_attributes: Option<Value>,
-    assignee_last_seen_at: Option<NaiveDateTime>,
-    first_reply_created_at: Option<NaiveDateTime>,
-    priority: Option<i32>,
-    waiting_since: Option<NaiveDateTime>,
-    cached_label_list: Option<String>,
+pub(crate) struct Conv {
+    pub(crate) id: i64,
+    pub(crate) account_id: i64,
+    pub(crate) inbox_id: i64,
+    pub(crate) status: i32,
+    pub(crate) assignee_id: Option<i64>,
+    pub(crate) created_at: NaiveDateTime,
+    pub(crate) updated_at: NaiveDateTime,
+    pub(crate) contact_id: Option<i64>,
+    pub(crate) display_id: i64,
+    pub(crate) contact_last_seen_at: Option<NaiveDateTime>,
+    pub(crate) agent_last_seen_at: Option<NaiveDateTime>,
+    pub(crate) additional_attributes: Option<Value>,
+    pub(crate) contact_inbox_id: Option<i64>,
+    pub(crate) uuid: String,
+    pub(crate) last_activity_at: NaiveDateTime,
+    pub(crate) team_id: Option<i64>,
+    pub(crate) snoozed_until: Option<NaiveDateTime>,
+    pub(crate) custom_attributes: Option<Value>,
+    pub(crate) assignee_last_seen_at: Option<NaiveDateTime>,
+    pub(crate) first_reply_created_at: Option<NaiveDateTime>,
+    pub(crate) priority: Option<i32>,
+    pub(crate) waiting_since: Option<NaiveDateTime>,
+    pub(crate) cached_label_list: Option<String>,
 }
 
-const CONV_COLS: &str = "c.id::bigint AS id, c.account_id::bigint AS account_id, c.inbox_id::bigint AS inbox_id, c.status,
+pub(crate) const CONV_COLS: &str = "c.id::bigint AS id, c.account_id::bigint AS account_id, c.inbox_id::bigint AS inbox_id, c.status,
   c.assignee_id::bigint AS assignee_id, c.created_at, c.updated_at, c.contact_id, c.display_id::bigint AS display_id,
   c.contact_last_seen_at, c.agent_last_seen_at, c.additional_attributes, c.contact_inbox_id, c.uuid::text AS uuid,
   c.last_activity_at, c.team_id, c.snoozed_until, c.custom_attributes, c.assignee_last_seen_at, c.first_reply_created_at,
   c.priority, c.waiting_since, c.cached_label_list";
 
 #[derive(sqlx::FromRow)]
-struct Msg {
-    id: i64,
-    content: Option<String>,
-    account_id: i64,
-    inbox_id: i64,
-    conversation_id: i64,
-    message_type: i32,
-    created_at: NaiveDateTime,
-    updated_at: NaiveDateTime,
-    private: bool,
-    status: Option<i32>,
-    source_id: Option<String>,
-    content_type: i32,
-    content_attributes: Option<Value>,
-    sender_type: Option<String>,
-    sender_id: Option<i64>,
-    external_source_ids: Option<Value>,
-    additional_attributes: Option<Value>,
-    processed_message_content: Option<String>,
-    sentiment: Option<Value>,
+pub(crate) struct Msg {
+    pub(crate) id: i64,
+    pub(crate) content: Option<String>,
+    pub(crate) account_id: i64,
+    pub(crate) inbox_id: i64,
+    pub(crate) conversation_id: i64,
+    pub(crate) message_type: i32,
+    pub(crate) created_at: NaiveDateTime,
+    pub(crate) updated_at: NaiveDateTime,
+    pub(crate) private: bool,
+    pub(crate) status: Option<i32>,
+    pub(crate) source_id: Option<String>,
+    pub(crate) content_type: i32,
+    pub(crate) content_attributes: Option<Value>,
+    pub(crate) sender_type: Option<String>,
+    pub(crate) sender_id: Option<i64>,
+    pub(crate) external_source_ids: Option<Value>,
+    pub(crate) additional_attributes: Option<Value>,
+    pub(crate) processed_message_content: Option<String>,
+    pub(crate) sentiment: Option<Value>,
 }
 
-const MSG_COLS: &str = "m.id::bigint AS id, m.content, m.account_id::bigint AS account_id, m.inbox_id::bigint AS inbox_id,
+pub(crate) const MSG_COLS: &str = "m.id::bigint AS id, m.content, m.account_id::bigint AS account_id, m.inbox_id::bigint AS inbox_id,
   m.conversation_id::bigint AS conversation_id, m.message_type, m.created_at, m.updated_at, m.private, m.status, m.source_id,
   m.content_type, m.content_attributes::jsonb AS content_attributes, m.sender_type, m.sender_id, m.external_source_ids,
   m.additional_attributes, m.processed_message_content, m.sentiment";
@@ -142,7 +142,7 @@ async fn load(db: &PgPool, au: &AccountUser, display_id: i64) -> Result<Conv, Ap
     Ok(c)
 }
 
-async fn reload(db: &PgPool, id: i64) -> Result<Conv, ApiError> {
+pub(crate) async fn reload(db: &PgPool, id: i64) -> Result<Conv, ApiError> {
     Ok(sqlx::query_as(&format!("SELECT {CONV_COLS} FROM conversations c WHERE c.id = $1")).bind(id).fetch_one(db).await?)
 }
 
@@ -158,7 +158,7 @@ async fn is_inbox_member(db: &PgPool, inbox_id: i64, user_id: i64) -> Result<boo
 // ---------- serializers ----------
 
 /// contact push_event_data + _contact.json.jbuilder fields (superset).
-async fn contact_json(db: &PgPool, id: Option<i64>) -> Value {
+pub(crate) async fn contact_json(db: &PgPool, id: Option<i64>) -> Value {
     let Some(id) = id else { return json!({}) };
     type Row = (i64, Option<String>, Option<String>, Option<String>, Option<String>, Option<Value>, Option<Value>, bool, Option<i32>, Option<NaiveDateTime>, NaiveDateTime);
     let r: Option<Row> = sqlx::query_as(
@@ -243,7 +243,7 @@ async fn source_id(db: &PgPool, c: &Conv) -> (Option<String>, Option<bool>) {
 }
 
 /// Message#push_event_data (also used for the REST message payload, superset of _message.json.jbuilder).
-async fn msg_json(db: &PgPool, m: &Msg, c: &Conv) -> Value {
+pub(crate) async fn msg_json(db: &PgPool, m: &Msg, c: &Conv) -> Value {
     let sender = match (m.sender_type.as_deref(), m.sender_id) {
         (Some("User"), Some(id)) => user_json(db, m.account_id, id).await,
         (Some("Contact"), Some(id)) => contact_json(db, Some(id)).await,
@@ -290,7 +290,7 @@ async fn last_message(db: &PgPool, c: &Conv, non_activity: bool) -> Value {
 }
 
 /// conversations/partials/_conversation.json.jbuilder + EventDataPresenter#push_data.
-async fn conv_json(db: &PgPool, c: &Conv) -> Value {
+pub(crate) async fn conv_json(db: &PgPool, c: &Conv) -> Value {
     let channel: Option<String> = sqlx::query_scalar("SELECT channel_type FROM inboxes WHERE id = $1")
         .bind(c.inbox_id)
         .fetch_optional(db)
@@ -329,11 +329,11 @@ async fn conv_json(db: &PgPool, c: &Conv) -> Value {
     })
 }
 
-async fn emit(st: &AppState, c: &Conv, event: &str, data: Value) {
+pub(crate) async fn emit(st: &AppState, c: &Conv, event: &str, data: Value) {
     st.hub.to_inbox(&st.db, c.account_id, c.inbox_id, c.contact_inbox_id, event, data).await;
 }
 
-async fn emit_conv(st: &AppState, id: i64, event: &str) -> Result<Conv, ApiError> {
+pub(crate) async fn emit_conv(st: &AppState, id: i64, event: &str) -> Result<Conv, ApiError> {
     let c = reload(&st.db, id).await?;
     let data = conv_json(&st.db, &c).await;
     emit(st, &c, event, data).await;
@@ -342,7 +342,7 @@ async fn emit_conv(st: &AppState, id: i64, event: &str) -> Result<Conv, ApiError
 
 /// Insert a message, bump conversation activity, broadcast message.created. Returns the push payload.
 #[allow(clippy::too_many_arguments)]
-async fn insert_message(
+pub(crate) async fn insert_message(
     st: &AppState, c: &Conv, sender: Option<(&str, i64)>, content: &str, message_type: i32, private: bool,
     content_type: i32, content_attributes: Value, echo_id: Option<&str>,
 ) -> Result<Value, ApiError> {
