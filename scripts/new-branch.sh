@@ -12,7 +12,9 @@ git fetch --prune origin
 if [[ "$arg" == PLR-* ]]; then
   name=$arg
 else
-  last=$(git branch -r | grep -oE 'PLR-[0-9]+' | sed 's/PLR-//' | sort -n | tail -1)
+  # Merged branches get deleted, so also count PR history (needs gh; falls back to remote branches only).
+  prs=$(command -v gh >/dev/null && gh pr list --state all --limit 1000 --json headRefName -q '.[].headRefName' 2>/dev/null || true)
+  last=$({ git branch -r; echo "$prs"; } | grep -oE 'PLR-[0-9]+' | sed 's/PLR-//' | sort -n | tail -1 || true)
   next=$(printf '%03d' $(( 10#${last:-0} + 1 )))
   name="PLR-$next/$arg"
 fi
