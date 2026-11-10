@@ -2,7 +2,7 @@
 name = "pulsar"
 version = "0.1.0"
 edition = "2024"
-description = "Pulsar: lightweight Rust rewrite of the Chatwoot backend, serving the original Chatwoot Vue dashboard"
+description = "Pulsar: lightweight Rust rewrite of Chatwoot with a React Router frontend"
 license = "MIT"
 
 [dependencies]
