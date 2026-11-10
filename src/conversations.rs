@@ -40,7 +40,12 @@ pub fn routes() -> Router<AppState> {
         .route("/conversations/{id}/labels", get(labels_index).post(labels_create))
         .route("/conversations/{id}/participants", get(empty_list))
         .route("/conversations/{id}/attachments", get(|| async { Json(json!({ "payload": [] })) }))
-        .route("/conversations/{id}/messages", get(messages_index).post(messages_create))
+        .route(
+            "/conversations/{id}/messages",
+            get(messages_index)
+                .post(messages_create_any)
+                .layer(axum::extract::DefaultBodyLimit::max(crate::storage::MAX_BYTES + 1024 * 1024)),
+        )
         .route("/conversations/{id}/messages/{message_id}", delete(messages_destroy))
 }
 
@@ -268,6 +273,10 @@ pub(crate) async fn msg_json(db: &PgPool, m: &Msg, c: &Conv) -> Value {
     });
     if !sender.is_null() {
         v["sender"] = sender;
+    }
+    let atts = crate::storage::attachments_json(db, m.id).await;
+    if !atts.is_empty() {
+        v["attachments"] = json!(atts);
     }
     v
 }
@@ -849,6 +858,27 @@ async fn messages_index(State(st): State<AppState>, user: CurrentUser, Path((acc
         meta["assignee"] = user_json(&st.db, account_id, a).await;
     }
     Ok(Json(json!({ "meta": meta, "payload": payload })))
+}
+
+/// POST /conversations/{id}/messages: JSON, or multipart/form-data with `attachments[]` files (handled by storage).
+async fn messages_create_any(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    req: axum::extract::Request,
+) -> ApiResult {
+    use axum::extract::FromRequest;
+    let is_multipart = req
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("multipart/form-data"));
+    if is_multipart {
+        let mp = axum::extract::Multipart::from_request(req, &st).await.map_err(|e| ApiError::bad(e.to_string()))?;
+        return crate::storage::create_with_attachments(&st, &user, account_id, id, mp).await;
+    }
+    let Json(b) = Json::<Value>::from_request(req, &st).await.map_err(|e| ApiError::bad(e.to_string()))?;
+    messages_create(State(st), user, Path((account_id, id)), Json(b)).await
 }
 
 /// POST /conversations/{id}/messages {content, private, message_type?, content_type?, content_attributes?, echo_id?}

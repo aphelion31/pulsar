@@ -140,7 +140,7 @@ pub async fn user_json(db: &PgPool, user_id: i64) -> Result<Value, ApiError> {
         "access_token": if api_enabled { access_token.map(|t| t.0).unwrap_or_default() } else { String::new() },
         "account_id": active.map(|a| a.0),
         "available_name": u.2.clone().filter(|s| !s.is_empty()).unwrap_or(name),
-        "avatar_url": "",
+        "avatar_url": crate::storage::avatar_url(db, "User", user_id).await,
         "confirmed": u.11.is_some(),
         "display_name": u.2, "message_signature": u.4, "email": u.3, "id": u.0,
         "inviter_id": active.and_then(|a| a.9), "name": u.1, "provider": u.5,
