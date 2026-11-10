@@ -38,6 +38,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/profile/auto_offline", post(auth::auto_offline))
         .route("/api/v1/profile/work_preferences", post(auth::auto_offline).patch(auth::auto_offline))
         .route("/api/v1/accounts/{account_id}", get(auth::account_show).patch(auth::account_update))
+        .route("/api/v1/accounts/{account_id}/", get(auth::account_show).patch(auth::account_update))
         .route("/api/v1/accounts/{account_id}/update_active_at", post(auth::update_active_at))
         // ponytail: session list / push subscriptions / changelog not tracked yet; empty responses keep UI happy
         .route("/api/v1/profile/sessions", get(|_u: common::CurrentUser| async { axum::Json(serde_json::json!([])) }))
