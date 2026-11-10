@@ -22,6 +22,7 @@ fn account_routes() -> Router<AppState> {
         .merge(contacts::routes())
         .merge(inboxes::routes())
         .merge(settings::routes())
+        .fallback(web::not_implemented)
 }
 
 pub fn app(state: AppState) -> Router {
@@ -38,6 +39,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/profile/work_preferences", post(auth::auto_offline).patch(auth::auto_offline))
         .route("/api/v1/accounts/{account_id}", get(auth::account_show).patch(auth::account_update))
         .route("/api/v1/accounts/{account_id}/update_active_at", post(auth::update_active_at))
+        // ponytail: session list / push subscriptions / changelog not tracked yet; empty responses keep UI happy
+        .route("/api/v1/profile/sessions", get(|_u: common::CurrentUser| async { axum::Json(serde_json::json!([])) }))
+        .route("/api/v1/notification_subscriptions", post(|_u: common::CurrentUser| async { axum::Json(serde_json::json!({})) }))
+        .route("/api/v1/changelog", get(|| async { axum::Json(serde_json::json!({ "posts": [] })) }))
         .nest("/api/v1/accounts/{account_id}", account_routes())
         .route("/api/{*rest}", any(web::not_implemented))
         .route("/cable", get(cable::ws_handler))
