@@ -64,6 +64,7 @@ pub fn app(state: AppState) -> Router {
         .route("/", get(|| async { axum::response::Redirect::to("/app/") }))
         .route("/app", get(|| async { axum::response::Redirect::to("/app/") }))
         .nest_service("/app/", spa)
+        .route_service("/sdk.js", ServeFile::new(web_dir.join("sdk.js")))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
 }

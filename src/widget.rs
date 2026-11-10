@@ -489,9 +489,9 @@ async fn channel_json(db: &PgPool, w: &Wd, token: &str) -> Value {
     })
 }
 
-/// GET /widget: widget UI is being rebuilt in React; JSON API only for now.
-async fn page() -> (StatusCode, Json<Value>) {
-    (StatusCode::NOT_IMPLEMENTED, Json(json!({ "error": "widget UI is being rebuilt in React" })))
+/// GET /widget?website_token=: the widget UI is the React route /app/widget (same SPA build).
+async fn page(axum::extract::RawQuery(q): axum::extract::RawQuery) -> axum::response::Redirect {
+    axum::response::Redirect::to(&format!("/app/widget?{}", q.unwrap_or_default()))
 }
 
 /// POST /api/v1/widget/config?website_token=

@@ -108,9 +108,7 @@ fn names_to_flags(v: &Value) -> i64 {
 }
 
 fn widget_script(base: &str, token: &str) -> String {
-    format!(
-        "\n    <script>\n      (function(d,t) {{\n        var BASE_URL=\"{base}\";\n        var g=d.createElement(t),s=d.getElementsByTagName(t)[0];\n        g.src=BASE_URL+\"/packs/js/sdk.js\";\n        g.async = true;\n        s.parentNode.insertBefore(g,s);\n        g.onload=function(){{\n          window.chatwootSDK.run({{\n            websiteToken: '{token}',\n            baseUrl: BASE_URL\n          }})\n        }}\n      }})(document,\"script\");\n    </script>\n    "
-    )
+    format!("<script src=\"{base}/sdk.js\" data-website-token=\"{token}\" async></script>")
 }
 
 /// Rails `ids` array param: `user_ids` in body must be an array of integers.
