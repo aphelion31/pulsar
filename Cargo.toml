@@ -7,15 +7,18 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1.0.104"
-axum = { version = "0.8", features = ["ws", "macros"] }
+axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
 base64 = "0.23.1"
 bcrypt = "0.19.3"
 chrono = { version = "0.4.45", features = ["serde"] }
 dashmap = "6.2.1"
 futures = "0.3.34"
+hex = "0.4.3"
+jsonwebtoken = "11.1.0"
 rand = "0.8"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.11.1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "json", "uuid"] }
 tokio = { version = "1.54.1", features = ["full"] }
 tower-http = { version = "0.7.1", features = ["fs", "trace", "cors"] }
