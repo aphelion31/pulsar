@@ -19,7 +19,7 @@ use axum::{
     Router,
 };
 use common::AppState;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 
 /// Account-scoped API: `/api/v1/accounts/{account_id}/...`. Each module owns its own routes.
 fn account_routes() -> Router<AppState> {
@@ -35,7 +35,9 @@ fn account_routes() -> Router<AppState> {
 }
 
 pub fn app(state: AppState) -> Router {
-    let public = state.public_dir.clone();
+    // React Router SPA: real files under /app/* (assets), everything else under /app falls back to index.html
+    let web_dir = state.public_dir.clone();
+    let spa = ServeDir::new(&web_dir).fallback(ServeFile::new(web_dir.join("index.html")));
     Router::new()
         .route("/health", get(web::health))
         .route("/auth/sign_in", post(auth::sign_in))
@@ -59,10 +61,9 @@ pub fn app(state: AppState) -> Router {
         .merge(storage::routes())
         .route("/api/{*rest}", any(web::not_implemented))
         .route("/cable", get(cable::ws_handler))
-        .route("/", get(web::dashboard))
-        .route("/app", get(web::dashboard))
-        .route("/app/{*rest}", get(web::dashboard))
-        .fallback_service(ServeDir::new(public))
+        .route("/", get(|| async { axum::response::Redirect::to("/app/") }))
+        .route("/app", get(|| async { axum::response::Redirect::to("/app/") }))
+        .nest_service("/app/", spa)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -81,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         db,
         hub: cable::Hub::default(),
-        public_dir: std::env::var("PUBLIC_DIR").unwrap_or_else(|_| "../chatwoot/public".into()).into(),
+        public_dir: std::env::var("WEB_DIR").unwrap_or_else(|_| "web/build/client".into()).into(),
         frontend_url: std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
     };
     let addr = std::env::var("BIND").unwrap_or_else(|_| "0.0.0.0:3000".into());

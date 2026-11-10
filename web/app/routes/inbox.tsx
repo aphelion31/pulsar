@@ -180,7 +180,9 @@ function Thread({ id, accountId, meId, subscribe, onGone }: { id: number; accoun
     [subscribe, id],
   );
 
-  useEffect(() => end.current?.scrollIntoView({ block: "end" }), [messages.length]);
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "end" });
+  }, [messages.length]);
 
   async function toggleStatus() {
     if (!conv) return;
@@ -285,26 +287,28 @@ function Composer({ base, onSent }: { base: string; onSent: (m: Message) => void
   const fileInput = useRef<HTMLInputElement>(null);
 
   async function send() {
-    if (!text.trim() && files.length === 0) return;
+    const content = text;
+    if (!content.trim() && files.length === 0) return;
     setBusy(true);
     setError("");
+    setText("");
     try {
       const echo_id = crypto.randomUUID();
       let m: Message;
       if (files.length) {
         const fd = new FormData();
-        if (text.trim()) fd.append("content", text);
+        if (content.trim()) fd.append("content", content);
         fd.append("private", String(note));
         fd.append("echo_id", echo_id);
         files.forEach((f) => fd.append("attachments[]", f));
         m = await api<Message>(`${base}/messages`, { method: "POST", body: fd });
       } else {
-        m = await api<Message>(`${base}/messages`, { method: "POST", json: { content: text, private: note, echo_id } });
+        m = await api<Message>(`${base}/messages`, { method: "POST", json: { content, private: note, echo_id } });
       }
       onSent(m);
-      setText("");
       setFiles([]);
     } catch (e) {
+      setText(content);
       setError(e instanceof Error ? e.message : "Could not send");
     } finally {
       setBusy(false);

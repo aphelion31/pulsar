@@ -1,5 +1,5 @@
 // Authenticated app shell: sidebar + realtime connection. Children read context via useOutletContext<ShellCtx>().
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, redirect, useLoaderData, useNavigate, useParams } from "react-router";
 import { Contact2, Inbox, LogOut, Settings } from "lucide-react";
 import { Avatar } from "~/components/ui";
@@ -31,14 +31,13 @@ export default function Shell() {
     return stop;
   }, [me.pubsub_token, me.id, accountId]);
 
-  const ctx: ShellCtx = {
-    me,
-    accountId,
-    subscribe: (fn) => {
-      listeners.current.add(fn);
-      return () => listeners.current.delete(fn);
-    },
-  };
+  const subscribe = useCallback((fn: (e: CableEvent) => void) => {
+    listeners.current.add(fn);
+    return () => {
+      listeners.current.delete(fn);
+    };
+  }, []);
+  const ctx: ShellCtx = useMemo(() => ({ me, accountId, subscribe }), [me, accountId, subscribe]);
 
   const item = "flex h-9 items-center gap-2.5 rounded-lg px-2.5 text-[13px] transition-colors duration-150";
   const cls = ({ isActive }: { isActive: boolean }) =>
