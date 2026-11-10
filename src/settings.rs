@@ -41,16 +41,10 @@ pub fn routes() -> Router<AppState> {
         .route("/search/conversations", get(search_all))
         .route("/search/messages", get(search_all))
         // ponytail: unported settings pages; empty data in the shape each Vue store expects
-        .route("/dashboard_apps", empty_arr())
-        .route("/campaigns", empty_arr())
-        .route("/agent_bots", empty_arr())
         .route("/assignment_policies", empty_arr())
         .route("/working_hours", empty_arr())
-        .route("/macros", empty_payload())
-        .route("/automation_rules", empty_payload())
         .route("/sla_policies", empty_payload())
         .route("/integrations/apps", empty_payload())
-        .route("/webhooks", get(|| async { Json(json!({ "payload": { "webhooks": [] } })) }))
         .route("/portals", get(|| async { Json(json!({ "payload": [], "meta": { "all_articles_count": 0 } })) }))
         .route("/captain/assistants", get(|| async { Json(json!({ "payload": [], "meta": {} })) }))
 }

@@ -1,4 +1,6 @@
 mod auth;
+mod automation;
+mod bots;
 mod cable;
 mod common;
 mod companies;
@@ -27,6 +29,8 @@ fn account_routes() -> Router<AppState> {
         .merge(inboxes::routes())
         .merge(settings::routes())
         .merge(companies::routes())
+        .merge(automation::routes())
+        .merge(bots::routes())
         .fallback(web::not_implemented)
 }
 
