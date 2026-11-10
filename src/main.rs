@@ -1,9 +1,11 @@
 mod auth;
 mod cable;
 mod common;
+mod companies;
 mod contacts;
 mod conversations;
 mod inboxes;
+mod reports;
 mod seed;
 mod settings;
 mod web;
@@ -22,6 +24,7 @@ fn account_routes() -> Router<AppState> {
         .merge(contacts::routes())
         .merge(inboxes::routes())
         .merge(settings::routes())
+        .merge(companies::routes())
         .fallback(web::not_implemented)
 }
 
@@ -45,6 +48,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/notification_subscriptions", post(|_u: common::CurrentUser| async { axum::Json(serde_json::json!({})) }))
         .route("/api/v1/changelog", get(|| async { axum::Json(serde_json::json!({ "posts": [] })) }))
         .nest("/api/v1/accounts/{account_id}", account_routes())
+        .nest("/api/v2/accounts/{account_id}", reports::routes().fallback(web::not_implemented))
         .route("/api/{*rest}", any(web::not_implemented))
         .route("/cable", get(cable::ws_handler))
         .route("/", get(web::dashboard))
