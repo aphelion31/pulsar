@@ -177,6 +177,11 @@ fn token(h: &HeaderMap) -> Option<String> {
     h.get("x-auth-token").and_then(|v| v.to_str().ok()).map(str::to_string)
 }
 
+/// Writes need a valid visitor token from POST /config; a missing or forged token is 401.
+async fn required(st: &AppState, w: &Wd, h: &HeaderMap) -> ApiResult<Sess> {
+    read_session(&st.db, w, token(h).as_deref()).await?.ok_or_else(ApiError::unauthorized)
+}
+
 // ---------- lookups ----------
 
 async fn widget_of(db: &PgPool, website_token: Option<&str>) -> ApiResult<Wd> {
@@ -211,9 +216,10 @@ async fn read_session(db: &PgPool, w: &Wd, tok: Option<&str>) -> ApiResult<Optio
 }
 
 /// Resolve visitor, or create a new anonymous contact + contact_inbox and issue a token.
+/// Only used by POST /config: a present-but-invalid token is rejected instead of silently replaced.
 async fn session(st: &AppState, w: &Wd, tok: Option<&str>) -> ApiResult<Sess> {
-    if let Some(s) = read_session(&st.db, w, tok).await? {
-        return Ok(s);
+    if tok.is_some() {
+        return read_session(&st.db, w, tok).await?.ok_or_else(ApiError::unauthorized);
     }
     let name = format!("visitor-{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
     let contact_id: i64 = sqlx::query_scalar(
@@ -519,7 +525,7 @@ async fn conv_index(State(st): State<AppState>, headers: HeaderMap, Query(q): Qu
 /// POST /api/v1/widget/conversations  { contact, message, custom_attributes }
 async fn conv_create(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
-    let s = session(&st, &w, token(&headers).as_deref()).await?;
+    let s = required(&st, &w, &headers).await?;
     let content = msg_content(&b["message"])?;
     apply_contact(&st.db, &w, s.c.contact_id, &b["contact"]).await?;
     let extra = json!({ "referer": b["message"]["referer_url"], "initiated_at": b["message"]["timestamp"] });
@@ -606,7 +612,7 @@ async fn msg_index(State(st): State<AppState>, headers: HeaderMap, Query(q): Que
 /// POST /api/v1/widget/messages  { message: { content, echo_id, timestamp, referer_url } }
 async fn msg_create(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
-    let s = session(&st, &w, token(&headers).as_deref()).await?;
+    let s = required(&st, &w, &headers).await?;
     let content = msg_content(&b["message"])?;
     let conv = match latest_conv(&st.db, &w, s.c.ci_id).await? {
         Some(c) => {
