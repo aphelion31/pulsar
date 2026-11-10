@@ -169,6 +169,7 @@ async fn index(
     user: CurrentUser,
     State(st): State<AppState>,
     Query(params): Query<ContactsQuery>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> ApiResult {
     let _au = require_account(&st.db, &user, account_id).await?;
     let page = params.page.unwrap_or(1).max(1);
@@ -176,15 +177,24 @@ async fn index(
     let include_inboxes = parse_include_inboxes(params.include_contact_inboxes.as_ref());
     let order_by = parse_sort_clause(params.sort.as_deref());
 
-    // Check optional label filter: if params.labels is present
-    let label_filter = match &params.labels {
+    // Check optional label filter: axios sends arrays as `labels[]=a&labels[]=b`; also accept `labels=a`.
+    let from_raw: Vec<String> = raw
+        .as_deref()
+        .map(|q| {
+            url::form_urlencoded::parse(q.as_bytes())
+                .filter(|(k, v)| (k == "labels[]" || k == "labels") && !v.trim().is_empty())
+                .map(|(_, v)| v.trim().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let label_filter = if !from_raw.is_empty() { Some(from_raw) } else { match &params.labels {
         Some(Value::String(s)) if !s.trim().is_empty() => Some(vec![s.trim().to_string()]),
         Some(Value::Array(arr)) => {
             let list: Vec<String> = arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
             if list.is_empty() { None } else { Some(list) }
         }
         _ => None,
-    };
+    } };
 
     let (contacts, count): (Vec<ContactRow>, i64) = if let Some(labels) = label_filter {
         let count: (i64,) = sqlx::query_as(
@@ -199,13 +209,13 @@ async fn index(
         .await?;
 
         let sql = format!(
-            "SELECT DISTINCT ON (c.id) c.id, c.name, c.email, c.phone_number, c.account_id, c.created_at, c.updated_at,
-                    c.additional_attributes, c.identifier, c.custom_attributes, c.last_activity_at, c.blocked, c.company_id
-             FROM contacts c
-             JOIN taggings tg ON tg.taggable_type = 'Contact' AND tg.taggable_id = c.id AND tg.context = 'labels'
-             JOIN tags t ON t.id = tg.tag_id
-             WHERE c.account_id = $1 AND t.name = ANY($2)
-             ORDER BY c.id, {order_by}
+            "SELECT id, name, email, phone_number, account_id, created_at, updated_at,
+                    additional_attributes, identifier, custom_attributes, last_activity_at, blocked, company_id
+             FROM contacts
+             WHERE account_id = $1 AND id IN (
+               SELECT tg.taggable_id FROM taggings tg JOIN tags t ON t.id = tg.tag_id
+               WHERE tg.taggable_type = 'Contact' AND tg.context = 'labels' AND t.name = ANY($2))
+             ORDER BY {order_by}
              LIMIT $3 OFFSET $4"
         );
         let rows = sqlx::query_as::<_, ContactRow>(&sql)
