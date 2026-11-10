@@ -8,7 +8,9 @@ mod inboxes;
 mod reports;
 mod seed;
 mod settings;
+mod storage;
 mod web;
+mod widget;
 
 use axum::{
     routing::{any, get, post},
@@ -49,6 +51,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/changelog", get(|| async { axum::Json(serde_json::json!({ "posts": [] })) }))
         .nest("/api/v1/accounts/{account_id}", account_routes())
         .nest("/api/v2/accounts/{account_id}", reports::routes().fallback(web::not_implemented))
+        .merge(widget::routes())
+        .merge(storage::routes())
         .route("/api/{*rest}", any(web::not_implemented))
         .route("/cable", get(cable::ws_handler))
         .route("/", get(web::dashboard))
