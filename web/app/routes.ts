@@ -7,6 +7,7 @@ export default [
   route("widget", "routes/widget.tsx"),
   ph("shopify/select-account", "shopify-select-account"),
   ph("no-accounts", "no-accounts"),
+  route("dev/components", "routes/dev.components.tsx"),
 
   layout("routes/shell.tsx", [
     index("routes/index.tsx"),

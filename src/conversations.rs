@@ -351,6 +351,7 @@ pub(crate) async fn conv_json(db: &PgPool, c: &Conv) -> Value {
 }
 
 pub(crate) async fn emit(st: &AppState, c: &Conv, event: &str, data: Value) {
+    crate::events::publish(event, c.account_id, data.clone(), None);
     st.hub.to_inbox(&st.db, c.account_id, c.inbox_id, c.contact_inbox_id, event, data).await;
 }
 
