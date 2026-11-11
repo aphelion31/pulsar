@@ -774,6 +774,8 @@ async fn contact_show(State(st): State<AppState>, headers: HeaderMap, Query(q): 
 
 /// PATCH /api/v1/widget/contact and PATCH /api/v1/widget/contact/set_user
 /// Chatwoot #15776: rotate visitor token after sensitive contact updates.
+/// Chatwoot #15933: include pubsub_token in the contact response so the widget can re-subscribe
+/// to realtime events when the visitor contact is updated/rebound.
 ///
 /// ponytail: contact_inboxes schema has no jsonb column for an iat floor (only id, contact_id,
 /// inbox_id, source_id, created_at, updated_at, hmac_verified, pubsub_token). Adding a floor
@@ -792,6 +794,7 @@ async fn contact_update(State(st): State<AppState>, headers: HeaderMap, Query(q)
     let new_tok = issue(&fresh.source_id, w.inbox_id);
     let mut val = presence(&fresh);
     val["widget_auth_token"] = json!(new_tok);
+    val["pubsub_token"] = json!(fresh.pubsub_token);
     let mut resp = Json(val).into_response();
     if let Ok(hv) = HeaderValue::from_str(&new_tok) {
         resp.headers_mut().insert(HeaderName::from_static("x-auth-token"), hv);
