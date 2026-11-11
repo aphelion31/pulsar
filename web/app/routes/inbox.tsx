@@ -6,6 +6,7 @@ import { Avatar, Button, Empty } from "~/components/ui";
 import { acct, api, type Conversation, type Message } from "~/lib/api";
 import { bytes, clock, timeAgo } from "~/lib/format";
 import type { ShellCtx } from "./shell";
+import { ConversationSidebar } from "~/components/next/conversation/ConversationSidebar";
 
 const TABS = [
   { key: "me", label: "Mine" },
@@ -20,7 +21,8 @@ export default function InboxRoute() {
   const { conversationId } = useParams();
   const nav = useNavigate();
   const [tab, setTab] = useState<Tab>("all");
-  const [status, setStatus] = useState<"open" | "resolved">("open");
+  const [status, setStatus] = useState("open");
+  const [sort, setSort] = useState("last_activity_at_desc");
   const [list, setList] = useState<Conversation[]>([]);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [loading, setLoading] = useState(true);
@@ -33,14 +35,14 @@ export default function InboxRoute() {
     () => async () => {
       const seq = ++latest.current;
       const r = await api<{ data: { meta: Meta; payload: Conversation[] } }>(
-        `${acct(accountId)}/conversations?status=${status}&assignee_type=${tab}&sort_by=last_activity_at_desc`,
+        `${acct(accountId)}/conversations?status=${status}&assignee_type=${tab}&sort_by=${sort}`,
       );
       if (seq !== latest.current) return;
       setList(r.data.payload);
       setMeta(r.data.meta);
       setLoading(false);
     },
-    [accountId, status, tab],
+    [accountId, status, tab, sort],
   );
 
   useEffect(() => {
@@ -76,11 +78,14 @@ export default function InboxRoute() {
           <select
             aria-label="Status"
             value={status}
-            onChange={(e) => setStatus(e.target.value as "open" | "resolved")}
+            onChange={(e) => setStatus(e.target.value)}
             className="h-8 rounded-lg border border-line-strong bg-surface px-2 text-[13px] text-ink-2"
           >
             <option value="open">Open</option>
             <option value="resolved">Resolved</option>
+            <option value="pending">Pending</option>
+            <option value="snoozed">Snoozed</option>
+            <option value="all">All</option>
           </select>
         </header>
         <div role="tablist" className="flex gap-4 border-b border-line px-4">
@@ -99,6 +104,19 @@ export default function InboxRoute() {
             </button>
           ))}
         </div>
+        <label className="flex items-center gap-2 border-b border-line px-4 py-2 text-xs text-ink-3">
+          Order by
+          <select aria-label="Sort conversations" value={sort} onChange={(e) => setSort(e.target.value)} className="min-w-0 flex-1 bg-transparent text-ink-2">
+            <option value="last_activity_at_desc">Last activity: Newest first</option>
+            <option value="last_activity_at_asc">Last activity: Oldest first</option>
+            <option value="created_at_desc">Created at: Newest first</option>
+            <option value="created_at_asc">Created at: Oldest first</option>
+            <option value="priority_desc">Priority: Highest first</option>
+            <option value="priority_asc">Priority: Lowest first</option>
+            <option value="waiting_since_asc">Pending Response: Longest first</option>
+            <option value="waiting_since_desc">Pending Response: Shortest first</option>
+          </select>
+        </label>
         <ul className="min-h-0 flex-1 overflow-y-auto">
           {!loading && list.length === 0 && (
             <li className="p-6 text-ink-3">No {status} conversations here</li>
@@ -215,7 +233,8 @@ function Thread({ id, epoch, accountId, meId, subscribe, onGone }: { id: number;
   if (!conv) return <div className="p-6 text-ink-3">Loading</div>;
 
   return (
-    <>
+    <div className="flex min-h-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col">
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-line px-6">
         <div className="flex min-w-0 items-center gap-3">
           <Avatar name={conv.meta.sender.name} size={28} />
@@ -248,7 +267,9 @@ function Thread({ id, epoch, accountId, meId, subscribe, onGone }: { id: number;
         <div ref={end} />
       </div>
       <Composer base={base} onSent={(m) => setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]))} />
-    </>
+      </div>
+      <ConversationSidebar accountId={accountId} conversation={conv} onChange={setConv} />
+    </div>
   );
 }
 

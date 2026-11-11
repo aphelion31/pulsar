@@ -1451,13 +1451,59 @@ async fn year_in_review_show(
     State(st): State<AppState>,
     user: CurrentUser,
     Path(account_id): Path<i64>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult {
     let _au = require_account(&st.db, &user, account_id).await?;
-    let year = Utc::now().naive_utc().format("%Y").to_string();
-    Ok(Json(json!({
+    // Chatwoot api/v2/accounts/year_in_reviews_controller.rb: year defaults to 2025, result cached in user.ui_settings.
+    let year: i32 = q.get("year").and_then(|y| y.parse().ok()).unwrap_or(2025);
+    let cache_key = format!("year_in_review_{account_id}_{year}");
+    let cached: Option<Value> = sqlx::query_scalar("SELECT ui_settings -> $1 FROM users WHERE id = $2")
+        .bind(&cache_key)
+        .bind(user.id)
+        .fetch_one(&st.db)
+        .await?;
+    if let Some(c) = cached.filter(|v| !v.is_null()) {
+        return Ok(Json(c));
+    }
+    let start = chrono::NaiveDate::from_ymd_opt(year, 1, 1).ok_or_else(|| ApiError::bad("invalid year"))?.and_hms_opt(0, 0, 0).unwrap();
+    let end = chrono::NaiveDate::from_ymd_opt(year, 12, 31).ok_or_else(|| ApiError::bad("invalid year"))?.and_hms_opt(23, 59, 59).unwrap();
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*)::bigint FROM conversations WHERE account_id = $1 AND assignee_id = $2 AND created_at BETWEEN $3 AND $4")
+        .bind(account_id as i32)
+        .bind(user.id as i32)
+        .bind(start)
+        .bind(end)
+        .fetch_one(&st.db)
+        .await?;
+    let busiest: Option<(chrono::NaiveDate, i64)> = sqlx::query_as(
+        "SELECT created_at::date, COUNT(*)::bigint FROM conversations WHERE account_id = $1 AND assignee_id = $2 AND created_at BETWEEN $3 AND $4
+         GROUP BY created_at::date ORDER BY COUNT(*) DESC, created_at::date ASC LIMIT 1",
+    )
+    .bind(account_id as i32)
+    .bind(user.id as i32)
+    .bind(start)
+    .bind(end)
+    .fetch_optional(&st.db)
+    .await?;
+    let avg: Option<f64> = sqlx::query_scalar(
+        "SELECT AVG(value)::float8 FROM reporting_events WHERE account_id = $1 AND name = 'first_response' AND user_id = $2 AND created_at BETWEEN $3 AND $4",
+    )
+    .bind(account_id as i32)
+    .bind(user.id as i32)
+    .bind(start)
+    .bind(end)
+    .fetch_one(&st.db)
+    .await?;
+    let data = json!({
         "year": year,
-        "total_conversations": 0,
-        "busiest_day": null,
-        "support_personality": null
-    })))
+        "total_conversations": total,
+        "busiest_day": busiest.filter(|(_, c)| *c > 0).map(|(d, c)| json!({ "date": d.format("%b %d").to_string(), "count": c })),
+        "support_personality": { "avg_response_time_seconds": avg.map(|a| a as i64).unwrap_or(0) },
+    });
+    sqlx::query("UPDATE users SET ui_settings = COALESCE(ui_settings,'{}'::jsonb) || jsonb_build_object($1::text, $2::jsonb), updated_at = now() WHERE id = $3")
+        .bind(&cache_key)
+        .bind(&data)
+        .bind(user.id)
+        .execute(&st.db)
+        .await?;
+    Ok(Json(data))
 }
