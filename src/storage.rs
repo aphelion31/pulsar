@@ -19,7 +19,7 @@ use axum::{
     extract::{Multipart, Path, State, multipart::Field, multipart::MultipartError},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post, put},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use chrono::NaiveDateTime;
@@ -36,6 +36,8 @@ const DEFAULT_SECRET: &str = "pulsar-dev-secret-change-me";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/api/v1/widget/direct_uploads", post(widget_direct_upload_create))
+        .route("/rails/active_storage/disk_uploads/{key}", put(disk_upload_put))
         .route("/rails/active_storage/blobs/redirect/{signed_id}/{filename}", get(serve))
         .route("/rails/active_storage/blobs/{signed_id}/{filename}", get(serve))
 }
@@ -567,4 +569,85 @@ mod tests {
         let out = hex::encode(hmac_sha256(b"Jefe", b"what do ya want for nothing?"));
         assert_eq!(out, "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
     }
+}
+
+// ---------- direct uploads (ActiveStorage DirectUploadsController protocol) ----------
+
+/// Signed PUT target for a pending blob. Rails signs the disk URL too; we HMAC the key.
+fn direct_upload_token(key: &str) -> String {
+    hex::encode(hmac_sha256(secret().as_bytes(), format!("upload:{key}").as_bytes()))[..32].to_string()
+}
+
+fn direct_upload_url(key: &str) -> String {
+    format!("/rails/active_storage/disk_uploads/{key}?token={}", direct_upload_token(key))
+}
+
+/// POST /api/v1/widget/direct_uploads?website_token= {blob:{filename,content_type,byte_size,checksum}}
+/// Needs a visitor session (X-Auth-Token), same gate as Chatwoot's `set_contact`.
+pub(crate) async fn widget_direct_upload_create(
+    State(st): State<AppState>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let token = q.get("website_token").map(String::as_str);
+    crate::widget::check_visitor(&st, token, &headers).await?;
+    let b = &body["blob"];
+    let filename = clean_name(b["filename"].as_str().unwrap_or("file"));
+    let ct = clean_ct(b["content_type"].as_str());
+    let size = b["byte_size"].as_i64().filter(|s| *s >= 0).ok_or_else(|| ApiError::bad("byte_size is required"))?;
+    if size as usize > MAX_BYTES {
+        return Err(ApiError::bad("File is too large (max 40 MB)"));
+    }
+    let checksum = b["checksum"].as_str().unwrap_or_default().to_string();
+    let key = new_key();
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO active_storage_blobs (key, filename, content_type, metadata, byte_size, checksum, created_at, service_name)
+         VALUES ($1, $2, $3, '{\"identified\":true}', $4, $5, $6, 'local') RETURNING id::bigint",
+    )
+    .bind(&key)
+    .bind(&filename)
+    .bind(&ct)
+    .bind(size)
+    .bind(&checksum)
+    .bind(now())
+    .fetch_one(&st.db)
+    .await?;
+    Ok(Json(json!({
+        "id": id,
+        "key": key,
+        "filename": filename,
+        "content_type": ct,
+        "metadata": { "identified": true },
+        "byte_size": size,
+        "checksum": checksum,
+        "signed_id": signed_id(id),
+        "direct_upload": {
+            "url": direct_upload_url(&key),
+            "headers": { "Content-Type": ct },
+        },
+    })))
+}
+
+/// PUT /rails/active_storage/disk_uploads/{key}?token=: stores the bytes of a pending blob.
+async fn disk_upload_put(
+    State(st): State<AppState>,
+    Path(key): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+    body: axum::body::Bytes,
+) -> ApiResult<StatusCode> {
+    let tok = q.get("token").cloned().unwrap_or_default();
+    if !valid_key(&key) || tok != direct_upload_token(&key) {
+        return Err(ApiError::forbidden());
+    }
+    let row: Option<(i64, i64)> = sqlx::query_as("SELECT id::bigint, byte_size FROM active_storage_blobs WHERE key = $1")
+        .bind(&key)
+        .fetch_optional(&st.db)
+        .await?;
+    let (_, size) = row.ok_or_else(ApiError::not_found)?;
+    if body.len() as i64 != size {
+        return Err(ApiError::bad("Uploaded size does not match byte_size"));
+    }
+    write_file(&blob_path(&key), &body).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
