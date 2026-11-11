@@ -42,3 +42,9 @@ report 15775 "status=$st token_in_redirect=$leak referrer-policy=${rp:-none}"
 resp=$(curl -s -X PATCH "$B/api/v1/widget/contact?website_token=$WT" -H "X-Auth-Token: $T" -H 'content-type: application/json' -d '{"name":"Probe"}')
 report 15776 "widget_auth_token returned: $(echo "$resp" | python3 -c 'import sys,json;print(bool(json.load(sys.stdin).get("widget_auth_token")))' 2>/dev/null || echo error)"
 report 15933 "pubsub_token returned: $(echo "$resp" | python3 -c 'import sys,json;print(bool(json.load(sys.stdin).get("pubsub_token")))' 2>/dev/null || echo error)"
+
+# #15776: after rotation the earlier token is revoked (needs migrations/0003)
+send() { curl -s -o /dev/null -w '%{http_code}' -X POST "$B/api/v1/widget/messages?website_token=$WT" -H "X-Auth-Token: $1" \
+  -H 'content-type: application/json' -d '{"message":{"content":"probe"}}'; }
+NEW=$(echo "$resp" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("widget_auth_token") or "")' 2>/dev/null)
+report 15776 "old token send=$(send "$T") new token send=$([ -n "$NEW" ] && send "$NEW" || echo none)"
