@@ -1,8 +1,51 @@
 /* Pulsar dashboard. Quiet graphite chrome, one accent (Pulsar blue) for primary action and selection. */
 @import "tailwindcss";
 
+/* Chatwoot next design system, light and dark palettes. */
+:root {
+  --slate-1: 252 252 253; --slate-2: 249 249 251; --slate-3: 240 240 243;
+  --slate-4: 232 232 236; --slate-5: 224 225 230; --slate-6: 217 217 224;
+  --slate-7: 205 206 214; --slate-8: 185 187 198; --slate-9: 139 141 152;
+  --slate-10: 128 131 141; --slate-11: 96 100 108; --slate-12: 28 32 36;
+  --blue-1: 251 253 255; --blue-2: 245 249 255; --blue-3: 233 243 255;
+  --blue-4: 218 236 255; --blue-5: 201 226 255; --blue-6: 181 213 255;
+  --blue-7: 155 195 252; --blue-8: 117 171 247; --blue-9: 39 129 246;
+  --blue-10: 16 115 233; --blue-11: 8 109 224; --blue-12: 11 50 101;
+}
+
+.dark {
+  --slate-1: 17 17 19; --slate-2: 24 25 27; --slate-3: 33 34 37;
+  --slate-4: 39 42 45; --slate-5: 46 49 53; --slate-6: 54 58 63;
+  --slate-7: 67 72 78; --slate-8: 90 97 105; --slate-9: 105 110 119;
+  --slate-10: 119 123 132; --slate-11: 176 180 186; --slate-12: 237 238 240;
+  --blue-1: 10 17 28; --blue-2: 15 24 38; --blue-3: 15 39 72;
+  --blue-4: 10 49 99; --blue-5: 18 61 117; --blue-6: 29 84 134;
+  --blue-7: 40 89 156; --blue-8: 48 106 186; --blue-9: 39 129 246;
+  --blue-10: 21 116 231; --blue-11: 126 182 255; --blue-12: 205 227 255;
+}
+
 @theme {
-  --font-sans: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-sans: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Tahoma, Arial, sans-serif;
+  --font-inter: Inter, var(--font-sans);
+  --font-inter-display: InterDisplay, var(--font-sans);
+  --font-weight-420: 420;
+  --font-weight-440: 440;
+  --font-weight-460: 460;
+  --font-weight-520: 520;
+  --font-weight-620: 620;
+  --color-n-brand: #2781f6;
+  --color-n-slate-1: rgb(var(--slate-1)); --color-n-slate-2: rgb(var(--slate-2));
+  --color-n-slate-3: rgb(var(--slate-3)); --color-n-slate-4: rgb(var(--slate-4));
+  --color-n-slate-5: rgb(var(--slate-5)); --color-n-slate-6: rgb(var(--slate-6));
+  --color-n-slate-7: rgb(var(--slate-7)); --color-n-slate-8: rgb(var(--slate-8));
+  --color-n-slate-9: rgb(var(--slate-9)); --color-n-slate-10: rgb(var(--slate-10));
+  --color-n-slate-11: rgb(var(--slate-11)); --color-n-slate-12: rgb(var(--slate-12));
+  --color-n-blue-1: rgb(var(--blue-1)); --color-n-blue-2: rgb(var(--blue-2));
+  --color-n-blue-3: rgb(var(--blue-3)); --color-n-blue-4: rgb(var(--blue-4));
+  --color-n-blue-5: rgb(var(--blue-5)); --color-n-blue-6: rgb(var(--blue-6));
+  --color-n-blue-7: rgb(var(--blue-7)); --color-n-blue-8: rgb(var(--blue-8));
+  --color-n-blue-9: rgb(var(--blue-9)); --color-n-blue-10: rgb(var(--blue-10));
+  --color-n-blue-11: rgb(var(--blue-11)); --color-n-blue-12: rgb(var(--blue-12));
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 
   --color-bg: #f7f7f8;
