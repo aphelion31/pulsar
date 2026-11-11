@@ -855,6 +855,9 @@ async fn agent_update(
     }
     tx.commit().await?;
 
+    if role.is_some() {
+        st.hub.invalidate_cache(account_id, "inbox");
+    }
     let agent = agents_for(&st.db, account_id, Some(vec![id])).await?.pop().ok_or_else(ApiError::not_found)?;
     Ok(Json(agent))
 }
