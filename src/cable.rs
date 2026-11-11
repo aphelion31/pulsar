@@ -271,9 +271,10 @@ async fn heartbeat(st: &AppState, who: &Who, params: &Value) {
     PRESENCE.lock().unwrap().insert(key, Instant::now());
     let mut data = Hub::presence_payload(&st.db, account).await;
     if let Who::User { id, .. } = who {
-        let wp: Option<(bool, bool)> = sqlx::query_as(
-            "SELECT accepts_conversations, accepts_calls FROM account_users WHERE user_id=$1 AND account_id=$2",
-        )
+        let wp: Option<(bool, bool)> = sqlx::query_as(&format!(
+            "SELECT {} FROM account_users au WHERE user_id=$1 AND account_id=$2",
+            crate::common::work_pref_cols("au")
+        ))
         .bind(id)
         .bind(account)
         .fetch_optional(&st.db)

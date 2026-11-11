@@ -101,13 +101,14 @@ pub async fn user_json(db: &PgPool, user_id: i64) -> Result<Value, ApiError> {
         .fetch_one(db)
         .await?;
     let accounts: Vec<(i64, String, i32, Option<chrono::NaiveDateTime>, i32, i32, bool, bool, bool, Option<i64>, i64, i64, Option<Value>)> =
-        sqlx::query_as(
+        sqlx::query_as(&format!(
             "SELECT a.id::bigint, a.name, COALESCE(a.status,0), au.active_at, COALESCE(au.role,0), au.availability,
-                    au.auto_offline, au.accepts_conversations, au.accepts_calls, au.inviter_id, a.feature_flags, a.feature_flags_ext_1,
+                    au.auto_offline, {}, au.inviter_id, a.feature_flags, a.feature_flags_ext_1,
                     a.custom_attributes
              FROM account_users au JOIN accounts a ON a.id = au.account_id
              WHERE au.user_id = $1 ORDER BY au.active_at DESC NULLS LAST, au.id",
-        )
+            crate::common::work_pref_cols("au")
+        ))
         .bind(user_id)
         .fetch_all(db)
         .await?;
@@ -348,6 +349,9 @@ pub async fn auto_offline(State(db): State<PgPool>, user: CurrentUser, Json(body
     let aid = p["account_id"].as_i64().or_else(|| p["account_id"].as_str().and_then(|s| s.parse().ok())).unwrap_or(0);
     require_account(&db, &user, aid).await?;
     for col in ["auto_offline", "accepts_conversations", "accepts_calls"] {
+        if col != "auto_offline" && !crate::common::has_work_preferences() {
+            continue; // column absent on Chatwoot 4.19.1; keep Chatwoot's default
+        }
         if let Some(b) = p[col].as_bool() {
             sqlx::query(&format!("UPDATE account_users SET {col}=$1 WHERE user_id=$2 AND account_id=$3"))
                 .bind(b)
