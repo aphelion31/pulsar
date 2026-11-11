@@ -109,6 +109,8 @@ struct Cs {
 struct Sess {
     c: Cs,
     token: String,
+    /// iat of the presented token (0 for freshly minted sessions)
+    iat: i64,
 }
 
 #[derive(Deserialize)]
@@ -226,22 +228,24 @@ async fn read_session(db: &PgPool, w: &Wd, tok: Option<&str>) -> ApiResult<Optio
     if floor.is_some_and(|f| cl.iat < f) {
         return Ok(None);
     }
-    Ok(Some(Sess { c, token: tok.to_string() }))
+    Ok(Some(Sess { c, token: tok.to_string(), iat: cl.iat }))
 }
 
 /// chatwoot#15776: revoke every earlier token for this visitor and mint one that passes the new floor.
-/// The floor strictly increases even when two rotations land in the same second, because iat has
-/// one-second resolution and a same-second older token must not survive.
-async fn rotate_token(db: &PgPool, w: &Wd, ci_id: i64, source_id: &str) -> ApiResult<String> {
+/// iat has one-second resolution, so the floor must be strictly above the iat of the token being
+/// replaced (and above any previous floor). Otherwise a rotation in the same second as the token was
+/// minted would yield an identical token and the old one would stay valid.
+async fn rotate_token(db: &PgPool, w: &Wd, ci_id: i64, source_id: &str, current_iat: i64) -> ApiResult<String> {
     let floor: i64 = sqlx::query_scalar(
         "INSERT INTO pulsar_widget_token_floors (contact_inbox_id, min_iat, updated_at)
-         VALUES ($1, extract(epoch from now())::bigint, now())
+         VALUES ($1, greatest(extract(epoch from now())::bigint, $2 + 1), now())
          ON CONFLICT (contact_inbox_id) DO UPDATE
-           SET min_iat = greatest(extract(epoch from now())::bigint, pulsar_widget_token_floors.min_iat + 1),
+           SET min_iat = greatest(extract(epoch from now())::bigint, $2 + 1, pulsar_widget_token_floors.min_iat + 1),
                updated_at = now()
          RETURNING min_iat",
     )
     .bind(ci_id)
+    .bind(current_iat)
     .fetch_one(db)
     .await?;
     Ok(issue_at(source_id, w.inbox_id, floor))
@@ -284,7 +288,7 @@ async fn session(st: &AppState, w: &Wd, tok: Option<&str>) -> ApiResult<Sess> {
         phone_number: None,
         identifier: None,
     };
-    Ok(Sess { c, token })
+    Ok(Sess { c, token, iat: chrono::Utc::now().timestamp() })
 }
 
 fn presence(c: &Cs) -> Value {
@@ -819,7 +823,7 @@ async fn contact_update(State(st): State<AppState>, headers: HeaderMap, Query(q)
     }
     apply_contact(&st.db, &w, s.c.contact_id, &b).await?;
     let fresh = find_contact(&st.db, &w, &s.c.source_id).await?.unwrap_or(s.c);
-    let new_tok = rotate_token(&st.db, &w, fresh.ci_id, &fresh.source_id).await?;
+    let new_tok = rotate_token(&st.db, &w, fresh.ci_id, &fresh.source_id, s.iat).await?;
     let mut val = presence(&fresh);
     val["widget_auth_token"] = json!(new_tok);
     val["pubsub_token"] = json!(fresh.pubsub_token);
@@ -890,6 +894,15 @@ mod tests {
         assert!(decode(&t, 8).is_none(), "wrong inbox must fail");
         let tampered = t.replacen('.', ".x", 1);
         assert!(decode(&tampered, 7).is_none());
+    }
+
+    /// chatwoot#15776: tokens are deterministic per (source, inbox, iat), so a rotated token must use a
+    /// strictly larger iat or it equals the one it replaces (the bug the floor `current_iat + 1` fixes).
+    #[test]
+    fn rotated_token_needs_a_larger_iat() {
+        assert_eq!(issue_at("s", 1, 100), issue_at("s", 1, 100));
+        assert_ne!(issue_at("s", 1, 100), issue_at("s", 1, 101));
+        assert_eq!(decode(&issue_at("s", 1, chrono::Utc::now().timestamp()), 1).map(|c| c.source_id), Some("s".into()));
     }
 
     /// chatwoot#15776: minted token has fresh iat and decodes to matching source_id and inbox_id.
