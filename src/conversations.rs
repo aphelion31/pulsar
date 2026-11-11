@@ -966,6 +966,12 @@ async fn labels_create(State(st): State<AppState>, user: CurrentUser, Path((acco
 
 // ---------- messages ----------
 
+/// Message fields Chatwoot's messages/index.json.jbuilder does not render.
+const INDEX_ONLY_OMIT: &[&str] = &[
+    "account_id", "additional_attributes", "conversation", "external_source_ids", "processed_message_content",
+    "sender_id", "sender_type", "sentiment", "updated_at",
+];
+
 /// GET /conversations/{id}/messages?before=&after=
 async fn messages_index(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Query(p): Query<HashMap<String, String>>) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
@@ -990,7 +996,20 @@ async fn messages_index(State(st): State<AppState>, user: CurrentUser, Path((acc
     }
     let mut payload = Vec::with_capacity(rows.len());
     for m in &rows {
-        payload.push(msg_json(&st.db, m, &c).await);
+        let mut j = msg_json(&st.db, m, &c).await;
+        // msg_json is the push_event_data superset (cable events need it). messages/index.json.jbuilder
+        // omits these, and they roughly doubled the body; drop them to match Chatwoot 4.19.1.
+        if let Some(o) = j.as_object_mut() {
+            for k in INDEX_ONLY_OMIT {
+                o.remove(*k);
+            }
+            if let Some(s) = o.get_mut("sender").and_then(Value::as_object_mut) {
+                for k in ["account_id", "auto_offline", "confirmed", "email", "provider", "role"] {
+                    s.remove(k);
+                }
+            }
+        }
+        payload.push(j);
     }
     let mut meta = json!({
         "labels": c.labels(), "additional_attributes": c.additional_attributes.clone().unwrap_or(json!({})),
