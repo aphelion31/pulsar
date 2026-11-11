@@ -90,6 +90,14 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Pulsar-owned table (same as migrations/0003). Created here too so an install that skipped the
+    // migration keeps the widget working instead of failing every request. Idempotent; Chatwoot
+    // tables are not touched.
+    sqlx::query(include_str!("../migrations/0003_pulsar_widget_token_floor.sql"))
+        .execute(&db)
+        .await
+        .map_err(|e| anyhow::anyhow!("creating pulsar_widget_token_floors: {e}"))?;
+
     let state = AppState {
         db,
         hub: cable::Hub::default(),

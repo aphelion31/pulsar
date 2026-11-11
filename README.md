@@ -141,6 +141,7 @@ You need PostgreSQL with the `pgvector` extension. Nothing else.
 createdb pulsar
 psql -d pulsar -f migrations/0001_schema.sql
 psql -d pulsar -f migrations/0002_pulsar_indexes.sql
+psql -d pulsar -f migrations/0003_pulsar_widget_token_floor.sql
 
 # 2. Build the frontend once (served by the binary at /app)
 (cd web && pnpm install --frozen-lockfile && pnpm build)

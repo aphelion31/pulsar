@@ -109,6 +109,8 @@ struct Cs {
 struct Sess {
     c: Cs,
     token: String,
+    /// iat of the presented token (0 for freshly minted sessions)
+    iat: i64,
 }
 
 #[derive(Deserialize)]
@@ -116,6 +118,8 @@ struct Claims {
     source_id: String,
     inbox_id: i64,
     exp: i64,
+    #[serde(default)]
+    iat: i64,
 }
 
 // ---------- token (HS256) ----------
@@ -146,7 +150,10 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// Same claims as Widget::TokenService: {source_id, inbox_id, iat, exp}, 180 days.
 fn issue(source_id: &str, inbox_id: i64) -> String {
-    let iat = chrono::Utc::now().timestamp();
+    issue_at(source_id, inbox_id, chrono::Utc::now().timestamp())
+}
+
+fn issue_at(source_id: &str, inbox_id: i64, iat: i64) -> String {
     let payload = json!({ "source_id": source_id, "inbox_id": inbox_id, "iat": iat, "exp": iat + 180 * 86400 });
     let head = B64.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
     let body = B64.encode(payload.to_string());
@@ -213,7 +220,35 @@ async fn read_session(db: &PgPool, w: &Wd, tok: Option<&str>) -> ApiResult<Optio
     let Some(tok) = tok else { return Ok(None) };
     let Some(cl) = decode(tok, w.inbox_id) else { return Ok(None) };
     let Some(c) = find_contact(db, w, &cl.source_id).await? else { return Ok(None) };
-    Ok(Some(Sess { c, token: tok.to_string() }))
+    // chatwoot#15776: tokens minted before the last rotation for this visitor are revoked.
+    let floor: Option<i64> = sqlx::query_scalar("SELECT min_iat FROM pulsar_widget_token_floors WHERE contact_inbox_id = $1")
+        .bind(c.ci_id)
+        .fetch_optional(db)
+        .await?;
+    if floor.is_some_and(|f| cl.iat < f) {
+        return Ok(None);
+    }
+    Ok(Some(Sess { c, token: tok.to_string(), iat: cl.iat }))
+}
+
+/// chatwoot#15776: revoke every earlier token for this visitor and mint one that passes the new floor.
+/// iat has one-second resolution, so the floor must be strictly above the iat of the token being
+/// replaced (and above any previous floor). Otherwise a rotation in the same second as the token was
+/// minted would yield an identical token and the old one would stay valid.
+async fn rotate_token(db: &PgPool, w: &Wd, ci_id: i64, source_id: &str, current_iat: i64) -> ApiResult<String> {
+    let floor: i64 = sqlx::query_scalar(
+        "INSERT INTO pulsar_widget_token_floors (contact_inbox_id, min_iat, updated_at)
+         VALUES ($1, greatest(extract(epoch from now())::bigint, $2 + 1), now())
+         ON CONFLICT (contact_inbox_id) DO UPDATE
+           SET min_iat = greatest(extract(epoch from now())::bigint, $2 + 1, pulsar_widget_token_floors.min_iat + 1),
+               updated_at = now()
+         RETURNING min_iat",
+    )
+    .bind(ci_id)
+    .bind(current_iat)
+    .fetch_one(db)
+    .await?;
+    Ok(issue_at(source_id, w.inbox_id, floor))
 }
 
 /// Resolve visitor, or create a new anonymous contact + contact_inbox and issue a token.
@@ -253,7 +288,7 @@ async fn session(st: &AppState, w: &Wd, tok: Option<&str>) -> ApiResult<Sess> {
         phone_number: None,
         identifier: None,
     };
-    Ok(Sess { c, token })
+    Ok(Sess { c, token, iat: chrono::Utc::now().timestamp() })
 }
 
 fn presence(c: &Cs) -> Value {
@@ -777,10 +812,7 @@ async fn contact_show(State(st): State<AppState>, headers: HeaderMap, Query(q): 
 /// Chatwoot #15933: include pubsub_token in the contact response so the widget can re-subscribe
 /// to realtime events when the visitor contact is updated/rebound.
 ///
-/// ponytail: contact_inboxes schema has no jsonb column for an iat floor (only id, contact_id,
-/// inbox_id, source_id, created_at, updated_at, hmac_verified, pubsub_token). Adding a floor
-/// would require a migration or hijacking updated_at; client-side token replacement and the new
-/// token returned in widget_auth_token and X-Auth-Token header suffices until schema is expanded.
+/// Earlier tokens are revoked through pulsar_widget_token_floors (migrations/0003), see rotate_token.
 async fn contact_update(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult<Response> {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = read_session(&st.db, &w, token(&headers).as_deref()).await?.ok_or_else(ApiError::not_found)?;
@@ -791,7 +823,7 @@ async fn contact_update(State(st): State<AppState>, headers: HeaderMap, Query(q)
     }
     apply_contact(&st.db, &w, s.c.contact_id, &b).await?;
     let fresh = find_contact(&st.db, &w, &s.c.source_id).await?.unwrap_or(s.c);
-    let new_tok = issue(&fresh.source_id, w.inbox_id);
+    let new_tok = rotate_token(&st.db, &w, fresh.ci_id, &fresh.source_id, s.iat).await?;
     let mut val = presence(&fresh);
     val["widget_auth_token"] = json!(new_tok);
     val["pubsub_token"] = json!(fresh.pubsub_token);
@@ -862,6 +894,15 @@ mod tests {
         assert!(decode(&t, 8).is_none(), "wrong inbox must fail");
         let tampered = t.replacen('.', ".x", 1);
         assert!(decode(&tampered, 7).is_none());
+    }
+
+    /// chatwoot#15776: tokens are deterministic per (source, inbox, iat), so a rotated token must use a
+    /// strictly larger iat or it equals the one it replaces (the bug the floor `current_iat + 1` fixes).
+    #[test]
+    fn rotated_token_needs_a_larger_iat() {
+        assert_eq!(issue_at("s", 1, 100), issue_at("s", 1, 100));
+        assert_ne!(issue_at("s", 1, 100), issue_at("s", 1, 101));
+        assert_eq!(decode(&issue_at("s", 1, chrono::Utc::now().timestamp()), 1).map(|c| c.source_id), Some("s".into()));
     }
 
     /// chatwoot#15776: minted token has fresh iat and decodes to matching source_id and inbox_id.
