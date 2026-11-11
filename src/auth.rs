@@ -28,10 +28,33 @@ pub fn token_valid(tokens: Option<&Value>, client: &str, token: &str) -> bool {
     if expiry < chrono::Utc::now().timestamp() {
         return false;
     }
-    let check = |k: &str| {
-        entry.get(k).and_then(Value::as_str).is_some_and(|h| bcrypt::verify(token, h).unwrap_or(false))
-    };
+    let check = |k: &str| entry.get(k).and_then(Value::as_str).is_some_and(|h| bcrypt_cached(token, h));
     check("token") || check("last_token")
+}
+
+/// bcrypt cost 10 is ~50 ms, and every dashboard request carries a devise token: without this, each
+/// request paid it on the async runtime. Cache successful checks keyed by sha256(token, stored hash), so a
+/// rotated or revoked token (new stored hash) is re-verified and a wrong token never hits the cache.
+/// Same idea as devise_token_auth's `token_validation_response` cache.
+/// ponytail: unbounded set cleared at 10k entries; use an LRU if tokens churn faster than that.
+fn bcrypt_cached(token: &str, hash: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    use std::{collections::HashSet, sync::Mutex};
+    static OK: std::sync::LazyLock<Mutex<HashSet<[u8; 32]>>> = std::sync::LazyLock::new(Default::default);
+    let key: [u8; 32] = Sha256::new().chain_update(token).chain_update([0]).chain_update(hash).finalize().into();
+    if OK.lock().map(|s| s.contains(&key)).unwrap_or(false) {
+        return true;
+    }
+    let ok = bcrypt::verify(token, hash).unwrap_or(false);
+    if ok {
+        if let Ok(mut s) = OK.lock() {
+            if s.len() >= 10_000 {
+                s.clear();
+            }
+            s.insert(key);
+        }
+    }
+    ok
 }
 
 /// Account feature flags -> {name: bool} using config/features.yml bit order per column.
@@ -168,6 +191,27 @@ fn auth_headers(uid: &str, client: &str, token: &str, expiry: i64) -> HeaderMap 
     h
 }
 
+/// Failed-login throttle per normalized email (in memory, per process): 10 failures per 15 minutes lock
+/// further attempts for that email. Successful logins do not count, so a busy user is never locked out.
+/// ponytail: per-process; multi-instance deploys need a shared store or the proxy's limit_req.
+fn login_failures(email: &str, record_failure: bool) -> usize {
+    use std::{collections::HashMap, sync::Mutex, time::{Duration, Instant}};
+    const WINDOW: Duration = Duration::from_secs(15 * 60);
+    static HITS: std::sync::LazyLock<Mutex<HashMap<String, Vec<Instant>>>> = std::sync::LazyLock::new(Default::default);
+    let Ok(mut m) = HITS.lock() else { return 0 };
+    let now = Instant::now();
+    if m.len() > 50_000 {
+        m.retain(|_, v| v.last().is_some_and(|t| now.duration_since(*t) < WINDOW));
+    }
+    let v = m.entry(email.to_string()).or_default();
+    v.retain(|t| now.duration_since(*t) < WINDOW);
+    if record_failure {
+        v.push(now);
+    }
+    v.len()
+}
+const LOGIN_FAILURE_LIMIT: usize = 10;
+
 /// POST /auth/sign_in {email, password}
 pub async fn sign_in(State(db): State<PgPool>, headers: HeaderMap, body: Option<Json<Value>>) -> ApiResult<Response> {
     let body = body.map(|b| b.0).unwrap_or_default();
@@ -178,18 +222,28 @@ pub async fn sign_in(State(db): State<PgPool>, headers: HeaderMap, body: Option<
     if email.is_empty() || password.is_empty() {
         return Err(bad());
     }
+    // Chatwoot #5171 (lockable) / rack_attack 'login/email': after 10 failed attempts for an email within 15
+    // minutes, refuse further attempts, whether or not the account exists.
+    let key = email.trim().to_lowercase();
+    if login_failures(&key, false) >= LOGIN_FAILURE_LIMIT {
+        return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "Too many login attempts. Please try again later.".into()));
+    }
+    let fail = || {
+        login_failures(&key, true);
+        bad()
+    };
     let row: Option<(i64, String, String, Option<Value>, Option<chrono::NaiveDateTime>)> = sqlx::query_as(
         "SELECT id::bigint, uid, encrypted_password, tokens::jsonb, confirmed_at FROM users WHERE lower(email) = $1 AND provider='email'",
     )
     .bind(email.trim().to_lowercase())
     .fetch_optional(&db)
     .await?;
-    let (id, uid, enc, tokens, confirmed) = row.ok_or_else(bad)?;
+    let (id, uid, enc, tokens, confirmed) = row.ok_or_else(fail)?;
     let pw_ok = tokio::task::spawn_blocking(move || bcrypt::verify(&password, &enc).unwrap_or(false))
         .await
         .unwrap_or(false);
     if !pw_ok {
-        return Err(bad());
+        return Err(fail());
     }
     if confirmed.is_none() {
         return Err(ApiError(

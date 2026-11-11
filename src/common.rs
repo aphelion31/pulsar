@@ -147,6 +147,8 @@ pub struct AccountUser {
     pub account_id: i64,
     pub user_id: i64,
     pub role: i32, // 0 agent, 1 administrator
+    /// Custom role permissions for agents that have one (Chatwoot enterprise). None = plain agent/admin.
+    pub custom_perms: Option<Vec<String>>,
 }
 
 impl AccountUser {
@@ -156,18 +158,38 @@ impl AccountUser {
     pub fn require_admin(&self) -> Result<(), ApiError> {
         if self.is_admin() { Ok(()) } else { Err(ApiError::forbidden()) }
     }
+    /// SQL predicate over conversation alias `c` for the custom-role scope (Chatwoot
+    /// Enterprise::Conversations::PermissionFilterService). Chatwoot #11885/#13193: list, show and
+    /// search must all honor it. Only constants are interpolated; `$uid` is replaced by the bound user param.
+    pub fn custom_scope_sql(&self, uid_param: &str) -> String {
+        let Some(p) = self.custom_perms.as_ref().filter(|_| !self.is_admin()) else { return "TRUE".into() };
+        let has = |k: &str| p.iter().any(|x| x == k);
+        let mine = format!("c.assignee_id = {uid_param}");
+        if has("conversation_manage") {
+            "TRUE".into()
+        } else if has("conversation_unassigned_manage") {
+            format!("(({mine}) OR (c.assignee_id IS NULL AND c.assignee_agent_bot_id IS NULL))")
+        } else if has("conversation_participating_manage") {
+            format!("(({mine}) OR c.id IN (SELECT conversation_id FROM conversation_participants WHERE user_id = {uid_param}))")
+        } else {
+            "FALSE".into()
+        }
+    }
 }
 
 /// Verify `user` belongs to `account_id`. Every `/api/v1/accounts/{account_id}/...` handler must call this.
 pub async fn require_account(db: &PgPool, user: &CurrentUser, account_id: i64) -> Result<AccountUser, ApiError> {
-    let role: Option<(i32,)> =
-        sqlx::query_as("SELECT COALESCE(role,0) FROM account_users WHERE account_id = $1 AND user_id = $2")
-            .bind(account_id)
-            .bind(user.id)
-            .fetch_optional(db)
-            .await?;
-    let (role,) = role.ok_or_else(ApiError::unauthorized)?;
-    Ok(AccountUser { account_id, user_id: user.id, role })
+    let role: Option<(i32, Option<Vec<String>>)> = sqlx::query_as(
+        "SELECT COALESCE(au.role,0), cr.permissions FROM account_users au
+         LEFT JOIN custom_roles cr ON cr.id = au.custom_role_id AND cr.account_id = au.account_id
+         WHERE au.account_id = $1 AND au.user_id = $2",
+    )
+    .bind(account_id)
+    .bind(user.id)
+    .fetch_optional(db)
+    .await?;
+    let (role, custom_perms) = role.ok_or_else(ApiError::unauthorized)?;
+    Ok(AccountUser { account_id, user_id: user.id, role, custom_perms })
 }
 
 /// Rails-style `to_i` for optional timestamps (nil -> 0).

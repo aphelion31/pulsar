@@ -48,3 +48,12 @@ send() { curl -s -o /dev/null -w '%{http_code}' -X POST "$B/api/v1/widget/messag
   -H 'content-type: application/json' -d '{"message":{"content":"probe"}}'; }
 NEW=$(echo "$resp" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("widget_auth_token") or "")' 2>/dev/null)
 report 15776 "old token send=$(send "$T") new token send=$([ -n "$NEW" ] && send "$NEW" || echo none)"
+
+# PR #15778: a contact write through PATCH /widget/messages/{id} rotates the token too
+T=$(tok)
+MID=$(curl -s -X POST "$B/api/v1/widget/messages?website_token=$WT" -H "X-Auth-Token: $T" -H 'content-type: application/json' \
+  -d '{"message":{"content":"form"}}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+resp=$(curl -s -X PATCH "$B/api/v1/widget/messages/$MID?website_token=$WT" -H "X-Auth-Token: $T" -H 'content-type: application/json' \
+  -d '{"message":{"submitted_values":[]},"contact":{"email":"form'"$RANDOM"'@example.com"}}')
+NEW=$(echo "$resp" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("widget_auth_token") or "")' 2>/dev/null)
+report 15778 "old token send=$(send "$T") new token send=$([ -n "$NEW" ] && send "$NEW" || echo none)"

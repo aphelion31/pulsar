@@ -25,12 +25,17 @@ export default function InboxRoute() {
   const [meta, setMeta] = useState<Meta | null>(null);
   const [loading, setLoading] = useState(true);
   const [epoch, setEpoch] = useState(0);
+  // Chatwoot PR #14907: only the newest request may write state, so a slow response for an old filter
+  // cannot overwrite the list for the filter the user switched to.
+  const latest = useRef(0);
 
   const load = useMemo(
     () => async () => {
+      const seq = ++latest.current;
       const r = await api<{ data: { meta: Meta; payload: Conversation[] } }>(
         `${acct(accountId)}/conversations?status=${status}&assignee_type=${tab}&sort_by=last_activity_at_desc`,
       );
+      if (seq !== latest.current) return;
       setList(r.data.payload);
       setMeta(r.data.meta);
       setLoading(false);

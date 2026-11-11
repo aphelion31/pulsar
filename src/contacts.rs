@@ -147,7 +147,10 @@ async fn build_contact_json(db: &PgPool, c: &ContactRow, include_inboxes: bool) 
     } else {
         None
     };
-    contact_to_json(c, inboxes)
+    // Chatwoot PR #14966: thumbnail is the avatar URL (Chatwoot-uploaded avatars live in active_storage).
+    let mut v = contact_to_json(c, inboxes);
+    v["thumbnail"] = json!(crate::storage::avatar_url(db, "Contact", c.id as i64).await);
+    v
 }
 
 fn parse_sort_clause(sort: Option<&str>) -> &'static str {
@@ -534,6 +537,14 @@ async fn create(
 ) -> Result<Response, ApiError> {
     let _au = require_account(&st.db, &user, account_id).await?;
 
+    // Chatwoot #15453 / PR #15496: check-then-insert raced, so two concurrent creates with the same phone
+    // (or email/identifier) both passed. Serialize creates per account; schema is Chatwoot's, no new index.
+    let mut tx = st.db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('pulsar_contact_create'), $1::int)")
+        .bind(account_id as i32)
+        .execute(&mut *tx)
+        .await?;
+
     // Uniqueness per account. Lookups are scoped to account_id, so only same-account contacts are named.
     let norm_email = body.email.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty());
     if let Some(e) = norm_email {
@@ -542,7 +553,7 @@ async fn create(
         )
         .bind(account_id)
         .bind(e)
-        .fetch_optional(&st.db)
+        .fetch_optional(&mut *tx)
         .await?;
 
         if let Some((id,)) = exists {
@@ -557,7 +568,7 @@ async fn create(
         )
         .bind(account_id)
         .bind(p)
-        .fetch_optional(&st.db)
+        .fetch_optional(&mut *tx)
         .await?;
 
         if let Some((id,)) = exists {
@@ -572,7 +583,7 @@ async fn create(
         )
         .bind(account_id)
         .bind(ident)
-        .fetch_optional(&st.db)
+        .fetch_optional(&mut *tx)
         .await?;
 
         if let Some((id,)) = exists {
@@ -600,8 +611,9 @@ async fn create(
     .bind(&additional_attributes)
     .bind(norm_identifier)
     .bind(&custom_attributes)
-    .fetch_one(&st.db)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     let mut contact_inbox_payload = json!({
         "inbox": Value::Null,

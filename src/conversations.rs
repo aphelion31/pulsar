@@ -146,6 +146,16 @@ async fn load(db: &PgPool, au: &AccountUser, display_id: i64) -> Result<Conv, Ap
     if !au.is_admin() && !is_inbox_member(db, c.inbox_id, au.user_id).await? {
         return Err(ApiError::not_found());
     }
+    if au.custom_perms.is_some() && !au.is_admin() {
+        let ok: bool = sqlx::query_scalar(&format!("SELECT {} FROM conversations c WHERE c.id = $1", au.custom_scope_sql("$2")))
+            .bind(c.id)
+            .bind(au.user_id)
+            .fetch_one(db)
+            .await?;
+        if !ok {
+            return Err(ApiError::not_found());
+        }
+    }
     Ok(c)
 }
 
@@ -182,7 +192,7 @@ pub(crate) async fn contact_json(db: &PgPool, id: Option<i64>) -> Value {
         "id": r.0, "name": r.1, "email": r.2, "phone_number": r.3, "identifier": r.4,
         "additional_attributes": r.5.unwrap_or(json!({})), "custom_attributes": r.6.unwrap_or(json!({})),
         "blocked": r.7, "contact_type": name_of(&CONTACT_TYPES, r.8.unwrap_or(0)), "type": "contact",
-        "thumbnail": "", "availability_status": "offline",
+        "thumbnail": crate::storage::avatar_url(db, "Contact", r.0).await, "availability_status": "offline",
         "last_activity_at": r.9.map(|t| t.and_utc().timestamp()), "created_at": r.10.and_utc().timestamp(),
     })
 }
@@ -351,12 +361,16 @@ pub(crate) async fn emit_conv(st: &AppState, id: i64, event: &str) -> Result<Con
     Ok(c)
 }
 
+/// Internal carrier for messages.source_id through insert_message; never stored in content_attributes.
+const SOURCE_ID_KEY: &str = "__pulsar_source_id";
+
 /// Insert a message, bump conversation activity, broadcast message.created. Returns the push payload.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn insert_message(
     st: &AppState, c: &Conv, sender: Option<(&str, i64)>, content: &str, message_type: i32, private: bool,
-    content_type: i32, content_attributes: Value, echo_id: Option<&str>,
+    content_type: i32, mut content_attributes: Value, echo_id: Option<&str>,
 ) -> Result<Value, ApiError> {
+    let source_id = content_attributes.as_object_mut().and_then(|o| o.remove(SOURCE_ID_KEY)).and_then(|v| v.as_str().map(str::to_string));
     // chatwoot#15743: a client retrying a send with the same echo_id gets the original message back
     // instead of a duplicate. The echo_id is kept in additional_attributes; the advisory lock makes
     // concurrent retries safe without a schema change.
@@ -386,10 +400,10 @@ pub(crate) async fn insert_message(
     }
     let m: Msg = sqlx::query_as(&format!(
         "INSERT INTO messages AS m (content, account_id, inbox_id, conversation_id, message_type, private, status, content_type,
-            content_attributes, sender_type, sender_id, additional_attributes, created_at, updated_at)
+            content_attributes, sender_type, sender_id, additional_attributes, source_id, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $8::json, $9, $10,
                  CASE WHEN $11::text IS NULL THEN '{{}}'::jsonb ELSE jsonb_build_object('echo_id', $11::text) END,
-                 now(), now()) RETURNING {MSG_COLS}"
+                 $12, now(), now()) RETURNING {MSG_COLS}"
     ))
     .bind(content)
     .bind(c.account_id as i32)
@@ -402,6 +416,7 @@ pub(crate) async fn insert_message(
     .bind(sender.map(|s| s.0))
     .bind(sender.map(|s| s.1))
     .bind(echo_id.filter(|e| !e.is_empty()))
+    .bind(source_id)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -512,7 +527,8 @@ macro_rules! bind_base {
 
 async fn counts(db: &PgPool, f: &Filter, au: &AccountUser) -> Result<Value, ApiError> {
     let sql = format!(
-        "SELECT COUNT(*) FILTER (WHERE c.assignee_id = $8), COUNT(*) FILTER (WHERE c.assignee_id IS NULL), COUNT(*) {BASE}"
+        "SELECT COUNT(*) FILTER (WHERE c.assignee_id = $8), COUNT(*) FILTER (WHERE c.assignee_id IS NULL), COUNT(*) {BASE} AND {}",
+        au.custom_scope_sql("$8")
     );
     let (mine, unassigned, all): (i64, i64, i64) = bind_base!(sqlx::query_as(&sql), f, au).fetch_one(db).await?;
     Ok(json!({ "mine_count": mine, "unassigned_count": unassigned, "assigned_count": all - unassigned, "all_count": all }))
@@ -523,15 +539,23 @@ async fn index(State(st): State<AppState>, user: CurrentUser, Path(account_id): 
     let f = parse_filter(&q);
     let meta = counts(&st.db, &f, &au).await?;
     let sql = format!(
-        "SELECT {CONV_COLS} {BASE} AND {} ORDER BY {} LIMIT {PER_PAGE} OFFSET {}",
+        "SELECT {CONV_COLS} {BASE} AND {} AND {} ORDER BY {} LIMIT {PER_PAGE} OFFSET {}",
+        au.custom_scope_sql("$8"),
         f.assignee,
         f.sort,
         (f.page - 1) * PER_PAGE
     );
     let rows: Vec<Conv> = bind_base!(sqlx::query_as(&sql), f, au).fetch_all(&st.db).await?;
+    // Chatwoot PR #15719 (N+1 on the list): each row needs ~8 small lookups. Run rows concurrently, capped
+    // below the pool size so one list request cannot starve the rest.
+    // ponytail: still 8 queries per row; batch them into set-based queries if lists grow past 25 rows.
     let mut payload = Vec::with_capacity(rows.len());
-    for c in &rows {
-        payload.push(conv_json(&st.db, c).await);
+    for chunk in rows.chunks(4) {
+        let mut futs = Vec::with_capacity(chunk.len());
+        for c in chunk {
+            futs.push(conv_json(&st.db, c));
+        }
+        payload.extend(futures::future::join_all(futs).await);
     }
     Ok(Json(json!({ "data": { "meta": meta, "payload": payload } })))
 }
@@ -616,7 +640,7 @@ async fn create(State(st): State<AppState>, user: CurrentUser, Path(account_id):
     .await?;
     // chatwoot#16151: labels in the create payload are applied before conversation.created fires,
     // so listeners never see the conversation without them.
-    let labels = parse_labels(&b["labels"]);
+    let labels = known_labels(&st.db, account_id, parse_labels(&b["labels"])).await?;
     if !labels.is_empty() {
         set_labels(&st.db, id, &labels).await?;
     }
@@ -894,6 +918,20 @@ fn labels_arg(b: &Value) -> Result<Vec<String>, ApiError> {
     Ok(parse_labels(&b["labels"]))
 }
 
+/// Chatwoot #13918 / PR #14159: only labels defined in the account may be attached. Unknown names are
+/// dropped (case-insensitive match, stored with the account's spelling) instead of creating stray tags.
+async fn known_labels(db: &PgPool, account_id: i64, wanted: Vec<String>) -> Result<Vec<String>, ApiError> {
+    if wanted.is_empty() {
+        return Ok(wanted);
+    }
+    let defined: Vec<String> = sqlx::query_scalar("SELECT title FROM labels WHERE account_id = $1 AND lower(title) = ANY($2)")
+        .bind(account_id)
+        .bind(wanted.iter().map(|l| l.to_lowercase()).collect::<Vec<_>>())
+        .fetch_all(db)
+        .await?;
+    Ok(wanted.into_iter().filter_map(|w| defined.iter().find(|d| d.eq_ignore_ascii_case(&w)).cloned()).collect())
+}
+
 async fn labels_patch(st: &AppState, user: &CurrentUser, account_id: i64, id: i64, add: Vec<String>, remove: Vec<String>) -> ApiResult {
     let au = require_account(&st.db, user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
@@ -910,7 +948,7 @@ async fn labels_patch(st: &AppState, user: &CurrentUser, account_id: i64, id: i6
 
 /// POST /conversations/{id}/labels/add {labels: [...]} adds only the given labels.
 async fn labels_add(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
-    let add = labels_arg(&b)?;
+    let add = known_labels(&st.db, account_id, labels_arg(&b)?).await?;
     labels_patch(&st, &user, account_id, id, add, vec![]).await
 }
 
@@ -948,7 +986,7 @@ mod label_patch_tests {
 async fn labels_create(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
-    let labels = parse_labels(&b["labels"]);
+    let labels = known_labels(&st.db, account_id, parse_labels(&b["labels"])).await?;
     let old = c.labels();
     set_labels(&st.db, c.id, &labels).await?;
     let added: Vec<&String> = labels.iter().filter(|l| !old.contains(l)).collect();
@@ -1058,13 +1096,44 @@ async fn messages_create(State(st): State<AppState>, user: CurrentUser, Path((ac
         _ => 1,
     };
     let content_type = b["content_type"].as_str().and_then(|s| idx(&CONTENT_TYPES, s)).unwrap_or(0);
-    let attrs = b.get("content_attributes").filter(|v| v.is_object()).cloned().unwrap_or(json!({}));
+    let mut attrs = b.get("content_attributes").filter(|v| v.is_object()).cloned().unwrap_or(json!({}));
+    resolve_in_reply_to(&st.db, c.id, &mut attrs).await?;
+    // API channels pass the external id so later replies can reference it (Chatwoot permits source_id here).
+    // Client-sent carrier keys are dropped first, so only the top-level source_id is honored.
+    if let Some(o) = attrs.as_object_mut() {
+        o.remove(SOURCE_ID_KEY);
+    }
+    if let Some(sid) = b["source_id"].as_str().filter(|s| !s.is_empty()) {
+        attrs[SOURCE_ID_KEY] = json!(sid);
+    }
     let sender = if message_type == 0 { c.contact_id.map(|id| ("Contact", id)) } else { Some(("User", user.id)) };
     let data = insert_message(
         &st, &c, sender, content, message_type, b["private"].as_bool().unwrap_or(false), content_type, attrs, b["echo_id"].as_str(),
     )
     .await?;
     Ok(Json(data))
+}
+
+/// Chatwoot #10859 (Messages::InReplyToMessageBuilder): `in_reply_to` (message id) or
+/// `in_reply_to_external_id` (source_id) is looked up in the same conversation and both keys are set from
+/// the found message, or cleared when nothing matches.
+async fn resolve_in_reply_to(db: &PgPool, conv_id: i64, attrs: &mut Value) -> Result<(), ApiError> {
+    let id = attrs.get("in_reply_to").and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()));
+    let ext = attrs.get("in_reply_to_external_id").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+    if id.is_none() && ext.is_none() {
+        return Ok(());
+    }
+    let found: Option<(i64, Option<String>)> = match id {
+        Some(id) => sqlx::query_as("SELECT id::bigint, source_id FROM messages WHERE conversation_id = $1 AND id = $2").bind(conv_id).bind(id),
+        None => sqlx::query_as("SELECT id::bigint, source_id FROM messages WHERE conversation_id = $1 AND source_id = $2 ORDER BY id LIMIT 1")
+            .bind(conv_id)
+            .bind(ext.clone().unwrap_or_default()),
+    }
+    .fetch_optional(db)
+    .await?;
+    attrs["in_reply_to"] = json!(found.as_ref().map(|f| f.0));
+    attrs["in_reply_to_external_id"] = json!(found.and_then(|f| f.1));
+    Ok(())
 }
 
 /// DELETE /conversations/{id}/messages/{message_id}: soft delete like Rails.

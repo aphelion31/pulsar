@@ -25,8 +25,19 @@ S=$(j "$A/conversations/$CONV" | py 'print(d["snoozed_until"])')
 [ "$S" = "None" ] && report 16261 PASS "snoozed_until cleared" || report 16261 FAIL "snoozed_until kept: $S"
 
 # #16151 labels accepted when creating a conversation
+j -X POST "$A/labels" -d '{"title":"created-with-label"}' >/dev/null
 L=$(j -X POST "$A/conversations" -d "{\"inbox_id\":$INBOX,\"contact_id\":$CONTACT,\"labels\":[\"created-with-label\"]}" | py 'print(",".join(d["labels"]))')
 [ "$L" = "created-with-label" ] && report 16151 PASS "labels set on create" || report 16151 FAIL "labels on create: '$L'"
+
+# #13918 / PR #14159 labels not defined in the account are not attached
+L=$(j -X POST "$A/conversations" -d "{\"inbox_id\":$INBOX,\"contact_id\":$CONTACT,\"labels\":[\"created-with-label\",\"no-such-label-$RANDOM\"]}" | py 'print(",".join(d["labels"]))')
+[ "$L" = "created-with-label" ] && report 13918 PASS "undefined label dropped" || report 13918 FAIL "labels: '$L'"
+
+# #15453 / PR #15496 concurrent creates with one phone number make one contact
+P="+1555$RANDOM$RANDOM"
+for _ in 1 2 3 4 5 6; do j -o /dev/null -X POST "$A/contacts" -d "{\"name\":\"race\",\"phone_number\":\"$P\"}" & done; wait
+N=$(j "$A/contacts/search?q=${P#+}" | py 'print(sum(1 for c in d["payload"] if c["phone_number"]=="'"$P"'"))')
+[ "$N" = "1" ] && report 15453 PASS "one contact per phone" || report 15453 FAIL "contacts with same phone: $N"
 
 # #15802 missing record is 404, not 500
 c=$(code "$A/conversations/999999"); [ "$c" = 404 ] && report 15802 PASS "missing show 404" || report 15802 FAIL "missing show $c"
@@ -64,3 +75,14 @@ psql -d "${PGDB:-pulsar}" -qc "delete from notifications where primary_actor_id=
 # #16049 index for the default conversation sort
 I=$(psql -d "${PGDB:-pulsar}" -Atc "select count(*) from pg_indexes where tablename='conversations' and indexdef ilike '%account_id%last_activity_at%'")
 [ "$I" -ge 1 ] && report 16049 PASS "composite (account_id, last_activity_at) index" || report 16049 FAIL "no (account_id, last_activity_at) index"
+
+# #10859 in_reply_to_external_id resolves to the message with that source_id
+SID="ext-$RANDOM$RANDOM"
+ORIG=$(j -X POST "$A/conversations/$CONV/messages" -d "{\"content\":\"original\",\"source_id\":\"$SID\"}" | py 'print(d["id"])')
+R=$(j -X POST "$A/conversations/$CONV/messages" -d "{\"content\":\"reply\",\"content_attributes\":{\"in_reply_to_external_id\":\"$SID\"}}" | py 'a=d["content_attributes"];print(a.get("in_reply_to"),a.get("in_reply_to_external_id"))')
+[ "$R" = "$ORIG $SID" ] && report 10859 PASS "reply linked by external id" || report 10859 FAIL "got '$R' want '$ORIG $SID'"
+
+# #5171 failed logins for one email are throttled (10 per 15 min), like Chatwoot's rack_attack login/email
+E="nobody$RANDOM$RANDOM@example.com"; last=""
+for _ in $(seq 1 11); do last=$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -d "{\"email\":\"$E\",\"password\":\"x\"}" "$B/auth/sign_in"); done
+[ "$last" = 429 ] && report 5171 PASS "11th failed login -> 429" || report 5171 FAIL "11th failed login -> $last"

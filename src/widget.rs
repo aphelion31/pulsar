@@ -763,7 +763,9 @@ async fn msg_create(State(st): State<AppState>, headers: HeaderMap, Query(q): Qu
 }
 
 /// PATCH /api/v1/widget/messages/{id}  { message: { submitted_values }, contact: { email } }
-async fn msg_update(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<i64>, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
+/// Chatwoot PR #15778: a contact write here is as sensitive as PATCH /widget/contact, so it rotates the
+/// visitor token the same way.
+async fn msg_update(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<i64>, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult<Response> {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = read_session(&st.db, &w, token(&headers).as_deref()).await?.ok_or_else(ApiError::not_found)?;
     // scoped to ALL of this visitor's conversations in this inbox, never to ids from elsewhere
@@ -789,11 +791,18 @@ async fn msg_update(State(st): State<AppState>, headers: HeaderMap, Path(id): Pa
         .execute(&st.db)
         .await?;
     }
-    if !b["contact"].is_null() {
-        apply_contact(&st.db, &w, s.c.contact_id, &b["contact"]).await?;
+    if b["contact"].is_null() {
+        let fresh = find_contact(&st.db, &w, &s.c.source_id).await?.unwrap_or(s.c);
+        return Ok(Json(json!({ "contact": presence(&fresh) })).into_response());
     }
+    apply_contact(&st.db, &w, s.c.contact_id, &b["contact"]).await?;
     let fresh = find_contact(&st.db, &w, &s.c.source_id).await?.unwrap_or(s.c);
-    Ok(Json(json!({ "contact": presence(&fresh) })))
+    let new_tok = rotate_token(&st.db, &w, fresh.ci_id, &fresh.source_id, s.iat).await?;
+    let mut resp = Json(json!({ "contact": presence(&fresh), "widget_auth_token": new_tok })).into_response();
+    if let Ok(hv) = HeaderValue::from_str(&new_tok) {
+        resp.headers_mut().insert(HeaderName::from_static("x-auth-token"), hv);
+    }
+    Ok(resp)
 }
 
 // ---------- contact ----------
