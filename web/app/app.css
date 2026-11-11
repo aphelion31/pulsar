@@ -1,26 +1,36 @@
-/* Pulsar dashboard. Quiet graphite chrome, one accent (Pulsar blue) for primary action and selection. */
+/* Pulsar dashboard: Chatwoot design tokens (generated) + base styles. */
 @import "tailwindcss";
+@import "./chatwoot-theme.css";
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  --font-sans: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-sans: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Tahoma, Arial, sans-serif;
+  --font-inter: Inter, var(--font-sans);
+  --font-inter-display: InterDisplay, var(--font-sans);
+  --font-weight-420: 420;
+  --font-weight-440: 440;
+  --font-weight-460: 460;
+  --font-weight-520: 520;
+  --font-weight-620: 620;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 
-  --color-bg: #f7f7f8;
-  --color-surface: #ffffff;
-  --color-raised: #f1f1f3;
-  --color-line: rgb(24 24 27 / 0.08);
-  --color-line-strong: rgb(24 24 27 / 0.14);
-  --color-ink: #18181b;
-  --color-ink-2: #52525b;
-  --color-ink-3: #8a8a93;
-  --color-accent: #1f6fd1;
+  /* Pulsar's original semantic tokens, now pointing at Chatwoot's palette (chatwoot-theme.css). */
+  --color-bg: rgb(var(--background-color));
+  --color-surface: rgb(var(--card-color));
+  --color-raised: rgb(var(--slate-3));
+  --color-line: rgb(var(--border-weak));
+  --color-line-strong: rgb(var(--border-strong));
+  --color-ink: rgb(var(--slate-12));
+  --color-ink-2: rgb(var(--slate-11));
+  --color-ink-3: rgb(var(--slate-10));
+  --color-accent: rgb(var(--blue-9));
   --color-accent-ink: #ffffff;
-  --color-accent-soft: #e8f1fc;
-  --color-note: #fdf6e3;
-  --color-note-line: #eadfb8;
-  --color-ok: #2f7d4f;
-  --color-warn: #a16207;
-  --color-bad: #b42318;
+  --color-accent-soft: rgb(var(--blue-3));
+  --color-note: rgb(var(--amber-2));
+  --color-note-line: rgb(var(--amber-6));
+  --color-ok: rgb(var(--teal-11));
+  --color-warn: rgb(var(--amber-11));
+  --color-bad: rgb(var(--ruby-11));
 
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
