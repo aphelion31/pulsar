@@ -141,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
         vec![
             ("notifications", events::listener(listeners::notifications::handle)),
             ("webhooks", events::listener(listeners::webhooks::handle)),
+            ("automation", events::listener(listeners::automation::handle)),
         ],
     );
     let addr = std::env::var("BIND").unwrap_or_else(|_| "0.0.0.0:3000".into());
