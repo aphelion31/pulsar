@@ -131,7 +131,7 @@ export default [
     ph("accounts/:accountId/settings/integrations/:integration_id", "cw-settings-integrations-detail"),
     ph("accounts/:accountId/settings/data", "cw-settings-data"),
     ph("accounts/:accountId/settings/data/:dataImportId", "cw-settings-data-detail"),
-    ph("accounts/:accountId/settings/labels/list", "cw-settings-labels-list"),
+    route("accounts/:accountId/settings/labels/list", "routes/settings/labels.tsx"),
     ph("accounts/:accountId/settings/macros", "cw-settings-macros"),
     ph("accounts/:accountId/settings/macros/:macroId/edit", "cw-settings-macros-edit"),
     ph("accounts/:accountId/settings/macros/new", "cw-settings-macros-new"),
