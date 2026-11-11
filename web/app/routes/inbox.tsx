@@ -20,7 +20,8 @@ export default function InboxRoute() {
   const { conversationId } = useParams();
   const nav = useNavigate();
   const [tab, setTab] = useState<Tab>("all");
-  const [status, setStatus] = useState<"open" | "resolved">("open");
+  const [status, setStatus] = useState("open");
+  const [sort, setSort] = useState("last_activity_at_desc");
   const [list, setList] = useState<Conversation[]>([]);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [loading, setLoading] = useState(true);
@@ -33,14 +34,14 @@ export default function InboxRoute() {
     () => async () => {
       const seq = ++latest.current;
       const r = await api<{ data: { meta: Meta; payload: Conversation[] } }>(
-        `${acct(accountId)}/conversations?status=${status}&assignee_type=${tab}&sort_by=last_activity_at_desc`,
+        `${acct(accountId)}/conversations?status=${status}&assignee_type=${tab}&sort_by=${sort}`,
       );
       if (seq !== latest.current) return;
       setList(r.data.payload);
       setMeta(r.data.meta);
       setLoading(false);
     },
-    [accountId, status, tab],
+    [accountId, status, tab, sort],
   );
 
   useEffect(() => {
@@ -76,11 +77,14 @@ export default function InboxRoute() {
           <select
             aria-label="Status"
             value={status}
-            onChange={(e) => setStatus(e.target.value as "open" | "resolved")}
+            onChange={(e) => setStatus(e.target.value)}
             className="h-8 rounded-lg border border-line-strong bg-surface px-2 text-[13px] text-ink-2"
           >
             <option value="open">Open</option>
             <option value="resolved">Resolved</option>
+            <option value="pending">Pending</option>
+            <option value="snoozed">Snoozed</option>
+            <option value="all">All</option>
           </select>
         </header>
         <div role="tablist" className="flex gap-4 border-b border-line px-4">
@@ -99,6 +103,18 @@ export default function InboxRoute() {
             </button>
           ))}
         </div>
+        <label className="flex items-center gap-2 border-b border-line px-4 py-2 text-xs text-ink-3">
+          Sort by
+          <select aria-label="Sort by" value={sort} onChange={(e) => setSort(e.target.value)} className="min-w-0 flex-1 bg-transparent text-ink-2">
+            <option value="last_activity_at_desc">Latest activity</option>
+            <option value="last_activity_at_asc">Oldest activity</option>
+            <option value="created_at_desc">Newest</option>
+            <option value="created_at_asc">Oldest</option>
+            <option value="unread">Unread</option>
+            <option value="priority_desc">Priority (high to low)</option>
+            <option value="priority_asc">Priority (low to high)</option>
+          </select>
+        </label>
         <ul className="min-h-0 flex-1 overflow-y-auto">
           {!loading && list.length === 0 && (
             <li className="p-6 text-ink-3">No {status} conversations here</li>
