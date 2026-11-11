@@ -30,6 +30,7 @@ pub fn routes() -> Router<AppState> {
         .route("/contacts/{id}/avatar", delete(destroy_avatar))
         .route("/contacts/{id}/notes", get(notes_index).post(notes_create))
         .route("/contacts/{id}/notes/{note_id}", get(notes_show).patch(notes_update).put(notes_update).delete(notes_destroy))
+        .route("/actions/contact_merge", post(contact_merge))
 }
 
 const RESULTS_PER_PAGE: i64 = 15;
@@ -1478,4 +1479,201 @@ async fn notes_destroy(
     }
 
     Ok(Json(json!({ "message": "Note deleted successfully" })))
+}
+
+fn json_merge(base: &mut Value, overlay: &Value) {
+    if let (Value::Object(b), Value::Object(o)) = (&mut *base, overlay) {
+        for (k, v) in o {
+            json_merge(b.entry(k).or_insert(Value::Null), v);
+        }
+    } else {
+        *base = overlay.clone();
+    }
+}
+
+/// POST /api/v1/accounts/{account_id}/actions/contact_merge
+/// Merge mergee_contact into base_contact.
+async fn contact_merge(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let _au = require_account(&st.db, &user, account_id).await?;
+
+    let base_id = body["base_contact_id"]
+        .as_i64()
+        .or_else(|| body["base_contact_id"].as_str().and_then(|s| s.parse().ok()))
+        .ok_or_else(|| ApiError::bad("base_contact_id is required"))?;
+    let mergee_id = body["mergee_contact_id"]
+        .as_i64()
+        .or_else(|| body["mergee_contact_id"].as_str().and_then(|s| s.parse().ok()))
+        .ok_or_else(|| ApiError::bad("mergee_contact_id is required"))?;
+
+    let base: ContactRow = sqlx::query_as::<_, ContactRow>(
+        "SELECT id, name, email, phone_number, account_id, created_at, updated_at,
+                additional_attributes, identifier, custom_attributes, last_activity_at, blocked, company_id
+         FROM contacts WHERE account_id = $1 AND id = $2",
+    )
+    .bind(account_id)
+    .bind(base_id)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+
+    if base_id == mergee_id {
+        let payload = build_contact_json(&st.db, &base, true).await;
+        return Ok(Json(payload));
+    }
+
+    let mergee: ContactRow = sqlx::query_as::<_, ContactRow>(
+        "SELECT id, name, email, phone_number, account_id, created_at, updated_at,
+                additional_attributes, identifier, custom_attributes, last_activity_at, blocked, company_id
+         FROM contacts WHERE account_id = $1 AND id = $2",
+    )
+    .bind(account_id)
+    .bind(mergee_id)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+
+    let mut tx = st.db.begin().await?;
+
+    // 1. Reassign conversations
+    sqlx::query("UPDATE conversations SET contact_id = $1 WHERE account_id = $2 AND contact_id = $3")
+        .bind(base_id)
+        .bind(account_id)
+        .bind(mergee_id)
+        .execute(&mut *tx)
+        .await?;
+
+    // 2. Reassign notes
+    sqlx::query("UPDATE notes SET contact_id = $1 WHERE account_id = $2 AND contact_id = $3")
+        .bind(base_id)
+        .bind(account_id)
+        .bind(mergee_id)
+        .execute(&mut *tx)
+        .await?;
+
+    // 3. Reassign messages sender (sender_type='Contact', sender_id=mergee_id)
+    sqlx::query("UPDATE messages SET sender_id = $1 WHERE account_id = $2 AND sender_type = 'Contact' AND sender_id = $3")
+        .bind(base_id)
+        .bind(account_id as i32)
+        .bind(mergee_id)
+        .execute(&mut *tx)
+        .await?;
+
+    // 4. Reassign contact_inboxes (handling potential unique constraint collisions per inbox)
+    let mergee_inboxes: Vec<(i64, i64, String)> = sqlx::query_as(
+        "SELECT id::bigint, inbox_id::bigint, source_id FROM contact_inboxes WHERE contact_id = $1",
+    )
+    .bind(mergee_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    for (ci_id, inbox_id, _) in mergee_inboxes {
+        let exists_on_base: Option<i64> = sqlx::query_scalar(
+            "SELECT id::bigint FROM contact_inboxes WHERE contact_id = $1 AND inbox_id = $2",
+        )
+        .bind(base_id)
+        .bind(inbox_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if exists_on_base.is_some() {
+            // Base contact already has an inbox link for this inbox; re-point conversations using this CI to base CI if any, then delete mergee CI
+            let base_ci_id = exists_on_base.unwrap();
+            sqlx::query("UPDATE conversations SET contact_inbox_id = $1 WHERE contact_inbox_id = $2")
+                .bind(base_ci_id)
+                .bind(ci_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM contact_inboxes WHERE id = $1")
+                .bind(ci_id)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            sqlx::query("UPDATE contact_inboxes SET contact_id = $1 WHERE id = $2")
+                .bind(base_id)
+                .bind(ci_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+
+    // 5. Merge attributes (base contact attributes take precedence over mergee)
+    let final_name = if base.name.as_deref().unwrap_or("").trim().is_empty() {
+        mergee.name.clone()
+    } else {
+        base.name.clone()
+    };
+
+    let final_email = if base.email.as_deref().unwrap_or("").trim().is_empty() {
+        mergee.email.clone()
+    } else {
+        base.email.clone()
+    };
+
+    let final_phone = if base.phone_number.as_deref().unwrap_or("").trim().is_empty() {
+        mergee.phone_number.clone()
+    } else {
+        base.phone_number.clone()
+    };
+
+    let final_identifier = if base.identifier.as_deref().unwrap_or("").trim().is_empty() {
+        mergee.identifier.clone()
+    } else {
+        base.identifier.clone()
+    };
+
+    let mut merged_additional = mergee.additional_attributes.clone().unwrap_or_else(|| json!({}));
+    if let Some(ref base_add) = base.additional_attributes {
+        json_merge(&mut merged_additional, base_add);
+    }
+
+    let mut merged_custom = mergee.custom_attributes.clone().unwrap_or_else(|| json!({}));
+    if let Some(ref base_cust) = base.custom_attributes {
+        json_merge(&mut merged_custom, base_cust);
+    }
+
+    // 6. Delete mergee contact
+    sqlx::query("DELETE FROM contacts WHERE account_id = $1 AND id = $2")
+        .bind(account_id)
+        .bind(mergee_id)
+        .execute(&mut *tx)
+        .await?;
+
+    // 7. Update base contact with merged attributes
+    sqlx::query(
+        "UPDATE contacts SET
+            name = $1, email = $2, phone_number = $3, identifier = $4,
+            additional_attributes = $5, custom_attributes = $6, updated_at = now()
+         WHERE account_id = $7 AND id = $8",
+    )
+    .bind(final_name)
+    .bind(final_email)
+    .bind(final_phone)
+    .bind(final_identifier)
+    .bind(&merged_additional)
+    .bind(&merged_custom)
+    .bind(account_id)
+    .bind(base_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    let updated_base: ContactRow = sqlx::query_as::<_, ContactRow>(
+        "SELECT id, name, email, phone_number, account_id, created_at, updated_at,
+                additional_attributes, identifier, custom_attributes, last_activity_at, blocked, company_id
+         FROM contacts WHERE account_id = $1 AND id = $2",
+    )
+    .bind(account_id)
+    .bind(base_id)
+    .fetch_one(&st.db)
+    .await?;
+
+    let payload = build_contact_json(&st.db, &updated_base, true).await;
+    st.hub.to_account(account_id, "contact.updated", payload.clone());
+    Ok(Json(payload))
 }

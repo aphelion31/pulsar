@@ -123,6 +123,10 @@ async fn main() -> anyhow::Result<()> {
         .execute(&db)
         .await
         .map_err(|e| anyhow::anyhow!("creating pulsar_widget_token_floors: {e}"))?;
+    sqlx::query(include_str!("../migrations/0004_pulsar_draft_messages.sql"))
+        .execute(&db)
+        .await
+        .map_err(|e| anyhow::anyhow!("creating pulsar_draft_messages: {e}"))?;
 
     let state = AppState {
         db,
