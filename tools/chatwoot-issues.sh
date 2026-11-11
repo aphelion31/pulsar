@@ -75,3 +75,14 @@ psql -d "${PGDB:-pulsar}" -qc "delete from notifications where primary_actor_id=
 # #16049 index for the default conversation sort
 I=$(psql -d "${PGDB:-pulsar}" -Atc "select count(*) from pg_indexes where tablename='conversations' and indexdef ilike '%account_id%last_activity_at%'")
 [ "$I" -ge 1 ] && report 16049 PASS "composite (account_id, last_activity_at) index" || report 16049 FAIL "no (account_id, last_activity_at) index"
+
+# #10859 in_reply_to_external_id resolves to the message with that source_id
+SID="ext-$RANDOM$RANDOM"
+ORIG=$(j -X POST "$A/conversations/$CONV/messages" -d "{\"content\":\"original\",\"source_id\":\"$SID\"}" | py 'print(d["id"])')
+R=$(j -X POST "$A/conversations/$CONV/messages" -d "{\"content\":\"reply\",\"content_attributes\":{\"in_reply_to_external_id\":\"$SID\"}}" | py 'a=d["content_attributes"];print(a.get("in_reply_to"),a.get("in_reply_to_external_id"))')
+[ "$R" = "$ORIG $SID" ] && report 10859 PASS "reply linked by external id" || report 10859 FAIL "got '$R' want '$ORIG $SID'"
+
+# #5171 failed logins for one email are throttled (10 per 15 min), like Chatwoot's rack_attack login/email
+E="nobody$RANDOM$RANDOM@example.com"; last=""
+for _ in $(seq 1 11); do last=$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -d "{\"email\":\"$E\",\"password\":\"x\"}" "$B/auth/sign_in"); done
+[ "$last" = 429 ] && report 5171 PASS "11th failed login -> 429" || report 5171 FAIL "11th failed login -> $last"

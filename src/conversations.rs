@@ -361,12 +361,16 @@ pub(crate) async fn emit_conv(st: &AppState, id: i64, event: &str) -> Result<Con
     Ok(c)
 }
 
+/// Internal carrier for messages.source_id through insert_message; never stored in content_attributes.
+const SOURCE_ID_KEY: &str = "__pulsar_source_id";
+
 /// Insert a message, bump conversation activity, broadcast message.created. Returns the push payload.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn insert_message(
     st: &AppState, c: &Conv, sender: Option<(&str, i64)>, content: &str, message_type: i32, private: bool,
-    content_type: i32, content_attributes: Value, echo_id: Option<&str>,
+    content_type: i32, mut content_attributes: Value, echo_id: Option<&str>,
 ) -> Result<Value, ApiError> {
+    let source_id = content_attributes.as_object_mut().and_then(|o| o.remove(SOURCE_ID_KEY)).and_then(|v| v.as_str().map(str::to_string));
     // chatwoot#15743: a client retrying a send with the same echo_id gets the original message back
     // instead of a duplicate. The echo_id is kept in additional_attributes; the advisory lock makes
     // concurrent retries safe without a schema change.
@@ -396,10 +400,10 @@ pub(crate) async fn insert_message(
     }
     let m: Msg = sqlx::query_as(&format!(
         "INSERT INTO messages AS m (content, account_id, inbox_id, conversation_id, message_type, private, status, content_type,
-            content_attributes, sender_type, sender_id, additional_attributes, created_at, updated_at)
+            content_attributes, sender_type, sender_id, additional_attributes, source_id, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $8::json, $9, $10,
                  CASE WHEN $11::text IS NULL THEN '{{}}'::jsonb ELSE jsonb_build_object('echo_id', $11::text) END,
-                 now(), now()) RETURNING {MSG_COLS}"
+                 $12, now(), now()) RETURNING {MSG_COLS}"
     ))
     .bind(content)
     .bind(c.account_id as i32)
@@ -412,6 +416,7 @@ pub(crate) async fn insert_message(
     .bind(sender.map(|s| s.0))
     .bind(sender.map(|s| s.1))
     .bind(echo_id.filter(|e| !e.is_empty()))
+    .bind(source_id)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -1072,13 +1077,44 @@ async fn messages_create(State(st): State<AppState>, user: CurrentUser, Path((ac
         _ => 1,
     };
     let content_type = b["content_type"].as_str().and_then(|s| idx(&CONTENT_TYPES, s)).unwrap_or(0);
-    let attrs = b.get("content_attributes").filter(|v| v.is_object()).cloned().unwrap_or(json!({}));
+    let mut attrs = b.get("content_attributes").filter(|v| v.is_object()).cloned().unwrap_or(json!({}));
+    resolve_in_reply_to(&st.db, c.id, &mut attrs).await?;
+    // API channels pass the external id so later replies can reference it (Chatwoot permits source_id here).
+    // Client-sent carrier keys are dropped first, so only the top-level source_id is honored.
+    if let Some(o) = attrs.as_object_mut() {
+        o.remove(SOURCE_ID_KEY);
+    }
+    if let Some(sid) = b["source_id"].as_str().filter(|s| !s.is_empty()) {
+        attrs[SOURCE_ID_KEY] = json!(sid);
+    }
     let sender = if message_type == 0 { c.contact_id.map(|id| ("Contact", id)) } else { Some(("User", user.id)) };
     let data = insert_message(
         &st, &c, sender, content, message_type, b["private"].as_bool().unwrap_or(false), content_type, attrs, b["echo_id"].as_str(),
     )
     .await?;
     Ok(Json(data))
+}
+
+/// Chatwoot #10859 (Messages::InReplyToMessageBuilder): `in_reply_to` (message id) or
+/// `in_reply_to_external_id` (source_id) is looked up in the same conversation and both keys are set from
+/// the found message, or cleared when nothing matches.
+async fn resolve_in_reply_to(db: &PgPool, conv_id: i64, attrs: &mut Value) -> Result<(), ApiError> {
+    let id = attrs.get("in_reply_to").and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()));
+    let ext = attrs.get("in_reply_to_external_id").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+    if id.is_none() && ext.is_none() {
+        return Ok(());
+    }
+    let found: Option<(i64, Option<String>)> = match id {
+        Some(id) => sqlx::query_as("SELECT id::bigint, source_id FROM messages WHERE conversation_id = $1 AND id = $2").bind(conv_id).bind(id),
+        None => sqlx::query_as("SELECT id::bigint, source_id FROM messages WHERE conversation_id = $1 AND source_id = $2 ORDER BY id LIMIT 1")
+            .bind(conv_id)
+            .bind(ext.clone().unwrap_or_default()),
+    }
+    .fetch_optional(db)
+    .await?;
+    attrs["in_reply_to"] = json!(found.as_ref().map(|f| f.0));
+    attrs["in_reply_to_external_id"] = json!(found.and_then(|f| f.1));
+    Ok(())
 }
 
 /// DELETE /conversations/{id}/messages/{message_id}: soft delete like Rails.
