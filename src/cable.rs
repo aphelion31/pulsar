@@ -70,6 +70,10 @@ impl Hub {
 
     /// Broadcast to all agents of an account (stream `account_{id}`).
     pub fn to_account(&self, account_id: i64, event: &str, data: Value) {
+        // contact.*, inbox.*, notification.* etc. also feed the async listeners (webhooks, automation).
+        if !event.starts_with("account.") && !event.starts_with("presence.") {
+            crate::events::publish(event, account_id, data.clone(), None);
+        }
         self.broadcast(&[format!("account_{account_id}")], event, data);
     }
 
