@@ -12,6 +12,7 @@ export function connectCable(params: { pubsubToken: string; accountId: number; u
   let closed = false;
   let presence: ReturnType<typeof setInterval> | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
+  let confirmed = false;
 
   const open = () => {
     const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -23,6 +24,8 @@ export function connectCable(params: { pubsubToken: string; accountId: number; u
         const ping = () => ws?.send(JSON.stringify({ command: "message", identifier, data: JSON.stringify({ action: "update_presence" }) }));
         ping();
         presence = setInterval(ping, 20000);
+        if (confirmed) window.dispatchEvent(new CustomEvent("pulsar:cable-reconnect"));
+        confirmed = true;
       } else if (msg.message?.event) {
         onEvent(msg.message as CableEvent);
       }
