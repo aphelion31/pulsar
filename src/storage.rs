@@ -637,7 +637,10 @@ async fn disk_upload_put(
     body: axum::body::Bytes,
 ) -> ApiResult<StatusCode> {
     let tok = q.get("token").cloned().unwrap_or_default();
-    if !valid_key(&key) || tok != direct_upload_token(&key) {
+    let want = direct_upload_token(&key);
+    // constant-time compare: the token is an HMAC, do not leak a prefix through timing
+    let same = tok.len() == want.len() && tok.bytes().zip(want.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0;
+    if !valid_key(&key) || !same {
         return Err(ApiError::forbidden());
     }
     let row: Option<(i64, i64)> = sqlx::query_as("SELECT id::bigint, byte_size FROM active_storage_blobs WHERE key = $1")
@@ -647,6 +650,10 @@ async fn disk_upload_put(
     let (_, size) = row.ok_or_else(ApiError::not_found)?;
     if body.len() as i64 != size {
         return Err(ApiError::bad("Uploaded size does not match byte_size"));
+    }
+    // A signed URL uploads once: an already stored blob is never overwritten through it.
+    if tokio::fs::try_exists(blob_path(&key)).await.unwrap_or(false) {
+        return Err(ApiError(StatusCode::CONFLICT, "Blob already uploaded".into()));
     }
     write_file(&blob_path(&key), &body).await?;
     Ok(StatusCode::NO_CONTENT)
