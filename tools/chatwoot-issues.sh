@@ -25,8 +25,19 @@ S=$(j "$A/conversations/$CONV" | py 'print(d["snoozed_until"])')
 [ "$S" = "None" ] && report 16261 PASS "snoozed_until cleared" || report 16261 FAIL "snoozed_until kept: $S"
 
 # #16151 labels accepted when creating a conversation
+j -X POST "$A/labels" -d '{"title":"created-with-label"}' >/dev/null
 L=$(j -X POST "$A/conversations" -d "{\"inbox_id\":$INBOX,\"contact_id\":$CONTACT,\"labels\":[\"created-with-label\"]}" | py 'print(",".join(d["labels"]))')
 [ "$L" = "created-with-label" ] && report 16151 PASS "labels set on create" || report 16151 FAIL "labels on create: '$L'"
+
+# #13918 / PR #14159 labels not defined in the account are not attached
+L=$(j -X POST "$A/conversations" -d "{\"inbox_id\":$INBOX,\"contact_id\":$CONTACT,\"labels\":[\"created-with-label\",\"no-such-label-$RANDOM\"]}" | py 'print(",".join(d["labels"]))')
+[ "$L" = "created-with-label" ] && report 13918 PASS "undefined label dropped" || report 13918 FAIL "labels: '$L'"
+
+# #15453 / PR #15496 concurrent creates with one phone number make one contact
+P="+1555$RANDOM$RANDOM"
+for _ in 1 2 3 4 5 6; do j -o /dev/null -X POST "$A/contacts" -d "{\"name\":\"race\",\"phone_number\":\"$P\"}" & done; wait
+N=$(j "$A/contacts/search?q=${P#+}" | py 'print(sum(1 for c in d["payload"] if c["phone_number"]=="'"$P"'"))')
+[ "$N" = "1" ] && report 15453 PASS "one contact per phone" || report 15453 FAIL "contacts with same phone: $N"
 
 # #15802 missing record is 404, not 500
 c=$(code "$A/conversations/999999"); [ "$c" = 404 ] && report 15802 PASS "missing show 404" || report 15802 FAIL "missing show $c"

@@ -16,6 +16,7 @@ CONTACT=$(j -X POST "$A/contacts" -d "{\"name\":\"Smoke $RANDOM\",\"email\":\"sm
 CONV=$(j -X POST "$A/conversations" -d "{\"inbox_id\":$INBOX,\"contact_id\":$CONTACT,\"message\":{\"content\":\"hello from agent\"}}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 j -X POST "$A/conversations/$CONV/messages" -d '{"content":"incoming hi","message_type":"incoming"}' >/dev/null
 j -X POST "$A/conversations/$CONV/messages" -d '{"content":"private note","private":true}' >/dev/null
+for l in vip billing; do j -X POST "$A/labels" -d "{\"title\":\"$l\"}" >/dev/null; done  # 422 when it exists
 j -X POST "$A/conversations/$CONV/labels" -d '{"labels":["vip","billing"]}' | grep -q vip || fail labels
 j -X POST "$A/conversations/$CONV/assignments" -d '{"assignee_id":1}' | grep -q '"id":1' || fail assign
 j -X POST "$A/conversations/$CONV/toggle_priority" -d '{"priority":"high"}' >/dev/null

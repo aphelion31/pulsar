@@ -146,6 +146,16 @@ async fn load(db: &PgPool, au: &AccountUser, display_id: i64) -> Result<Conv, Ap
     if !au.is_admin() && !is_inbox_member(db, c.inbox_id, au.user_id).await? {
         return Err(ApiError::not_found());
     }
+    if au.custom_perms.is_some() && !au.is_admin() {
+        let ok: bool = sqlx::query_scalar(&format!("SELECT {} FROM conversations c WHERE c.id = $1", au.custom_scope_sql("$2")))
+            .bind(c.id)
+            .bind(au.user_id)
+            .fetch_one(db)
+            .await?;
+        if !ok {
+            return Err(ApiError::not_found());
+        }
+    }
     Ok(c)
 }
 
@@ -182,7 +192,7 @@ pub(crate) async fn contact_json(db: &PgPool, id: Option<i64>) -> Value {
         "id": r.0, "name": r.1, "email": r.2, "phone_number": r.3, "identifier": r.4,
         "additional_attributes": r.5.unwrap_or(json!({})), "custom_attributes": r.6.unwrap_or(json!({})),
         "blocked": r.7, "contact_type": name_of(&CONTACT_TYPES, r.8.unwrap_or(0)), "type": "contact",
-        "thumbnail": "", "availability_status": "offline",
+        "thumbnail": crate::storage::avatar_url(db, "Contact", r.0).await, "availability_status": "offline",
         "last_activity_at": r.9.map(|t| t.and_utc().timestamp()), "created_at": r.10.and_utc().timestamp(),
     })
 }
@@ -512,7 +522,8 @@ macro_rules! bind_base {
 
 async fn counts(db: &PgPool, f: &Filter, au: &AccountUser) -> Result<Value, ApiError> {
     let sql = format!(
-        "SELECT COUNT(*) FILTER (WHERE c.assignee_id = $8), COUNT(*) FILTER (WHERE c.assignee_id IS NULL), COUNT(*) {BASE}"
+        "SELECT COUNT(*) FILTER (WHERE c.assignee_id = $8), COUNT(*) FILTER (WHERE c.assignee_id IS NULL), COUNT(*) {BASE} AND {}",
+        au.custom_scope_sql("$8")
     );
     let (mine, unassigned, all): (i64, i64, i64) = bind_base!(sqlx::query_as(&sql), f, au).fetch_one(db).await?;
     Ok(json!({ "mine_count": mine, "unassigned_count": unassigned, "assigned_count": all - unassigned, "all_count": all }))
@@ -523,7 +534,8 @@ async fn index(State(st): State<AppState>, user: CurrentUser, Path(account_id): 
     let f = parse_filter(&q);
     let meta = counts(&st.db, &f, &au).await?;
     let sql = format!(
-        "SELECT {CONV_COLS} {BASE} AND {} ORDER BY {} LIMIT {PER_PAGE} OFFSET {}",
+        "SELECT {CONV_COLS} {BASE} AND {} AND {} ORDER BY {} LIMIT {PER_PAGE} OFFSET {}",
+        au.custom_scope_sql("$8"),
         f.assignee,
         f.sort,
         (f.page - 1) * PER_PAGE
@@ -616,7 +628,7 @@ async fn create(State(st): State<AppState>, user: CurrentUser, Path(account_id):
     .await?;
     // chatwoot#16151: labels in the create payload are applied before conversation.created fires,
     // so listeners never see the conversation without them.
-    let labels = parse_labels(&b["labels"]);
+    let labels = known_labels(&st.db, account_id, parse_labels(&b["labels"])).await?;
     if !labels.is_empty() {
         set_labels(&st.db, id, &labels).await?;
     }
@@ -894,6 +906,20 @@ fn labels_arg(b: &Value) -> Result<Vec<String>, ApiError> {
     Ok(parse_labels(&b["labels"]))
 }
 
+/// Chatwoot #13918 / PR #14159: only labels defined in the account may be attached. Unknown names are
+/// dropped (case-insensitive match, stored with the account's spelling) instead of creating stray tags.
+async fn known_labels(db: &PgPool, account_id: i64, wanted: Vec<String>) -> Result<Vec<String>, ApiError> {
+    if wanted.is_empty() {
+        return Ok(wanted);
+    }
+    let defined: Vec<String> = sqlx::query_scalar("SELECT title FROM labels WHERE account_id = $1 AND lower(title) = ANY($2)")
+        .bind(account_id)
+        .bind(wanted.iter().map(|l| l.to_lowercase()).collect::<Vec<_>>())
+        .fetch_all(db)
+        .await?;
+    Ok(wanted.into_iter().filter_map(|w| defined.iter().find(|d| d.eq_ignore_ascii_case(&w)).cloned()).collect())
+}
+
 async fn labels_patch(st: &AppState, user: &CurrentUser, account_id: i64, id: i64, add: Vec<String>, remove: Vec<String>) -> ApiResult {
     let au = require_account(&st.db, user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
@@ -910,7 +936,7 @@ async fn labels_patch(st: &AppState, user: &CurrentUser, account_id: i64, id: i6
 
 /// POST /conversations/{id}/labels/add {labels: [...]} adds only the given labels.
 async fn labels_add(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
-    let add = labels_arg(&b)?;
+    let add = known_labels(&st.db, account_id, labels_arg(&b)?).await?;
     labels_patch(&st, &user, account_id, id, add, vec![]).await
 }
 
@@ -948,7 +974,7 @@ mod label_patch_tests {
 async fn labels_create(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
-    let labels = parse_labels(&b["labels"]);
+    let labels = known_labels(&st.db, account_id, parse_labels(&b["labels"])).await?;
     let old = c.labels();
     set_labels(&st.db, c.id, &labels).await?;
     let added: Vec<&String> = labels.iter().filter(|l| !old.contains(l)).collect();

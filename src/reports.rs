@@ -888,8 +888,9 @@ async fn reports_conversations_summary(
         Err(e) => return e.into_response(),
     };
 
+    // Chatwoot PR #15686: BOM so Excel opens the file as UTF-8 instead of the system codepage.
     let csv_content = format!(
-        "Conversations,Incoming Messages,Outgoing Messages,First Response Time,Resolution Time,Resolutions,Reply Time\n{},{},{},{},{},{},{}\n",
+        "\u{feff}Conversations,Incoming Messages,Outgoing Messages,First Response Time,Resolution Time,Resolutions,Reply Time\n{},{},{},{},{},{},{}\n",
         summary["conversations_count"],
         summary["incoming_messages_count"],
         summary["outgoing_messages_count"],

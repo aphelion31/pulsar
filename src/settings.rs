@@ -824,7 +824,11 @@ async fn search_all(State(st): State<AppState>, user: CurrentUser, Path(account_
     .bind(&pat)
     .fetch_all(&st.db)
     .await?;
-    let visible = "($3 OR m.inbox_id IN (SELECT inbox_id FROM inbox_members WHERE user_id = $4))";
+    // Chatwoot #11885: search must honor the custom role scope too, not only inbox membership.
+    let visible = format!(
+        "($3 OR m.inbox_id IN (SELECT inbox_id FROM inbox_members WHERE user_id = $4)) AND {}",
+        au.custom_scope_sql("$4")
+    );
     let messages: Vec<(i64, Option<String>, i32, i64, i32, NaiveDateTime, bool, Option<String>, Option<i64>)> = sqlx::query_as(&format!(
         "SELECT m.id::bigint, m.content, m.message_type, c.display_id::bigint, m.inbox_id, m.created_at, m.private, m.sender_type, m.sender_id
          FROM messages m JOIN conversations c ON c.id = m.conversation_id
@@ -851,11 +855,16 @@ async fn search_all(State(st): State<AppState>, user: CurrentUser, Path(account_
     .bind(user.id)
     .fetch_all(&st.db)
     .await?;
-    Ok(Json(json!({ "payload": {
-        "contacts": contacts.iter().map(|c| json!({
-            "id": c.0, "name": c.1, "email": c.2, "phone_number": c.3, "identifier": c.4, "thumbnail": "",
+    let mut contact_rows = Vec::with_capacity(contacts.len());
+    for c in &contacts {
+        contact_rows.push(json!({
+            "id": c.0, "name": c.1, "email": c.2, "phone_number": c.3, "identifier": c.4,
+            "thumbnail": crate::storage::avatar_url(&st.db, "Contact", c.0 as i64).await,
             "additional_attributes": {}, "last_activity_at": ts(c.5),
-        })).collect::<Vec<_>>(),
+        }));
+    }
+    Ok(Json(json!({ "payload": {
+        "contacts": contact_rows,
         "messages": messages.iter().map(|m| json!({
             "id": m.0, "content": m.1, "message_type": m.2, "conversation_id": m.3, "inbox_id": m.4,
             "created_at": m.5.and_utc().timestamp(), "private": m.6, "sender_type": m.7, "sender_id": m.8,
