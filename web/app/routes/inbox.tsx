@@ -6,6 +6,7 @@ import { Avatar, Button, Empty } from "~/components/ui";
 import { acct, api, type Conversation, type Message } from "~/lib/api";
 import { bytes, clock, timeAgo } from "~/lib/format";
 import type { ShellCtx } from "./shell";
+import { ConversationSidebar } from "~/components/next/conversation/ConversationSidebar";
 
 const TABS = [
   { key: "me", label: "Mine" },
@@ -231,7 +232,8 @@ function Thread({ id, epoch, accountId, meId, subscribe, onGone }: { id: number;
   if (!conv) return <div className="p-6 text-ink-3">Loading</div>;
 
   return (
-    <>
+    <div className="flex min-h-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col">
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-line px-6">
         <div className="flex min-w-0 items-center gap-3">
           <Avatar name={conv.meta.sender.name} size={28} />
@@ -264,7 +266,9 @@ function Thread({ id, epoch, accountId, meId, subscribe, onGone }: { id: number;
         <div ref={end} />
       </div>
       <Composer base={base} onSent={(m) => setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]))} />
-    </>
+      </div>
+      <ConversationSidebar accountId={accountId} conversation={conv} onChange={setConv} />
+    </div>
   );
 }
 

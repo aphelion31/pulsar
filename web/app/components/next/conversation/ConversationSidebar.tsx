@@ -9,8 +9,8 @@ export function ConversationSidebar({ accountId, conversation, onChange }: { acc
   const base = `${acct(accountId)}/conversations/${conversation.id}`;
   useEffect(() => {
     let live = true;
-    Promise.all([api<Agent[]>(`${acct(accountId)}/agents`), api<Team[]>(`${acct(accountId)}/teams`), api<Label[]>(`${acct(accountId)}/labels`)])
-      .then(([a, t, l]) => { if (live) { setAgents(a); setTeams(t); setLabels(l); } })
+    Promise.all([api<Agent[]>(`${acct(accountId)}/agents`), api<Team[]>(`${acct(accountId)}/teams`), api<{ payload: Label[] }>(`${acct(accountId)}/labels`)])
+      .then(([a, t, l]) => { if (live) { setAgents(a); setTeams(t); setLabels(l.payload); } })
       .catch((e) => { if (live) setError(e instanceof Error ? e.message : "Could not load conversation details"); });
     return () => { live = false; };
   }, [accountId]);
