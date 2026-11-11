@@ -5,6 +5,7 @@ mod cable;
 mod common;
 mod companies;
 mod contacts;
+mod events;
 mod conversations;
 mod inboxes;
 mod reports;
@@ -43,12 +44,22 @@ pub fn app(state: AppState) -> Router {
         .route("/auth/sign_in", post(auth::sign_in))
         .route("/auth/validate_token", get(auth::validate_token))
         .route("/auth/sign_out", axum::routing::delete(auth::sign_out))
-        .route("/api/v1/profile", get(auth::profile_show).put(auth::profile_update))
+        .route(
+            "/api/v1/profile",
+            get(auth::profile_show)
+                .put(auth::profile_update)
+                .layer(axum::extract::DefaultBodyLimit::max(storage::MAX_BYTES + 1024 * 1024)),
+        )
+        .route("/api/v1/profile/avatar", axum::routing::delete(auth::profile_avatar_destroy))
+        .route("/api/v1/profile/resend_confirmation", post(auth::resend_confirmation))
+        .route("/api/v1/profile/reset_access_token", post(auth::reset_access_token))
         .route("/api/v1/profile/set_active_account", axum::routing::put(auth::set_active_account))
         .route("/api/v1/profile/availability", post(auth::availability))
         .route("/api/v1/profile/auto_offline", post(auth::auto_offline))
         .route("/api/v1/profile/work_preferences", post(auth::auto_offline).patch(auth::auto_offline))
         .route("/api/v1/accounts/{account_id}", get(auth::account_show).patch(auth::account_update))
+        .route("/api/v1/accounts/{account_id}/onboarding", axum::routing::put(auth::onboarding_update))
+        .route("/api/v1/accounts/{account_id}/onboarding/help_center_generation", get(auth::help_center_generation))
         .route("/api/v1/accounts/{account_id}/", get(auth::account_show).patch(auth::account_update))
         .route("/api/v1/accounts/{account_id}/update_active_at", post(auth::update_active_at))
         // ponytail: session list / push subscriptions / changelog not tracked yet; empty responses keep UI happy
@@ -119,6 +130,8 @@ async fn main() -> anyhow::Result<()> {
         public_dir: std::env::var("WEB_DIR").unwrap_or_else(|_| "web/build/client".into()).into(),
         frontend_url: std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
     };
+    // Async listeners (Chatwoot AsyncDispatcher). Each lane registers its listener here.
+    events::start(state.clone(), vec![]);
     let addr = std::env::var("BIND").unwrap_or_else(|_| "0.0.0.0:3000".into());
     tracing::info!("pulsar listening on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
