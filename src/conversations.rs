@@ -29,7 +29,12 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/conversations", get(index).post(create))
         .route("/conversations/meta", get(meta))
+        .route("/conversations/unread_counts", get(unread_counts_index))
         .route("/conversations/{id}", get(show))
+        .route("/conversations/{id}/draft_messages", get(draft_show).put(draft_update).patch(draft_update).delete(draft_destroy))
+        .route("/conversations/{id}/direct_uploads", post(crate::storage::conversation_direct_upload))
+        .route("/upload", post(crate::storage::account_upload))
+        .route("/bulk_actions", post(bulk_actions_create))
         .route("/conversations/{id}/toggle_status", post(toggle_status))
         .route("/conversations/{id}/toggle_priority", post(toggle_priority))
         .route("/conversations/{id}/toggle_typing_status", post(toggle_typing))
@@ -1155,6 +1160,461 @@ async fn messages_destroy(State(st): State<AppState>, user: CurrentUser, Path((a
     let data = msg_json(&st.db, &m, &c).await;
     emit(&st, &c, "message.updated", data.clone()).await;
     Ok(Json(data))
+}
+
+// ---------- draft_messages ----------
+
+/// GET /api/v1/accounts/{account_id}/conversations/{id}/draft_messages
+async fn draft_show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    let row: Option<String> = sqlx::query_scalar(
+        "SELECT message FROM pulsar_draft_messages WHERE conversation_id = $1",
+    )
+    .bind(c.id)
+    .fetch_optional(&st.db)
+    .await?;
+    match row {
+        Some(message) => Ok(Json(json!({ "has_draft": true, "message": message }))),
+        None => Ok(Json(json!({ "has_draft": false }))),
+    }
+}
+
+/// PUT/PATCH /api/v1/accounts/{account_id}/conversations/{id}/draft_messages
+async fn draft_update(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    body: Option<Json<Value>>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    let msg = body
+        .as_ref()
+        .and_then(|b| b.0.get("draft_message").and_then(|d| d.get("message")).and_then(|v| v.as_str()))
+        .unwrap_or("");
+    sqlx::query(
+        "INSERT INTO pulsar_draft_messages (conversation_id, message, updated_at)
+         VALUES ($1, $2, now())
+         ON CONFLICT (conversation_id) DO UPDATE SET message = EXCLUDED.message, updated_at = now()",
+    )
+    .bind(c.id)
+    .bind(msg)
+    .execute(&st.db)
+    .await?;
+    Ok(axum::http::StatusCode::OK)
+}
+
+/// DELETE /api/v1/accounts/{account_id}/conversations/{id}/draft_messages
+async fn draft_destroy(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    sqlx::query("DELETE FROM pulsar_draft_messages WHERE conversation_id = $1")
+        .bind(c.id)
+        .execute(&st.db)
+        .await?;
+    Ok(axum::http::StatusCode::OK)
+}
+
+// ---------- unread_counts ----------
+
+/// GET /api/v1/accounts/{account_id}/conversations/unread_counts
+async fn unread_counts_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let (flags, flags_ext): (i64, i64) = sqlx::query_as(
+        "SELECT COALESCE(feature_flags, 0)::bigint, COALESCE(feature_flags_ext_1, 0)::bigint FROM accounts WHERE id = $1",
+    )
+    .bind(account_id)
+    .fetch_one(&st.db)
+    .await?;
+    let features = crate::auth::enabled_features(flags, flags_ext);
+    if !features.contains_key("conversation_unread_counts") {
+        return Err(ApiError(
+            axum::http::StatusCode::FORBIDDEN,
+            "Unread counts feature is not enabled for this account".into(),
+        ));
+    }
+
+    let mut scope_parts = vec!["c.account_id = $1 AND $2::bigint IS NOT NULL".to_string()];
+    if !au.is_admin() {
+        scope_parts.push(
+            "c.inbox_id IN (SELECT inbox_id FROM inbox_members WHERE user_id = $2)".to_string(),
+        );
+    }
+    if au.custom_perms.is_some() && !au.is_admin() {
+        scope_parts.push(au.custom_scope_sql("$2"));
+    }
+    let scope_sql = scope_parts.join(" AND ");
+
+    // Base unread condition: open conversation (status=0) with at least one incoming message (message_type=0)
+    // created after agent_last_seen_at (or agent_last_seen_at IS NULL).
+    let unread_cond = format!(
+        "{scope_sql} AND c.status = 0 AND EXISTS (
+            SELECT 1 FROM messages m
+            WHERE m.conversation_id = c.id AND m.account_id = c.account_id
+              AND m.message_type = 0
+              AND (c.agent_last_seen_at IS NULL OR m.created_at > c.agent_last_seen_at)
+        )"
+    );
+
+    let inbox_rows: Vec<(i64, i64)> = sqlx::query_as(&format!(
+        "SELECT c.inbox_id::bigint, COUNT(DISTINCT c.id)::bigint
+         FROM conversations c
+         WHERE {unread_cond}
+         GROUP BY c.inbox_id"
+    ))
+    .bind(account_id)
+    .bind(user.id)
+    .fetch_all(&st.db)
+    .await?;
+
+    let mut all_count: i64 = 0;
+    let mut inboxes_map = serde_json::Map::new();
+    for (inbox_id, cnt) in inbox_rows {
+        all_count += cnt;
+        if cnt > 0 {
+            inboxes_map.insert(inbox_id.to_string(), json!(cnt));
+        }
+    }
+
+    let label_rows: Vec<(i64, i64)> = sqlx::query_as(&format!(
+        "SELECT l.id::bigint, COUNT(DISTINCT c.id)::bigint
+         FROM conversations c
+         JOIN taggings tg ON tg.taggable_type = 'Conversation' AND tg.taggable_id = c.id AND tg.context = 'labels'
+         JOIN tags t ON t.id = tg.tag_id
+         JOIN labels l ON l.account_id = c.account_id AND l.title = t.name AND l.show_on_sidebar = true
+         WHERE {unread_cond}
+         GROUP BY l.id"
+    ))
+    .bind(account_id)
+    .bind(user.id)
+    .fetch_all(&st.db)
+    .await?;
+
+    let mut labels_map = serde_json::Map::new();
+    for (lid, cnt) in label_rows {
+        if cnt > 0 {
+            labels_map.insert(lid.to_string(), json!(cnt));
+        }
+    }
+
+    let team_filter = if au.is_admin() {
+        ""
+    } else {
+        "AND c.team_id IN (SELECT team_id FROM team_members WHERE user_id = $2)"
+    };
+    let team_rows: Vec<(i64, i64)> = sqlx::query_as(&format!(
+        "SELECT c.team_id::bigint, COUNT(DISTINCT c.id)::bigint
+         FROM conversations c
+         WHERE {unread_cond} AND c.team_id IS NOT NULL {team_filter}
+         GROUP BY c.team_id"
+    ))
+    .bind(account_id)
+    .bind(user.id)
+    .fetch_all(&st.db)
+    .await?;
+
+    let mut teams_map = serde_json::Map::new();
+    for (tid, cnt) in team_rows {
+        if cnt > 0 {
+            teams_map.insert(tid.to_string(), json!(cnt));
+        }
+    }
+
+    Ok(Json(json!({
+        "payload": {
+            "all_count": all_count,
+            "inboxes": inboxes_map,
+            "labels": labels_map,
+            "teams": teams_map,
+        }
+    })))
+}
+
+// ---------- bulk_actions ----------
+
+/// POST /api/v1/accounts/{account_id}/bulk_actions
+async fn bulk_actions_create(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(body): Json<Value>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let kind = body["type"].as_str().unwrap_or("");
+
+    if kind.eq_ignore_ascii_case("Conversation") {
+        let fields = body.get("fields").and_then(|v| v.as_object());
+
+        // Validate assignee_id if present and not null
+        let assignee_opt: Option<Option<i64>> = match fields.and_then(|f| f.get("assignee_id")) {
+            None => None,
+            Some(Value::Null) => Some(None),
+            Some(v) => {
+                let id = num(v).ok_or_else(|| ApiError::bad("Invalid assignee_id"))?;
+                if id == 0 {
+                    Some(None)
+                } else {
+                    let exists: Option<i32> = sqlx::query_scalar(
+                        "SELECT 1 FROM account_users WHERE account_id = $1 AND user_id = $2",
+                    )
+                    .bind(account_id)
+                    .bind(id)
+                    .fetch_optional(&st.db)
+                    .await?;
+                    if exists.is_none() {
+                        return Err(ApiError::bad("Invalid assignee_id"));
+                    }
+                    Some(Some(id))
+                }
+            }
+        };
+
+        // Validate team_id if present and not null
+        let team_opt: Option<Option<i64>> = match fields.and_then(|f| f.get("team_id")) {
+            None => None,
+            Some(Value::Null) => Some(None),
+            Some(v) => {
+                let id = num(v).ok_or_else(|| ApiError::bad("Invalid team_id"))?;
+                if id == 0 {
+                    Some(None)
+                } else {
+                    let exists: Option<i32> = sqlx::query_scalar(
+                        "SELECT 1 FROM teams WHERE account_id = $1 AND id = $2",
+                    )
+                    .bind(account_id)
+                    .bind(id)
+                    .fetch_optional(&st.db)
+                    .await?;
+                    if exists.is_none() {
+                        return Err(ApiError::bad("Invalid team_id"));
+                    }
+                    Some(Some(id))
+                }
+            }
+        };
+
+        // Status if present and not null
+        let status_opt: Option<i32> = match fields.and_then(|f| f.get("status")).and_then(|v| v.as_str()) {
+            None => None,
+            Some(s) => Some(idx(&STATUSES, s).ok_or_else(|| ApiError::bad("Invalid status"))?),
+        };
+
+        let snoozed_until = if status_opt == Some(3) {
+            body.get("snoozed_until")
+                .and_then(num)
+                .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+                .map(|t| t.naive_utc())
+        } else {
+            None
+        };
+
+        let ids: Vec<i64> = body["ids"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(num)
+            .collect();
+
+        let add_labels = body.get("labels").and_then(|l| l.get("add")).map(parse_labels).unwrap_or_default();
+        let remove_labels = body.get("labels").and_then(|l| l.get("remove")).map(parse_labels).unwrap_or_default();
+
+        for display_id in ids {
+            let Ok(c) = load(&st.db, &au, display_id).await else { continue };
+
+            if !add_labels.is_empty() || !remove_labels.is_empty() {
+                let (_, added, removed) = patch_labels(&st.db, c.id, &add_labels, &remove_labels).await?;
+                if !added.is_empty() {
+                    activity(&st, &c, format!("{} added {}", user.name, added.join(", "))).await?;
+                }
+                if !removed.is_empty() {
+                    activity(&st, &c, format!("{} removed {}", user.name, removed.join(", "))).await?;
+                }
+                emit_conv(&st, c.id, "conversation.updated").await?;
+            }
+
+            if let Some(new_assignee) = assignee_opt {
+                sqlx::query("UPDATE conversations SET assignee_id = $1, updated_at = now() WHERE id = $2")
+                    .bind(new_assignee.map(|a| a as i32))
+                    .bind(c.id)
+                    .execute(&st.db)
+                    .await?;
+                if new_assignee != c.assignee_id {
+                    let text = match new_assignee {
+                        Some(a) if a == user.id => format!("{} self-assigned this conversation", user.name),
+                        Some(a) => {
+                            let agent = user_json(&st.db, account_id, a).await;
+                            format!("Assigned to {} by {}", agent["available_name"].as_str().unwrap_or_default(), user.name)
+                        }
+                        None => format!("Conversation unassigned by {}", user.name),
+                    };
+                    activity(&st, &c, text).await?;
+                }
+                emit_conv(&st, c.id, "assignee.changed").await?;
+            }
+
+            if let Some(new_team) = team_opt {
+                sqlx::query("UPDATE conversations SET team_id = $1, updated_at = now() WHERE id = $2")
+                    .bind(new_team)
+                    .bind(c.id)
+                    .execute(&st.db)
+                    .await?;
+                if new_team != c.team_id {
+                    let text = match new_team {
+                        Some(_) => {
+                            let team = team_json(&st.db, new_team).await;
+                            format!("Assigned to {} by {}", team["name"].as_str().unwrap_or_default(), user.name)
+                        }
+                        None => {
+                            let old = team_json(&st.db, c.team_id).await;
+                            format!("Unassigned from {} by {}", old["name"].as_str().unwrap_or_default(), user.name)
+                        }
+                    };
+                    activity(&st, &c, text).await?;
+                }
+                emit_conv(&st, c.id, "team.changed").await?;
+            }
+
+            if let Some(new_status) = status_opt {
+                let sn = if new_status == 3 { snoozed_until } else { None };
+                sqlx::query(
+                    "UPDATE conversations SET status = $1, snoozed_until = $2, status_changed_at = now(), updated_at = now() WHERE id = $3",
+                )
+                .bind(new_status)
+                .bind(sn)
+                .bind(c.id)
+                .execute(&st.db)
+                .await?;
+                if new_status != c.status {
+                    let text = match new_status {
+                        1 => format!("Conversation was marked resolved by {}", user.name),
+                        2 => format!("Conversation was marked as pending by {}", user.name),
+                        3 => format!("Conversation was snoozed by {}", user.name),
+                        _ => format!("Conversation was reopened by {}", user.name),
+                    };
+                    activity(&st, &c, text).await?;
+                }
+                emit_conv(&st, c.id, "conversation.status_changed").await?;
+            }
+        }
+
+        return Ok(axum::http::StatusCode::OK);
+    }
+
+    if kind.eq_ignore_ascii_case("Contact") {
+        let action_name = body["action_name"].as_str().unwrap_or("");
+        if action_name == "delete" {
+            au.require_admin()?;
+        }
+
+        let ids: Vec<i64> = body["ids"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(num)
+            .collect();
+
+        if action_name == "delete" {
+            for cid in ids {
+                let exists: Option<i64> = sqlx::query_scalar(
+                    "SELECT id::bigint FROM contacts WHERE account_id = $1 AND id = $2",
+                )
+                .bind(account_id)
+                .bind(cid)
+                .fetch_optional(&st.db)
+                .await?;
+                if exists.is_none() {
+                    continue;
+                }
+                sqlx::query("DELETE FROM contact_inboxes WHERE contact_id = $1 AND EXISTS (SELECT 1 FROM contacts WHERE id = $1 AND account_id = $2)")
+                    .bind(cid)
+                    .bind(account_id)
+                    .execute(&st.db)
+                    .await?;
+                sqlx::query("DELETE FROM notes WHERE account_id = $1 AND contact_id = $2")
+                    .bind(account_id)
+                    .bind(cid)
+                    .execute(&st.db)
+                    .await?;
+                sqlx::query("DELETE FROM taggings WHERE taggable_type = 'Contact' AND taggable_id = $1 AND EXISTS (SELECT 1 FROM contacts WHERE id = $1 AND account_id = $2)")
+                    .bind(cid)
+                    .bind(account_id)
+                    .execute(&st.db)
+                    .await?;
+                sqlx::query("DELETE FROM contacts WHERE account_id = $1 AND id = $2")
+                    .bind(account_id)
+                    .bind(cid)
+                    .execute(&st.db)
+                    .await?;
+            }
+            return Ok(axum::http::StatusCode::OK);
+        }
+
+        let add_labels = body.get("labels").and_then(|l| l.get("add")).map(parse_labels).unwrap_or_default();
+        let remove_labels = body.get("labels").and_then(|l| l.get("remove")).map(parse_labels).unwrap_or_default();
+
+        if !add_labels.is_empty() || !remove_labels.is_empty() {
+            for cid in ids {
+                let exists: Option<i64> = sqlx::query_scalar(
+                    "SELECT id::bigint FROM contacts WHERE account_id = $1 AND id = $2",
+                )
+                .bind(account_id)
+                .bind(cid)
+                .fetch_optional(&st.db)
+                .await?;
+                if exists.is_none() {
+                    continue;
+                }
+                for l in &add_labels {
+                    let tag_id: i32 = sqlx::query_scalar(
+                        "INSERT INTO tags (name, taggings_count) VALUES ($1, 0)
+                         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id",
+                    )
+                    .bind(l)
+                    .fetch_one(&st.db)
+                    .await?;
+                    sqlx::query(
+                        "INSERT INTO taggings (tag_id, taggable_type, taggable_id, context, created_at)
+                         SELECT $1, 'Contact', $2, 'labels', now()
+                         WHERE NOT EXISTS (
+                             SELECT 1 FROM taggings WHERE tag_id = $1 AND taggable_type = 'Contact' AND taggable_id = $2 AND context = 'labels'
+                         )",
+                    )
+                    .bind(tag_id)
+                    .bind(cid as i32)
+                    .execute(&st.db)
+                    .await?;
+                }
+                if !remove_labels.is_empty() {
+                    sqlx::query(
+                        "DELETE FROM taggings tg USING tags t
+                         WHERE tg.tag_id = t.id AND tg.taggable_type = 'Contact'
+                           AND tg.taggable_id = $1 AND tg.context = 'labels' AND t.name = ANY($2)",
+                    )
+                    .bind(cid as i32)
+                    .bind(&remove_labels)
+                    .execute(&st.db)
+                    .await?;
+                }
+            }
+        }
+
+        return Ok(axum::http::StatusCode::OK);
+    }
+
+    Err(ApiError::bad("Invalid type"))
 }
 
 #[cfg(test)]
