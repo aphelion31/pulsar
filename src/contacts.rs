@@ -422,6 +422,9 @@ async fn filter(
                     conditions.push(format!("{col} NOT ILIKE ${}", binds.len() + 1));
                 }
             }
+            // chatwoot#15926: no value needed. `col` is from the whitelist above, never user input.
+            "is_present" => conditions.push(format!("({col} IS NOT NULL AND {col} <> '')")),
+            "is_not_present" => conditions.push(format!("({col} IS NULL OR {col} = '')")),
             _ => {}
         }
     }
