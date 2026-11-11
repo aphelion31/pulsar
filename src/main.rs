@@ -132,7 +132,13 @@ async fn main() -> anyhow::Result<()> {
         frontend_url: std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
     };
     // Async listeners (Chatwoot AsyncDispatcher). Each lane registers its listener here.
-    events::start(state.clone(), vec![("webhooks", events::listener(listeners::webhooks::handle))]);
+    events::start(
+        state.clone(),
+        vec![
+            ("webhooks", events::listener(listeners::webhooks::handle)),
+            ("automation", events::listener(listeners::automation::handle)),
+        ],
+    );
     let addr = std::env::var("BIND").unwrap_or_else(|_| "0.0.0.0:3000".into());
     tracing::info!("pulsar listening on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;

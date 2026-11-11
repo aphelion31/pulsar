@@ -125,7 +125,7 @@ pub(crate) const MSG_COLS: &str = "m.id::bigint AS id, m.content, m.account_id::
   m.additional_attributes, m.processed_message_content, m.sentiment";
 
 impl Conv {
-    fn labels(&self) -> Vec<String> {
+    pub(crate) fn labels(&self) -> Vec<String> {
         self.cached_label_list
             .as_deref()
             .unwrap_or_default()
