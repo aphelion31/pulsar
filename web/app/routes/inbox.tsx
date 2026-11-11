@@ -105,15 +105,16 @@ export default function InboxRoute() {
           ))}
         </div>
         <label className="flex items-center gap-2 border-b border-line px-4 py-2 text-xs text-ink-3">
-          Sort by
-          <select aria-label="Sort by" value={sort} onChange={(e) => setSort(e.target.value)} className="min-w-0 flex-1 bg-transparent text-ink-2">
-            <option value="last_activity_at_desc">Latest activity</option>
-            <option value="last_activity_at_asc">Oldest activity</option>
-            <option value="created_at_desc">Newest</option>
-            <option value="created_at_asc">Oldest</option>
-            <option value="unread">Unread</option>
-            <option value="priority_desc">Priority (high to low)</option>
-            <option value="priority_asc">Priority (low to high)</option>
+          Order by
+          <select aria-label="Sort conversations" value={sort} onChange={(e) => setSort(e.target.value)} className="min-w-0 flex-1 bg-transparent text-ink-2">
+            <option value="last_activity_at_desc">Last activity: Newest first</option>
+            <option value="last_activity_at_asc">Last activity: Oldest first</option>
+            <option value="created_at_desc">Created at: Newest first</option>
+            <option value="created_at_asc">Created at: Oldest first</option>
+            <option value="priority_desc">Priority: Highest first</option>
+            <option value="priority_asc">Priority: Lowest first</option>
+            <option value="waiting_since_asc">Pending Response: Longest first</option>
+            <option value="waiting_since_desc">Pending Response: Shortest first</option>
           </select>
         </label>
         <ul className="min-h-0 flex-1 overflow-y-auto">
