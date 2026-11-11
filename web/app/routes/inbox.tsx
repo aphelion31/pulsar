@@ -24,6 +24,7 @@ export default function InboxRoute() {
   const [list, setList] = useState<Conversation[]>([]);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [loading, setLoading] = useState(true);
+  const [epoch, setEpoch] = useState(0);
 
   const load = useMemo(
     () => async () => {
@@ -40,6 +41,16 @@ export default function InboxRoute() {
   useEffect(() => {
     setLoading(true);
     load();
+  }, [load]);
+
+  // websocket dropped and reconnected: refetch list and open thread to catch missed messages
+  useEffect(() => {
+    const onReconnect = () => {
+      load();
+      setEpoch((n) => n + 1);
+    };
+    window.addEventListener("pulsar:cable-reconnect", onReconnect);
+    return () => window.removeEventListener("pulsar:cable-reconnect", onReconnect);
   }, [load]);
 
   // any conversation or message event refreshes the list (cheap: one query, 25 rows)
@@ -131,7 +142,7 @@ export default function InboxRoute() {
       </section>
       <section className="flex min-w-0 flex-1 flex-col">
         {conversationId ? (
-          <Thread key={conversationId} id={Number(conversationId)} accountId={accountId} meId={me.id} subscribe={subscribe} onGone={() => nav(`/accounts/${accountId}/conversations`)} />
+          <Thread key={conversationId} id={Number(conversationId)} epoch={epoch} accountId={accountId} meId={me.id} subscribe={subscribe} onGone={() => nav(`/accounts/${accountId}/conversations`)} />
         ) : (
           <Empty title="Pick a conversation">Replies, private notes and files appear here as they arrive</Empty>
         )}
@@ -140,7 +151,7 @@ export default function InboxRoute() {
   );
 }
 
-function Thread({ id, accountId, meId, subscribe, onGone }: { id: number; accountId: number; meId: number; subscribe: ShellCtx["subscribe"]; onGone: () => void }) {
+function Thread({ id, epoch, accountId, meId, subscribe, onGone }: { id: number; epoch: number; accountId: number; meId: number; subscribe: ShellCtx["subscribe"]; onGone: () => void }) {
   const base = `${acct(accountId)}/conversations/${id}`;
   const [conv, setConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -160,7 +171,7 @@ function Thread({ id, accountId, meId, subscribe, onGone }: { id: number; accoun
     return () => {
       live = false;
     };
-  }, [base]);
+  }, [base, epoch]);
 
   useEffect(
     () => subscribe((e) => {

@@ -80,6 +80,16 @@ async fn main() -> anyhow::Result<()> {
         return seed::run(&db, &args[2..]).await;
     }
 
+    // Pulsar's queries target this Chatwoot schema version. An older Chatwoot database misses columns and some endpoints 500.
+    const SCHEMA: &str = "20261103142055";
+    let db_schema: Option<String> = sqlx::query_scalar("SELECT max(version) FROM schema_migrations").fetch_one(&db).await.ok().flatten();
+    if db_schema.as_deref().is_none_or(|v| v < SCHEMA) {
+        tracing::warn!(
+            "database schema {} is older than {SCHEMA} (Chatwoot 4.19). Upgrade Chatwoot first, or apply migrations/0001_schema.sql column additions",
+            db_schema.as_deref().unwrap_or("unknown")
+        );
+    }
+
     let state = AppState {
         db,
         hub: cable::Hub::default(),

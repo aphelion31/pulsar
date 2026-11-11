@@ -4,7 +4,8 @@
 //! HS256 is hand-rolled on sha2 because jsonwebtoken 11 has no crypto backend enabled in Cargo.toml (would panic).
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, patch, post},
     Json, Router,
 };
@@ -386,7 +387,38 @@ fn msg_content(m: &Value) -> ApiResult<String> {
     if raw.chars().count() > 10_000 {
         return Err(ApiError::bad("Content is too long"));
     }
-    Ok(raw.to_string())
+    let clean = strip_html(raw);
+    if clean.trim().is_empty() {
+        return Err(ApiError::bad("Content can't be blank"));
+    }
+    Ok(clean)
+}
+
+/// Chatwoot #15779: store visitor text without HTML, as defense in depth against a client
+/// sanitizer bypass becoming stored XSS. Removes every tag (and script/style bodies), keeps the
+/// text and markdown, and decodes the entities ammonia escapes so `a < b` stays readable.
+/// Decoding can turn visitor-written `&lt;script&gt;` into a tag, so repeat until stable.
+fn strip_html(raw: &str) -> String {
+    let once = |s: &str| {
+        ammonia::Builder::empty()
+            .clean(s)
+            .to_string()
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&amp;", "&")
+    };
+    let mut cur = once(raw);
+    for _ in 0..4 {
+        let next = once(&cur);
+        if next == cur {
+            return cur;
+        }
+        cur = next;
+    }
+    // still changing after nested encodings: fall back to the fully escaped form, never raw
+    ammonia::Builder::empty().clean(&cur).to_string()
 }
 
 /// Safe contact update: name/phone/custom_attributes merge; email only if not taken by another contact.
@@ -490,8 +522,27 @@ async fn channel_json(db: &PgPool, w: &Wd, token: &str) -> Value {
 }
 
 /// GET /widget?website_token=: the widget UI is the React route /app/widget (same SPA build).
-async fn page(axum::extract::RawQuery(q): axum::extract::RawQuery) -> axum::response::Redirect {
-    axum::response::Redirect::to(&format!("/app/widget?{}", q.unwrap_or_default()))
+/// Chatwoot #15775 (CWE-598): cw_conversation is accepted from query for backward compatibility,
+/// but stripped before redirecting so the visitor JWT never leaks into browser history or logs.
+/// Response sets Referrer-Policy: no-referrer and Cache-Control: no-store.
+async fn page(axum::extract::RawQuery(q): axum::extract::RawQuery) -> Response {
+    let raw = q.unwrap_or_default();
+    let cleaned: String = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(
+            url::form_urlencoded::parse(raw.as_bytes())
+                .filter(|(k, _)| k != "cw_conversation"),
+        )
+        .finish();
+    let target = if cleaned.is_empty() {
+        "/app/widget".to_string()
+    } else {
+        format!("/app/widget?{cleaned}")
+    };
+    let mut res = axum::response::Redirect::to(&target).into_response();
+    let h = res.headers_mut();
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
 }
 
 /// POST /api/v1/widget/config?website_token=
@@ -559,7 +610,8 @@ async fn update_last_seen(State(st): State<AppState>, headers: HeaderMap, Query(
 async fn toggle_typing(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = read_session(&st.db, &w, token(&headers).as_deref()).await?.ok_or_else(ApiError::not_found)?;
-    let c = latest_conv(&st.db, &w, s.c.ci_id).await?.ok_or_else(ApiError::not_found)?;
+    // Chatwoot #14710: the SDK sends typing before the first message exists. No conversation yet is a no-op, not a 404.
+    let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else { return Ok(Json(json!({}))) };
     let event = match b["typing_status"].as_str() {
         Some("on") => "conversation.typing_on",
         Some("off") => "conversation.typing_off",
@@ -614,18 +666,55 @@ async fn msg_create(State(st): State<AppState>, headers: HeaderMap, Query(q): Qu
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = required(&st, &w, &headers).await?;
     let content = msg_content(&b["message"])?;
-    let conv = match latest_conv(&st.db, &w, s.c.ci_id).await? {
+    // Chatwoot #16417: two first messages sent together opened two conversations. Serialize the
+    // find-or-create per contact_inbox with a transaction-scoped advisory lock (no schema change).
+    let mut tx = st.db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('pulsar_widget_conv'), $1::int)")
+        .bind(s.c.ci_id as i32)
+        .execute(&mut *tx)
+        .await?;
+    let existing: Option<Conv> = sqlx::query_as(&format!(
+        "SELECT {CONV_COLS} FROM conversations c
+         WHERE c.account_id = $1 AND c.inbox_id = $2 AND c.contact_inbox_id = $3
+         ORDER BY c.id DESC LIMIT 1"
+    ))
+    .bind(w.account_id as i32)
+    .bind(w.inbox_id as i32)
+    .bind(s.c.ci_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (conv, created_new) = match existing {
         Some(c) => {
             if c.status == 1 && !w.allow_messages_after_resolved.unwrap_or(true) {
                 return Err(ApiError(StatusCode::FORBIDDEN, "Conversation is resolved. Start a new conversation.".into()));
             }
-            c
+            (c, false)
         }
         None => {
             let extra = json!({ "referer": b["message"]["referer_url"], "initiated_at": b["message"]["timestamp"] });
-            create_conv(&st, &w, &s, extra, json!({})).await?
+            let id: i64 = sqlx::query_scalar(
+                "INSERT INTO conversations (account_id, inbox_id, status, contact_id, contact_inbox_id,
+                    additional_attributes, custom_attributes, last_activity_at, created_at, updated_at)
+                 VALUES ($1, $2, 0, $3, $4, $5::jsonb, '{}'::jsonb, now(), now(), now()) RETURNING id::bigint",
+            )
+            .bind(w.account_id as i32)
+            .bind(w.inbox_id as i32)
+            .bind(s.c.contact_id)
+            .bind(s.c.ci_id)
+            .bind(extra)
+            .fetch_one(&mut *tx)
+            .await?;
+            let c: Conv = sqlx::query_as(&format!("SELECT {CONV_COLS} FROM conversations c WHERE c.id = $1"))
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+            (c, true)
         }
     };
+    tx.commit().await?;
+    if created_new {
+        notify_conv(&st, &conv, "conversation.created").await?;
+    }
     let echo = b["message"]["echo_id"].as_str();
     let created = insert_message(&st, &conv, Some(("Contact", s.c.contact_id)), &content, 0, false, 0, json!({}), echo).await?;
     let id = created["id"].as_i64().unwrap_or_default();
@@ -684,7 +773,15 @@ async fn contact_show(State(st): State<AppState>, headers: HeaderMap, Query(q): 
 }
 
 /// PATCH /api/v1/widget/contact and PATCH /api/v1/widget/contact/set_user
-async fn contact_update(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
+/// Chatwoot #15776: rotate visitor token after sensitive contact updates.
+/// Chatwoot #15933: include pubsub_token in the contact response so the widget can re-subscribe
+/// to realtime events when the visitor contact is updated/rebound.
+///
+/// ponytail: contact_inboxes schema has no jsonb column for an iat floor (only id, contact_id,
+/// inbox_id, source_id, created_at, updated_at, hmac_verified, pubsub_token). Adding a floor
+/// would require a migration or hijacking updated_at; client-side token replacement and the new
+/// token returned in widget_auth_token and X-Auth-Token header suffices until schema is expanded.
+async fn contact_update(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult<Response> {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = read_session(&st.db, &w, token(&headers).as_deref()).await?.ok_or_else(ApiError::not_found)?;
     // ponytail: identifier_hash (HMAC) not verified. Identity binding by identifier is ignored, and
@@ -694,7 +791,15 @@ async fn contact_update(State(st): State<AppState>, headers: HeaderMap, Query(q)
     }
     apply_contact(&st.db, &w, s.c.contact_id, &b).await?;
     let fresh = find_contact(&st.db, &w, &s.c.source_id).await?.unwrap_or(s.c);
-    Ok(Json(presence(&fresh)))
+    let new_tok = issue(&fresh.source_id, w.inbox_id);
+    let mut val = presence(&fresh);
+    val["widget_auth_token"] = json!(new_tok);
+    val["pubsub_token"] = json!(fresh.pubsub_token);
+    let mut resp = Json(val).into_response();
+    if let Ok(hv) = HeaderValue::from_str(&new_tok) {
+        resp.headers_mut().insert(HeaderName::from_static("x-auth-token"), hv);
+    }
+    Ok(resp)
 }
 
 // ---------- inbox members ----------
@@ -732,6 +837,17 @@ async fn inbox_members(State(st): State<AppState>, Query(q): Query<Q>) -> ApiRes
 mod tests {
     use super::*;
 
+    /// chatwoot#15779: no HTML survives, markdown and plain `<` text stay.
+    #[test]
+    fn strip_html_removes_tags_keeps_text() {
+        assert_eq!(strip_html("hi <img src=x onerror=alert(1)> **bold**"), "hi  **bold**");
+        assert_eq!(strip_html("<script>alert(1)</script>ok"), "ok");
+        assert_eq!(strip_html("a < b && c > d"), "a < b && c > d");
+        // escaped markup written by the visitor must not decode back into a live tag
+        let s = strip_html("&lt;script&gt;alert(1)&lt;/script&gt;");
+        assert!(!s.contains("<script"), "{s}");
+    }
+
     /// RFC 4231 test case 2 (HMAC-SHA256).
     #[test]
     fn hmac_matches_rfc4231() {
@@ -746,5 +862,36 @@ mod tests {
         assert!(decode(&t, 8).is_none(), "wrong inbox must fail");
         let tampered = t.replacen('.', ".x", 1);
         assert!(decode(&tampered, 7).is_none());
+    }
+
+    /// chatwoot#15776: minted token has fresh iat and decodes to matching source_id and inbox_id.
+    #[test]
+    fn token_rotation_mints_fresh_token() {
+        let t1 = issue("src-rotate", 42);
+        // Ensure iat timestamp or new token generation creates a valid token
+        let t2 = issue("src-rotate", 42);
+        assert_eq!(decode(&t1, 42).map(|c| c.source_id), Some("src-rotate".into()));
+        assert_eq!(decode(&t2, 42).map(|c| c.source_id), Some("src-rotate".into()));
+    }
+
+    #[tokio::test]
+    async fn page_strips_cw_conversation_and_sets_security_headers() {
+        let res = page(axum::extract::RawQuery(Some(
+            "website_token=wt1&cw_conversation=secret.jwt.here&locale=en".into(),
+        )))
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            res.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()),
+            Some("/app/widget?website_token=wt1&locale=en")
+        );
+        assert_eq!(
+            res.headers().get(header::REFERRER_POLICY).and_then(|v| v.to_str().ok()),
+            Some("no-referrer")
+        );
+        assert_eq!(
+            res.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
     }
 }

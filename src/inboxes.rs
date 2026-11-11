@@ -1,7 +1,5 @@
 //! OWNED BY A WORKER. See WORKERS.md for the contract.
 //! Inboxes, inbox members, agents, assignable agents, teams. Relative to /api/v1/accounts/{account_id}.
-use std::collections::HashSet;
-
 use axum::{
     extract::{Path, RawQuery, State},
     routing::{delete, get, patch, post},
@@ -208,23 +206,24 @@ async fn member_ids(db: &PgPool, inbox_id: i64) -> Result<Vec<i64>, ApiError> {
 
 /// Mirrors Inbox#assignable_agents: intersection of member sets, plus account administrators.
 async fn assignable(db: &PgPool, account_id: i64, inbox_ids: &[i64]) -> Result<Vec<Value>, ApiError> {
-    let mut set: Option<HashSet<i64>> = None;
-    for id in inbox_ids {
-        let m: HashSet<i64> = member_ids(db, *id).await?.into_iter().collect();
-        set = Some(match set {
-            None => m,
-            Some(s) => s.intersection(&m).copied().collect(),
-        });
-    }
-    let mut ids = set.unwrap_or_default();
-    let admins: Vec<i64> = sqlx::query_scalar(
-        "SELECT user_id::bigint FROM account_users WHERE account_id::bigint = $1 AND role = 1",
+    let mut uniq = inbox_ids.to_vec();
+    uniq.sort_unstable();
+    uniq.dedup();
+    let n = uniq.len() as i64;
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT user_id::bigint FROM account_users WHERE account_id::bigint = $1 AND role = 1
+         UNION
+         SELECT user_id::bigint FROM inbox_members
+         WHERE $3 > 0 AND inbox_id::bigint = ANY($2::bigint[])
+         GROUP BY user_id
+         HAVING count(DISTINCT inbox_id) = $3",
     )
     .bind(account_id)
+    .bind(&uniq)
+    .bind(n)
     .fetch_all(db)
     .await?;
-    ids.extend(admins);
-    agents_for(db, account_id, Some(ids.into_iter().collect())).await
+    agents_for(db, account_id, Some(ids)).await
 }
 
 /// `inbox_ids[]=1&inbox_ids[]=2` (Vue axios array encoding) or `inbox_ids=1`.
@@ -855,11 +854,14 @@ async fn agent_update(
     }
     tx.commit().await?;
 
+    if role.is_some() {
+        st.hub.invalidate_cache(account_id, "inbox");
+    }
     let agent = agents_for(&st.db, account_id, Some(vec![id])).await?.pop().ok_or_else(ApiError::not_found)?;
     Ok(Json(agent))
 }
 
-/// Removes the account_user only. The users row is kept (Rails DeleteObjectJob is deferred there).
+/// Removes the account_user and cleans up account-scoped associations.
 async fn agent_destroy(
     State(st): State<AppState>,
     user: CurrentUser,
@@ -870,15 +872,51 @@ async fn agent_destroy(
     if id == user.id {
         return Err(ApiError::bad("You cannot remove yourself from the account"));
     }
+    let mut tx = st.db.begin().await?;
     let n = sqlx::query("DELETE FROM account_users WHERE account_id::bigint = $1 AND user_id::bigint = $2")
         .bind(account_id)
         .bind(id)
-        .execute(&st.db)
+        .execute(&mut *tx)
         .await?
         .rows_affected();
     if n == 0 {
         return Err(ApiError::not_found());
     }
+    sqlx::query(
+        "DELETE FROM inbox_members im USING inboxes i
+         WHERE im.inbox_id = i.id AND i.account_id::bigint = $1 AND im.user_id::bigint = $2",
+    )
+    .bind(account_id)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM team_members tm USING teams t
+         WHERE tm.team_id = t.id AND t.account_id::bigint = $1 AND tm.user_id::bigint = $2",
+    )
+    .bind(account_id)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM conversation_participants cp USING conversations c
+         WHERE cp.conversation_id = c.id AND c.account_id::bigint = $1 AND cp.user_id::bigint = $2",
+    )
+    .bind(account_id)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE conversations SET assignee_id = NULL, updated_at = now()
+         WHERE account_id::bigint = $1 AND assignee_id::bigint = $2",
+    )
+    .bind(account_id)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    st.hub.invalidate_cache(account_id, "inbox");
+    st.hub.invalidate_cache(account_id, "team");
     Ok(Json(json!({})))
 }
 

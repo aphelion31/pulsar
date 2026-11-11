@@ -2,6 +2,8 @@
 //! See WORKERS.md and ../chatwoot/app/controllers/api/v1/accounts/contacts_controller.rb.
 
 use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
     extract::{Path, Query, State},
     routing::{delete, get, post},
     Json, Router,
@@ -420,6 +422,9 @@ async fn filter(
                     conditions.push(format!("{col} NOT ILIKE ${}", binds.len() + 1));
                 }
             }
+            // chatwoot#15926: no value needed. `col` is from the whitelist above, never user input.
+            "is_present" => conditions.push(format!("({col} IS NOT NULL AND {col} <> '')")),
+            "is_not_present" => conditions.push(format!("({col} IS NULL OR {col} = '')")),
             _ => {}
         }
     }
@@ -507,43 +512,71 @@ struct CreateContactBody {
     source_id: Option<String>,
 }
 
+/// 422 naming the conflicting attribute and the existing contact id (chatwoot#15917).
+fn conflict(message: &str, attribute: &str, existing_id: i32) -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(json!({
+            "message": message,
+            "attributes": [attribute],
+            "data": { "id": existing_id }
+        })),
+    )
+        .into_response()
+}
+
 // POST /contacts
 async fn create(
     Path(account_id): Path<i64>,
     user: CurrentUser,
     State(st): State<AppState>,
     Json(body): Json<CreateContactBody>,
-) -> ApiResult {
+) -> Result<Response, ApiError> {
     let _au = require_account(&st.db, &user, account_id).await?;
 
-    // Validate email uniqueness per account if provided
+    // Uniqueness per account. Lookups are scoped to account_id, so only same-account contacts are named.
     let norm_email = body.email.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty());
     if let Some(e) = norm_email {
         let exists: Option<(i32,)> = sqlx::query_as(
-            "SELECT id FROM contacts WHERE account_id = $1 AND lower(email) = lower($2)"
+            "SELECT id FROM contacts WHERE account_id = $1 AND lower(email) = lower($2) LIMIT 1"
         )
         .bind(account_id)
         .bind(e)
         .fetch_optional(&st.db)
         .await?;
 
-        if exists.is_some() {
-            return Err(ApiError::bad("Email has already been taken"));
+        if let Some((id,)) = exists {
+            return Ok(conflict("Email has already been taken", "email", id));
+        }
+    }
+
+    let norm_phone = body.phone_number.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if let Some(p) = norm_phone {
+        let exists: Option<(i32,)> = sqlx::query_as(
+            "SELECT id FROM contacts WHERE account_id = $1 AND phone_number = $2 LIMIT 1"
+        )
+        .bind(account_id)
+        .bind(p)
+        .fetch_optional(&st.db)
+        .await?;
+
+        if let Some((id,)) = exists {
+            return Ok(conflict("Phone number has already been taken", "phone_number", id));
         }
     }
 
     let norm_identifier = body.identifier.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty());
     if let Some(ident) = norm_identifier {
         let exists: Option<(i32,)> = sqlx::query_as(
-            "SELECT id FROM contacts WHERE account_id = $1 AND identifier = $2"
+            "SELECT id FROM contacts WHERE account_id = $1 AND identifier = $2 LIMIT 1"
         )
         .bind(account_id)
         .bind(ident)
         .fetch_optional(&st.db)
         .await?;
 
-        if exists.is_some() {
-            return Err(ApiError::bad("Identifier has already been taken"));
+        if let Some((id,)) = exists {
+            return Ok(conflict("Identifier has already been taken", "identifier", id));
         }
     }
 
@@ -624,7 +657,8 @@ async fn create(
             "contact": contact_json,
             "contact_inbox": contact_inbox_payload
         }
-    })))
+    }))
+    .into_response())
 }
 
 #[derive(Debug, Deserialize, Default)]
