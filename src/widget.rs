@@ -386,7 +386,38 @@ fn msg_content(m: &Value) -> ApiResult<String> {
     if raw.chars().count() > 10_000 {
         return Err(ApiError::bad("Content is too long"));
     }
-    Ok(raw.to_string())
+    let clean = strip_html(raw);
+    if clean.trim().is_empty() {
+        return Err(ApiError::bad("Content can't be blank"));
+    }
+    Ok(clean)
+}
+
+/// Chatwoot #15779: store visitor text without HTML, as defense in depth against a client
+/// sanitizer bypass becoming stored XSS. Removes every tag (and script/style bodies), keeps the
+/// text and markdown, and decodes the entities ammonia escapes so `a < b` stays readable.
+/// Decoding can turn visitor-written `&lt;script&gt;` into a tag, so repeat until stable.
+fn strip_html(raw: &str) -> String {
+    let once = |s: &str| {
+        ammonia::Builder::empty()
+            .clean(s)
+            .to_string()
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&amp;", "&")
+    };
+    let mut cur = once(raw);
+    for _ in 0..4 {
+        let next = once(&cur);
+        if next == cur {
+            return cur;
+        }
+        cur = next;
+    }
+    // still changing after nested encodings: fall back to the fully escaped form, never raw
+    ammonia::Builder::empty().clean(&cur).to_string()
 }
 
 /// Safe contact update: name/phone/custom_attributes merge; email only if not taken by another contact.
@@ -768,6 +799,17 @@ async fn inbox_members(State(st): State<AppState>, Query(q): Query<Q>) -> ApiRes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// chatwoot#15779: no HTML survives, markdown and plain `<` text stay.
+    #[test]
+    fn strip_html_removes_tags_keeps_text() {
+        assert_eq!(strip_html("hi <img src=x onerror=alert(1)> **bold**"), "hi  **bold**");
+        assert_eq!(strip_html("<script>alert(1)</script>ok"), "ok");
+        assert_eq!(strip_html("a < b && c > d"), "a < b && c > d");
+        // escaped markup written by the visitor must not decode back into a live tag
+        let s = strip_html("&lt;script&gt;alert(1)&lt;/script&gt;");
+        assert!(!s.contains("<script"), "{s}");
+    }
 
     /// RFC 4231 test case 2 (HMAC-SHA256).
     #[test]
