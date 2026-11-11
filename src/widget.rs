@@ -610,7 +610,8 @@ async fn update_last_seen(State(st): State<AppState>, headers: HeaderMap, Query(
 async fn toggle_typing(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = read_session(&st.db, &w, token(&headers).as_deref()).await?.ok_or_else(ApiError::not_found)?;
-    let c = latest_conv(&st.db, &w, s.c.ci_id).await?.ok_or_else(ApiError::not_found)?;
+    // Chatwoot #14710: the SDK sends typing before the first message exists. No conversation yet is a no-op, not a 404.
+    let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else { return Ok(Json(json!({}))) };
     let event = match b["typing_status"].as_str() {
         Some("on") => "conversation.typing_on",
         Some("off") => "conversation.typing_off",
