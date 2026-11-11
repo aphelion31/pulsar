@@ -38,6 +38,8 @@ pub fn routes() -> Router<AppState> {
         .route("/conversations/{id}/unread", post(unread))
         .route("/conversations/{id}/custom_attributes", post(custom_attributes))
         .route("/conversations/{id}/labels", get(labels_index).post(labels_create))
+        .route("/conversations/{id}/labels/add", post(labels_add))
+        .route("/conversations/{id}/labels/remove", post(labels_remove))
         .route("/conversations/{id}/participants", get(empty_list))
         .route("/conversations/{id}/attachments", get(|| async { Json(json!({ "payload": [] })) }))
         .route(
@@ -822,31 +824,124 @@ fn parse_labels(v: &Value) -> Vec<String> {
     out
 }
 
-/// Replace the conversation's label set in one transaction (taggings + cached_label_list).
-async fn set_labels(db: &PgPool, conv_id: i64, labels: &[String]) -> Result<(), ApiError> {
-    let mut tx = db.begin().await?;
+/// Write the label set on an open connection (taggings + cached_label_list).
+async fn write_labels(conn: &mut sqlx::PgConnection, conv_id: i64, labels: &[String]) -> Result<(), ApiError> {
     sqlx::query("DELETE FROM taggings WHERE taggable_type = 'Conversation' AND taggable_id = $1 AND context = 'labels'")
         .bind(conv_id as i32)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
     for l in labels {
         let tag: i32 = sqlx::query_scalar("INSERT INTO tags (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id")
             .bind(l)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *conn)
             .await?;
         sqlx::query("INSERT INTO taggings (tag_id, taggable_type, taggable_id, context, created_at) VALUES ($1, 'Conversation', $2, 'labels', now())")
             .bind(tag)
             .bind(conv_id as i32)
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await?;
     }
     sqlx::query("UPDATE conversations SET cached_label_list = $1, updated_at = now() WHERE id = $2")
         .bind(labels.join(", "))
         .bind(conv_id)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
+    Ok(())
+}
+
+/// Replace the conversation's label set in one transaction (taggings + cached_label_list).
+async fn set_labels(db: &PgPool, conv_id: i64, labels: &[String]) -> Result<(), ApiError> {
+    let mut tx = db.begin().await?;
+    write_labels(&mut *tx, conv_id, labels).await?;
     tx.commit().await?;
     Ok(())
+}
+
+/// Apply adds, then removes, to a label list. Order-preserving, no duplicates.
+fn apply_label_patch(old: &[String], add: &[String], remove: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = old.to_vec();
+    for l in add {
+        if !out.contains(l) {
+            out.push(l.clone());
+        }
+    }
+    out.retain(|l| !remove.contains(l));
+    out
+}
+
+/// Add/remove labels under a row lock, so concurrent writers converge. Returns (labels, added, removed).
+async fn patch_labels(db: &PgPool, conv_id: i64, add: &[String], remove: &[String]) -> Result<(Vec<String>, Vec<String>, Vec<String>), ApiError> {
+    let mut tx = db.begin().await?;
+    let cached: Option<String> = sqlx::query_scalar("SELECT cached_label_list FROM conversations WHERE id = $1 FOR UPDATE")
+        .bind(conv_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let old: Vec<String> = cached.unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let new = apply_label_patch(&old, add, remove);
+    let added: Vec<String> = new.iter().filter(|l| !old.contains(l)).cloned().collect();
+    let removed: Vec<String> = old.iter().filter(|l| !new.contains(l)).cloned().collect();
+    if !added.is_empty() || !removed.is_empty() {
+        write_labels(&mut *tx, conv_id, &new).await?;
+    }
+    tx.commit().await?;
+    Ok((new, added, removed))
+}
+
+fn labels_arg(b: &Value) -> Result<Vec<String>, ApiError> {
+    if !b["labels"].is_array() {
+        return Err(ApiError::bad("labels must be an array"));
+    }
+    Ok(parse_labels(&b["labels"]))
+}
+
+async fn labels_patch(st: &AppState, user: &CurrentUser, account_id: i64, id: i64, add: Vec<String>, remove: Vec<String>) -> ApiResult {
+    let au = require_account(&st.db, user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    let (labels, added, removed) = patch_labels(&st.db, c.id, &add, &remove).await?;
+    if !added.is_empty() {
+        activity(st, &c, format!("{} added {}", user.name, added.join(", "))).await?;
+    }
+    if !removed.is_empty() {
+        activity(st, &c, format!("{} removed {}", user.name, removed.join(", "))).await?;
+    }
+    emit_conv(st, c.id, "conversation.updated").await?;
+    Ok(Json(json!({ "payload": labels })))
+}
+
+/// POST /conversations/{id}/labels/add {labels: [...]} adds only the given labels.
+async fn labels_add(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+    let add = labels_arg(&b)?;
+    labels_patch(&st, &user, account_id, id, add, vec![]).await
+}
+
+/// POST /conversations/{id}/labels/remove {labels: [...]} removes only the given labels.
+async fn labels_remove(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+    let remove = labels_arg(&b)?;
+    labels_patch(&st, &user, account_id, id, vec![], remove).await
+}
+
+#[cfg(test)]
+mod label_patch_tests {
+    use super::apply_label_patch;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn add_keeps_existing_and_skips_duplicates() {
+        assert_eq!(apply_label_patch(&s(&["a", "b"]), &s(&["b", "c"]), &[]), s(&["a", "b", "c"]));
+    }
+
+    #[test]
+    fn remove_only_given_labels() {
+        assert_eq!(apply_label_patch(&s(&["a", "b", "c"]), &[], &s(&["b", "x"])), s(&["a", "c"]));
+    }
+
+    #[test]
+    fn add_then_remove_same_label_drops_it() {
+        assert_eq!(apply_label_patch(&s(&["a"]), &s(&["z"]), &s(&["z"])), s(&["a"]));
+    }
 }
 
 /// POST /conversations/{id}/labels {labels: [...]} replaces the label set.
