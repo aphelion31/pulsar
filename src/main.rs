@@ -44,12 +44,22 @@ pub fn app(state: AppState) -> Router {
         .route("/auth/sign_in", post(auth::sign_in))
         .route("/auth/validate_token", get(auth::validate_token))
         .route("/auth/sign_out", axum::routing::delete(auth::sign_out))
-        .route("/api/v1/profile", get(auth::profile_show).put(auth::profile_update))
+        .route(
+            "/api/v1/profile",
+            get(auth::profile_show)
+                .put(auth::profile_update)
+                .layer(axum::extract::DefaultBodyLimit::max(storage::MAX_BYTES + 1024 * 1024)),
+        )
+        .route("/api/v1/profile/avatar", axum::routing::delete(auth::profile_avatar_destroy))
+        .route("/api/v1/profile/resend_confirmation", post(auth::resend_confirmation))
+        .route("/api/v1/profile/reset_access_token", post(auth::reset_access_token))
         .route("/api/v1/profile/set_active_account", axum::routing::put(auth::set_active_account))
         .route("/api/v1/profile/availability", post(auth::availability))
         .route("/api/v1/profile/auto_offline", post(auth::auto_offline))
         .route("/api/v1/profile/work_preferences", post(auth::auto_offline).patch(auth::auto_offline))
         .route("/api/v1/accounts/{account_id}", get(auth::account_show).patch(auth::account_update))
+        .route("/api/v1/accounts/{account_id}/onboarding", axum::routing::put(auth::onboarding_update))
+        .route("/api/v1/accounts/{account_id}/onboarding/help_center_generation", get(auth::help_center_generation))
         .route("/api/v1/accounts/{account_id}/", get(auth::account_show).patch(auth::account_update))
         .route("/api/v1/accounts/{account_id}/update_active_at", post(auth::update_active_at))
         // ponytail: session list / push subscriptions / changelog not tracked yet; empty responses keep UI happy

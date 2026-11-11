@@ -28,6 +28,54 @@ const CONTENT_TYPES: [&str; 13] = [
     "incoming_email", "input_csat", "integrations", "sticker", "voice_call",
 ];
 const REPLY_TIMES: [&str; 3] = ["in_a_few_minutes", "in_a_few_hours", "in_a_day"];
+
+/// Chatwoot config/initializers/languages.rb LANGUAGES_CONFIG, in index order: (name, iso_639_1_code).
+const LANGUAGES: [(&str, &str); 44] = [
+    ("English (en)", "en"),
+    ("العربية (ar)", "ar"),
+    ("Nederlands (nl) ", "nl"),
+    ("Français (fr)", "fr"),
+    ("Deutsch (de)", "de"),
+    ("हिन्दी (hi)", "hi"),
+    ("Italiano (it)", "it"),
+    ("日本語 (ja)", "ja"),
+    ("한국어 (ko)", "ko"),
+    ("Português (pt)", "pt"),
+    ("русский (ru)", "ru"),
+    ("中文 (zh)", "zh"),
+    ("Español (es)", "es"),
+    ("മലയാളം (ml)", "ml"),
+    ("Català (ca)", "ca"),
+    ("ελληνικά (el)", "el"),
+    ("Português Brasileiro (pt-BR)", "pt_BR"),
+    ("Română (ro)", "ro"),
+    ("தமிழ் (ta)", "ta"),
+    ("فارسی (fa)", "fa"),
+    ("中文 (台湾) (zh-TW)", "zh_TW"),
+    ("Tiếng Việt (vi)", "vi"),
+    ("dansk (da)", "da"),
+    ("Türkçe (tr)", "tr"),
+    ("čeština (cs)", "cs"),
+    ("suomi, suomen kieli (fi)", "fi"),
+    ("Bahasa Indonesia (id)", "id"),
+    ("Svenska (sv)", "sv"),
+    ("magyar nyelv (hu)", "hu"),
+    ("norsk (no)", "no"),
+    ("中文 (zh-CN)", "zh_CN"),
+    ("język polski (pl)", "pl"),
+    ("slovenčina (sk)", "sk"),
+    ("украї́нська мо́ва (uk)", "uk"),
+    ("ภาษาไทย (th)", "th"),
+    ("latviešu valoda (lv)", "lv"),
+    ("íslenska (is)", "is"),
+    ("עִברִית (he)", "he"),
+    ("lietuvių (lt)", "lt"),
+    ("Српски (sr)", "sr"),
+    ("български (bg)", "bg"),
+    ("Eesti keel (et)", "et"),
+    ("Oʻzbekcha (uz)", "uz"),
+    ("slovenščina (sl)", "sl"),
+];
 // has_flags bit order in channel/web_widget.rb (flag n = 1 << (n-1))
 const FEATURE_BITS: [(&str, i64); 5] = [
     ("attachments", 1),
@@ -191,6 +239,13 @@ async fn required(st: &AppState, w: &Wd, h: &HeaderMap) -> ApiResult<Sess> {
 }
 
 // ---------- lookups ----------
+
+/// Visitor session gate for storage direct uploads (Chatwoot `set_contact`). Rejects without a valid X-Auth-Token.
+pub(crate) async fn check_visitor(st: &AppState, website_token: Option<&str>, headers: &HeaderMap) -> ApiResult<()> {
+    let w = widget_of(&st.db, website_token).await?;
+    required(st, &w, headers).await?;
+    Ok(())
+}
 
 async fn widget_of(db: &PgPool, website_token: Option<&str>) -> ApiResult<Wd> {
     let t = website_token.ok_or_else(ApiError::not_found)?;
@@ -497,6 +552,18 @@ async fn apply_contact(db: &PgPool, w: &Wd, cid: i64, src: &Value) -> ApiResult<
 
 // ---------- config ----------
 
+/// Chatwoot `ActiveSupport::TimeZone[tz].now.formatted_offset`, e.g. "+05:30". Unknown zone gives "+00:00".
+async fn utc_offset(db: &PgPool, tz: &str) -> String {
+    let secs: i64 = sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM ((now() AT TIME ZONE $1) - (now() AT TIME ZONE 'UTC')))::bigint")
+        .bind(tz)
+        .fetch_one(db)
+        .await
+        .unwrap_or(0);
+    let sign = if secs < 0 { '-' } else { '+' };
+    let abs = secs.abs();
+    format!("{sign}{:02}:{:02}", abs / 3600, (abs % 3600) / 60)
+}
+
 fn pick_gc(gc: &Map<String, Value>) -> Value {
     const KEYS: [&str; 5] = ["LOGO_THUMBNAIL", "BRAND_NAME", "WIDGET_BRAND_URL", "MAXIMUM_FILE_UPLOAD_SIZE", "INSTALLATION_NAME"];
     Value::Object(KEYS.iter().map(|k| (k.to_string(), gc.get(*k).cloned().unwrap_or(Value::Null))).collect())
@@ -528,15 +595,21 @@ async fn channel_json(db: &PgPool, w: &Wd, token: &str) -> Value {
     .await
     .unwrap_or(json!([]));
     let features: Vec<&str> = FEATURE_BITS.iter().filter(|(_, b)| w.feature_flags as i64 & b != 0).map(|(n, _)| *n).collect();
+    let (acc_flags, acc_flags_ext): (i64, i64) = sqlx::query_as("SELECT COALESCE(feature_flags,0)::bigint, COALESCE(feature_flags_ext_1,0)::bigint FROM accounts WHERE id = $1")
+        .bind(w.account_id)
+        .fetch_one(db)
+        .await
+        .unwrap_or((0, 0));
+    let account_features = crate::auth::enabled_features(acc_flags, acc_flags_ext);
     json!({
         "allow_messages_after_resolved": w.allow_messages_after_resolved.unwrap_or(true),
         "api_host": std::env::var("FRONTEND_URL").ok(),
         "auth_token": token,
-        "avatar_url": "",
+        "avatar_url": crate::storage::avatar_url(db, "Inbox", w.inbox_id).await,
         "csat_survey_enabled": w.csat_survey_enabled.unwrap_or(false),
-        "disable_branding": false, // ponytail: disable_branding feature flag not read yet
+        "disable_branding": account_features.get("disable_branding").and_then(Value::as_bool).unwrap_or(false),
         "enabled_features": features,
-        "enabled_languages": [], // ponytail: language picker list not ported
+        "enabled_languages": LANGUAGES.iter().map(|(name, code)| json!({ "name": name, "iso_639_1_code": code })).collect::<Vec<_>>(),
         "has_a_connected_agent_bot": "",
         "locale": locale_code(w.locale),
         "out_of_office_message": w.out_of_office_message,
@@ -545,7 +618,7 @@ async fn channel_json(db: &PgPool, w: &Wd, token: &str) -> Value {
         "pre_chat_form_options": pre_chat_options(w.pre_chat_form_options.clone()),
         "reply_time": REPLY_TIMES.get(w.reply_time.unwrap_or(0) as usize).copied().unwrap_or("in_a_few_minutes"),
         "timezone": w.timezone.clone().unwrap_or_else(|| "UTC".into()),
-        "utc_off_set": "+00:00", // ponytail: offset not derived from timezone
+        "utc_off_set": utc_offset(db, w.timezone.as_deref().unwrap_or("UTC")).await,
         "website_name": w.inbox_name,
         "website_token": w.website_token,
         "welcome_tagline": w.welcome_tagline,
