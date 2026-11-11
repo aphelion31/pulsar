@@ -65,6 +65,8 @@ pub fn app(state: AppState) -> Router {
         .route("/app", get(|| async { axum::response::Redirect::to("/app/") }))
         .nest_service("/app/", spa)
         .route_service("/sdk.js", ServeFile::new(web_dir.join("sdk.js")))
+        // Negotiated via Accept-Encoding; skips tiny bodies, images and SSE/ws upgrades by default.
+        .layer(tower_http::compression::CompressionLayer::new())
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
 }
