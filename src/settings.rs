@@ -138,19 +138,165 @@ async fn labels_update(State(st): State<AppState>, user: CurrentUser, Path((acco
             return Err(ApiError::bad("Title has already been taken"));
         }
     }
+    let mut tx = st.db.begin().await?;
+    let old: Option<Label> = sqlx::query_as(&format!(
+        "SELECT {LABEL_COLS} FROM labels WHERE id = $1 AND account_id = $2 FOR UPDATE"
+    ))
+    .bind(id)
+    .bind(account_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let old = old.ok_or_else(ApiError::not_found)?;
+
     let l: Label = sqlx::query_as(&format!(
         "UPDATE labels SET title = COALESCE($1, title), description = COALESCE($2, description), color = COALESCE($3, color),
            show_on_sidebar = COALESCE($4, show_on_sidebar), updated_at = now()
          WHERE id = $5 AND account_id = $6 RETURNING {LABEL_COLS}"
     ))
-    .bind(title)
+    .bind(&title)
     .bind(s(&b, "description"))
     .bind(s(&b, "color"))
     .bind(b["show_on_sidebar"].as_bool())
     .bind(id)
     .bind(account_id)
-    .fetch_one(&st.db)
+    .fetch_one(&mut *tx)
     .await?;
+
+    if let (Some(old_t), Some(new_t)) = (old.title.as_deref(), l.title.as_deref()) {
+        if old_t != new_t {
+            let new_tag_id: i32 = sqlx::query_scalar(
+                "INSERT INTO tags (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id",
+            )
+            .bind(new_t)
+            .fetch_one(&mut *tx)
+            .await?;
+
+            let old_tag_id: Option<i32> = sqlx::query_scalar("SELECT id FROM tags WHERE name = $1")
+                .bind(old_t)
+                .fetch_optional(&mut *tx)
+                .await?;
+
+            if let Some(old_tag_id) = old_tag_id {
+                let affected_conv_ids: Vec<i64> = sqlx::query_scalar(
+                    "SELECT DISTINCT c.id::bigint
+                     FROM conversations c
+                     JOIN taggings tg ON tg.taggable_id = c.id
+                                     AND tg.taggable_type = 'Conversation'
+                                     AND tg.context = 'labels'
+                     WHERE c.account_id::bigint = $1
+                       AND tg.tag_id = $2",
+                )
+                .bind(account_id)
+                .bind(old_tag_id)
+                .fetch_all(&mut *tx)
+                .await?;
+
+                sqlx::query(
+                    "DELETE FROM taggings tg
+                     WHERE tg.tag_id = $1
+                       AND tg.context = 'labels'
+                       AND (
+                         (tg.taggable_type = 'Conversation' AND EXISTS (
+                             SELECT 1 FROM conversations c
+                             WHERE c.id = tg.taggable_id AND c.account_id::bigint = $2
+                         ))
+                         OR
+                         (tg.taggable_type = 'Contact' AND EXISTS (
+                             SELECT 1 FROM contacts ct
+                             WHERE ct.id = tg.taggable_id AND ct.account_id::bigint = $2
+                         ))
+                       )
+                       AND EXISTS (
+                         SELECT 1 FROM taggings dup
+                         WHERE dup.tag_id = $3
+                           AND dup.taggable_type = tg.taggable_type
+                           AND dup.taggable_id = tg.taggable_id
+                           AND dup.context = 'labels'
+                       )",
+                )
+                .bind(old_tag_id)
+                .bind(account_id)
+                .bind(new_tag_id)
+                .execute(&mut *tx)
+                .await?;
+
+                sqlx::query(
+                    "DELETE FROM taggings tg
+                     WHERE tg.tag_id = $1
+                       AND tg.context = 'labels'
+                       AND (
+                         (tg.taggable_type = 'Conversation' AND EXISTS (
+                             SELECT 1 FROM conversations c
+                             WHERE c.id = tg.taggable_id AND c.account_id::bigint = $2
+                         ))
+                         OR
+                         (tg.taggable_type = 'Contact' AND EXISTS (
+                             SELECT 1 FROM contacts ct
+                             WHERE ct.id = tg.taggable_id AND ct.account_id::bigint = $2
+                         ))
+                       )
+                       AND tg.id NOT IN (
+                         SELECT MIN(x.id)
+                         FROM taggings x
+                         WHERE x.tag_id = $1
+                           AND x.context = 'labels'
+                           AND x.taggable_type = tg.taggable_type
+                           AND x.taggable_id = tg.taggable_id
+                       )",
+                )
+                .bind(old_tag_id)
+                .bind(account_id)
+                .execute(&mut *tx)
+                .await?;
+
+                sqlx::query(
+                    "UPDATE taggings tg
+                     SET tag_id = $3
+                     WHERE tg.tag_id = $1
+                       AND tg.context = 'labels'
+                       AND (
+                         (tg.taggable_type = 'Conversation' AND EXISTS (
+                             SELECT 1 FROM conversations c
+                             WHERE c.id = tg.taggable_id AND c.account_id::bigint = $2
+                         ))
+                         OR
+                         (tg.taggable_type = 'Contact' AND EXISTS (
+                             SELECT 1 FROM contacts ct
+                             WHERE ct.id = tg.taggable_id AND ct.account_id::bigint = $2
+                         ))
+                       )",
+                )
+                .bind(old_tag_id)
+                .bind(account_id)
+                .bind(new_tag_id)
+                .execute(&mut *tx)
+                .await?;
+
+                if !affected_conv_ids.is_empty() {
+                    sqlx::query(
+                        "UPDATE conversations c
+                         SET cached_label_list = (
+                             SELECT string_agg(t.name, ', ' ORDER BY t.name)
+                             FROM taggings tg
+                             JOIN tags t ON t.id = tg.tag_id
+                             WHERE tg.taggable_type = 'Conversation'
+                               AND tg.taggable_id = c.id
+                               AND tg.context = 'labels'
+                         ),
+                         updated_at = now()
+                         WHERE c.account_id::bigint = $1
+                           AND c.id::bigint = ANY($2::bigint[])",
+                    )
+                    .bind(account_id)
+                    .bind(&affected_conv_ids)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+        }
+    }
+
+    tx.commit().await?;
     st.hub.invalidate_cache(account_id, "label");
     Ok(Json(l.json()))
 }
