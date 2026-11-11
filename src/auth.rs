@@ -28,10 +28,33 @@ pub fn token_valid(tokens: Option<&Value>, client: &str, token: &str) -> bool {
     if expiry < chrono::Utc::now().timestamp() {
         return false;
     }
-    let check = |k: &str| {
-        entry.get(k).and_then(Value::as_str).is_some_and(|h| bcrypt::verify(token, h).unwrap_or(false))
-    };
+    let check = |k: &str| entry.get(k).and_then(Value::as_str).is_some_and(|h| bcrypt_cached(token, h));
     check("token") || check("last_token")
+}
+
+/// bcrypt cost 10 is ~50 ms, and every dashboard request carries a devise token: without this, each
+/// request paid it on the async runtime. Cache successful checks keyed by sha256(token, stored hash), so a
+/// rotated or revoked token (new stored hash) is re-verified and a wrong token never hits the cache.
+/// Same idea as devise_token_auth's `token_validation_response` cache.
+/// ponytail: unbounded set cleared at 10k entries; use an LRU if tokens churn faster than that.
+fn bcrypt_cached(token: &str, hash: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    use std::{collections::HashSet, sync::Mutex};
+    static OK: std::sync::LazyLock<Mutex<HashSet<[u8; 32]>>> = std::sync::LazyLock::new(Default::default);
+    let key: [u8; 32] = Sha256::new().chain_update(token).chain_update([0]).chain_update(hash).finalize().into();
+    if OK.lock().map(|s| s.contains(&key)).unwrap_or(false) {
+        return true;
+    }
+    let ok = bcrypt::verify(token, hash).unwrap_or(false);
+    if ok {
+        if let Ok(mut s) = OK.lock() {
+            if s.len() >= 10_000 {
+                s.clear();
+            }
+            s.insert(key);
+        }
+    }
+    ok
 }
 
 /// Account feature flags -> {name: bool} using config/features.yml bit order per column.

@@ -541,9 +541,16 @@ async fn index(State(st): State<AppState>, user: CurrentUser, Path(account_id): 
         (f.page - 1) * PER_PAGE
     );
     let rows: Vec<Conv> = bind_base!(sqlx::query_as(&sql), f, au).fetch_all(&st.db).await?;
+    // Chatwoot PR #15719 (N+1 on the list): each row needs ~8 small lookups. Run rows concurrently, capped
+    // below the pool size so one list request cannot starve the rest.
+    // ponytail: still 8 queries per row; batch them into set-based queries if lists grow past 25 rows.
     let mut payload = Vec::with_capacity(rows.len());
-    for c in &rows {
-        payload.push(conv_json(&st.db, c).await);
+    for chunk in rows.chunks(4) {
+        let mut futs = Vec::with_capacity(chunk.len());
+        for c in chunk {
+            futs.push(conv_json(&st.db, c));
+        }
+        payload.extend(futures::future::join_all(futs).await);
     }
     Ok(Json(json!({ "data": { "meta": meta, "payload": payload } })))
 }
