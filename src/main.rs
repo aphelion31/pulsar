@@ -6,9 +6,9 @@ mod common;
 mod companies;
 mod contacts;
 mod events;
-mod listeners;
 mod conversations;
 mod inboxes;
+mod listeners;
 mod reports;
 mod seed;
 mod settings;
@@ -124,6 +124,10 @@ async fn main() -> anyhow::Result<()> {
         .execute(&db)
         .await
         .map_err(|e| anyhow::anyhow!("creating pulsar_widget_token_floors: {e}"))?;
+    sqlx::query(include_str!("../migrations/0004_pulsar_draft_messages.sql"))
+        .execute(&db)
+        .await
+        .map_err(|e| anyhow::anyhow!("creating pulsar_draft_messages: {e}"))?;
 
     let state = AppState {
         db,
@@ -135,6 +139,7 @@ async fn main() -> anyhow::Result<()> {
     events::start(
         state.clone(),
         vec![
+            ("notifications", events::listener(listeners::notifications::handle)),
             ("webhooks", events::listener(listeners::webhooks::handle)),
             ("automation", events::listener(listeners::automation::handle)),
         ],

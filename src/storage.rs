@@ -592,6 +592,27 @@ pub(crate) async fn widget_direct_upload_create(
 ) -> ApiResult {
     let token = q.get("website_token").map(String::as_str);
     crate::widget::check_visitor(&st, token, &headers).await?;
+    direct_upload_create(&st, body).await
+}
+
+pub(crate) async fn conversation_direct_upload(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, display_id)): Path<(i64, i64)>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let visible: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM conversations c WHERE c.account_id = $1 AND c.display_id = $2
+         AND ($3 OR EXISTS (SELECT 1 FROM inbox_members im WHERE im.inbox_id = c.inbox_id AND im.user_id = $4))",
+    )
+    .bind(account_id).bind(display_id).bind(au.is_admin()).bind(user.id)
+    .fetch_optional(&st.db).await?;
+    if visible.is_none() { return Err(ApiError::not_found()); }
+    direct_upload_create(&st, body).await
+}
+
+async fn direct_upload_create(st: &AppState, body: Value) -> ApiResult {
     let b = &body["blob"];
     let filename = clean_name(b["filename"].as_str().unwrap_or("file"));
     let ct = clean_ct(b["content_type"].as_str());
@@ -627,6 +648,25 @@ pub(crate) async fn widget_direct_upload_create(
             "headers": { "Content-Type": ct },
         },
     })))
+}
+
+pub(crate) async fn account_upload(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    mut multipart: Multipart,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id).await?;
+    while let Some(field) = multipart.next_field().await.map_err(mp_err)? {
+        if field.name() != Some("attachment") { continue; }
+        let filename = clean_name(field.file_name().unwrap_or("file"));
+        let ct = clean_ct(field.content_type());
+        let bytes = field.bytes().await.map_err(mp_err)?;
+        if bytes.len() > MAX_BYTES { return Err(ApiError::bad("File is too large (max 40 MB)")); }
+        let (id, _) = save_blob(&st.db, &bytes, &filename, &ct).await?;
+        return Ok(Json(json!({"file_url": blob_url(id, &filename), "blob_id": signed_id(id)})));
+    }
+    Err(ApiError::bad("Attachment is required"))
 }
 
 /// PUT /rails/active_storage/disk_uploads/{key}?token=: stores the bytes of a pending blob.
