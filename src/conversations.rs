@@ -355,10 +355,39 @@ pub(crate) async fn insert_message(
     st: &AppState, c: &Conv, sender: Option<(&str, i64)>, content: &str, message_type: i32, private: bool,
     content_type: i32, content_attributes: Value, echo_id: Option<&str>,
 ) -> Result<Value, ApiError> {
+    // chatwoot#15743: a client retrying a send with the same echo_id gets the original message back
+    // instead of a duplicate. The echo_id is kept in additional_attributes; the advisory lock makes
+    // concurrent retries safe without a schema change.
+    let mut tx = st.db.begin().await?;
+    if let Some(e) = echo_id.filter(|e| !e.is_empty()) {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('pulsar_echo'), hashtext($1 || ':' || $2::text))")
+            .bind(e)
+            .bind(c.id)
+            .execute(&mut *tx)
+            .await?;
+        let prior: Option<Msg> = sqlx::query_as(&format!(
+            "SELECT {MSG_COLS} FROM messages m
+             WHERE m.conversation_id = $1 AND m.account_id = $2 AND m.additional_attributes ->> 'echo_id' = $3
+             ORDER BY m.id LIMIT 1"
+        ))
+        .bind(c.id as i32)
+        .bind(c.account_id as i32)
+        .bind(e)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(m) = prior {
+            tx.commit().await?;
+            let mut data = msg_json(&st.db, &m, c).await;
+            data["echo_id"] = json!(e);
+            return Ok(data);
+        }
+    }
     let m: Msg = sqlx::query_as(&format!(
         "INSERT INTO messages AS m (content, account_id, inbox_id, conversation_id, message_type, private, status, content_type,
-            content_attributes, sender_type, sender_id, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $8::json, $9, $10, now(), now()) RETURNING {MSG_COLS}"
+            content_attributes, sender_type, sender_id, additional_attributes, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $8::json, $9, $10,
+                 CASE WHEN $11::text IS NULL THEN '{{}}'::jsonb ELSE jsonb_build_object('echo_id', $11::text) END,
+                 now(), now()) RETURNING {MSG_COLS}"
     ))
     .bind(content)
     .bind(c.account_id as i32)
@@ -370,8 +399,10 @@ pub(crate) async fn insert_message(
     .bind(content_attributes)
     .bind(sender.map(|s| s.0))
     .bind(sender.map(|s| s.1))
-    .fetch_one(&st.db)
+    .bind(echo_id.filter(|e| !e.is_empty()))
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
     if message_type != 2 {
         // outgoing public reply: first reply + clear waiting; incoming: start waiting
         sqlx::query(
@@ -581,6 +612,12 @@ async fn create(State(st): State<AppState>, user: CurrentUser, Path(account_id):
     .bind(b.get("custom_attributes").filter(|v| v.is_object()).cloned().unwrap_or(json!({})))
     .fetch_one(&st.db)
     .await?;
+    // chatwoot#16151: labels in the create payload are applied before conversation.created fires,
+    // so listeners never see the conversation without them.
+    let labels = parse_labels(&b["labels"]);
+    if !labels.is_empty() {
+        set_labels(&st.db, id, &labels).await?;
+    }
     let c = emit_conv(&st, id, "conversation.created").await?;
     if let Some(content) = b["message"]["content"].as_str().filter(|s| !s.trim().is_empty()) {
         insert_message(&st, &c, Some(("User", user.id)), content, 1, false, 0, json!({}), None).await?;
@@ -773,41 +810,52 @@ async fn labels_index(State(st): State<AppState>, user: CurrentUser, Path((accou
     Ok(Json(json!({ "payload": c.labels() })))
 }
 
-/// POST /conversations/{id}/labels {labels: [...]} replaces the label set.
-async fn labels_create(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
-    let au = require_account(&st.db, &user, account_id).await?;
-    let c = load(&st.db, &au, id).await?;
-    let mut labels: Vec<String> = b["labels"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-        .filter(|s| !s.is_empty())
-        .collect();
-    labels.dedup();
-    let old = c.labels();
-    let mut tx = st.db.begin().await?;
+/// Parse a `labels` array: trimmed, non-empty, duplicates removed keeping first order.
+fn parse_labels(v: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in v.as_array().into_iter().flatten().filter_map(|v| v.as_str()) {
+        let s = s.trim().to_string();
+        if !s.is_empty() && !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    out
+}
+
+/// Replace the conversation's label set in one transaction (taggings + cached_label_list).
+async fn set_labels(db: &PgPool, conv_id: i64, labels: &[String]) -> Result<(), ApiError> {
+    let mut tx = db.begin().await?;
     sqlx::query("DELETE FROM taggings WHERE taggable_type = 'Conversation' AND taggable_id = $1 AND context = 'labels'")
-        .bind(c.id as i32)
+        .bind(conv_id as i32)
         .execute(&mut *tx)
         .await?;
-    for l in &labels {
+    for l in labels {
         let tag: i32 = sqlx::query_scalar("INSERT INTO tags (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id")
             .bind(l)
             .fetch_one(&mut *tx)
             .await?;
         sqlx::query("INSERT INTO taggings (tag_id, taggable_type, taggable_id, context, created_at) VALUES ($1, 'Conversation', $2, 'labels', now())")
             .bind(tag)
-            .bind(c.id as i32)
+            .bind(conv_id as i32)
             .execute(&mut *tx)
             .await?;
     }
     sqlx::query("UPDATE conversations SET cached_label_list = $1, updated_at = now() WHERE id = $2")
         .bind(labels.join(", "))
-        .bind(c.id)
+        .bind(conv_id)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    Ok(())
+}
+
+/// POST /conversations/{id}/labels {labels: [...]} replaces the label set.
+async fn labels_create(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    let labels = parse_labels(&b["labels"]);
+    let old = c.labels();
+    set_labels(&st.db, c.id, &labels).await?;
     let added: Vec<&String> = labels.iter().filter(|l| !old.contains(l)).collect();
     let removed: Vec<&String> = old.iter().filter(|l| !labels.contains(l)).collect();
     let fmt = |v: &[&String]| v.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
