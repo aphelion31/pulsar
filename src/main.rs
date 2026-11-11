@@ -92,6 +92,19 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Released Chatwoot 4.19.1 lacks account_users.accepts_conversations/accepts_calls (added later on main).
+    let has_wp: bool = sqlx::query_scalar(
+        "SELECT count(*) = 2 FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = 'account_users'
+           AND column_name IN ('accepts_conversations', 'accepts_calls')",
+    )
+    .fetch_one(&db)
+    .await?;
+    let _ = common::HAS_WORK_PREFERENCES.set(has_wp);
+    if !has_wp {
+        tracing::info!("account_users work preferences not in this schema; using Chatwoot defaults (accept all)");
+    }
+
     // Pulsar-owned table (same as migrations/0003). Created here too so an install that skipped the
     // migration keeps the widget working instead of failing every request. Idempotent; Chatwoot
     // tables are not touched.

@@ -18,6 +18,25 @@ pub struct AppState {
     pub frontend_url: String,
 }
 
+/// `account_users.accepts_conversations` / `accepts_calls` exist only after Chatwoot's
+/// AddWorkPreferencesToAccountUsers migration (Chatwoot main, not in released v4.19.1).
+/// Detected once at startup; when absent, Pulsar reports Chatwoot's defaults (true) and ignores writes,
+/// so it runs on a stock 4.19.1 database without altering Chatwoot's schema.
+pub static HAS_WORK_PREFERENCES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub fn has_work_preferences() -> bool {
+    *HAS_WORK_PREFERENCES.get().unwrap_or(&true)
+}
+
+/// SQL for the two work-preference columns of `account_users au`, or Chatwoot's defaults when absent.
+pub fn work_pref_cols(alias: &str) -> String {
+    if has_work_preferences() {
+        format!("{alias}.accepts_conversations, {alias}.accepts_calls")
+    } else {
+        "true AS accepts_conversations, true AS accepts_calls".into()
+    }
+}
+
 impl FromRef<AppState> for PgPool {
     fn from_ref(s: &AppState) -> PgPool {
         s.db.clone()
