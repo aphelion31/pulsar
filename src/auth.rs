@@ -1,6 +1,6 @@
 //! devise_token_auth compatible auth + profile + account endpoints.
 use axum::{
-    extract::{Path, State},
+    extract::{FromRequest, Multipart, Path, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -314,8 +314,35 @@ pub async fn profile_show(State(db): State<PgPool>, user: CurrentUser) -> ApiRes
 }
 
 /// PUT /api/v1/profile  {profile: {name, display_name, email, message_signature, ui_settings, password, current_password}}
-/// Multipart (avatar upload) is not supported: ponytail, add when ActiveStorage port lands.
-pub async fn profile_update(State(db): State<PgPool>, user: CurrentUser, Json(body): Json<Value>) -> ApiResult {
+/// Or multipart/form-data with `profile[...]` text fields and a `profile[avatar]` image file.
+pub async fn profile_update(State(db): State<PgPool>, user: CurrentUser, req: Request) -> ApiResult {
+    let multipart = req
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|s| s.starts_with("multipart/form-data"));
+    let body: Value = if multipart {
+        let mut form = Multipart::from_request(req, &db).await.map_err(|_| ApiError::bad("invalid multipart"))?;
+        let mut body = json!({});
+        while let Some(field) = form.next_field().await.map_err(|_| ApiError::bad("invalid multipart"))? {
+            let name = field.name().unwrap_or("").to_string();
+            let key = name.strip_prefix("profile[").and_then(|s| s.strip_suffix(']')).unwrap_or(&name).to_string();
+            if field.file_name().is_some() {
+                if key == "avatar" {
+                    crate::storage::set_avatar(&db, "User", user.id, field).await?;
+                }
+                continue;
+            }
+            let text = field.text().await.map_err(|_| ApiError::bad("invalid field"))?;
+            if !key.is_empty() {
+                body["profile"][&key] = json!(text);
+            }
+        }
+        body
+    } else {
+        let Json(v) = Json::<Value>::from_request(req, &db).await.map_err(|_| ApiError::bad("invalid JSON"))?;
+        v
+    };
     let p = &body["profile"];
     if let Some(pw) = p["password"].as_str() {
         let current = p["current_password"].as_str().unwrap_or_default().to_string();
@@ -357,6 +384,35 @@ pub async fn profile_update(State(db): State<PgPool>, user: CurrentUser, Json(bo
         sqlx::query("UPDATE users SET email=$1, uid=$1, updated_at=now() WHERE id=$2")
             .bind(e)
             .bind(user.id)
+            .execute(&db)
+            .await?;
+    }
+    Ok(Json(user_json(&db, user.id).await?))
+}
+
+/// DELETE /api/v1/profile/avatar
+pub async fn profile_avatar_destroy(State(db): State<PgPool>, user: CurrentUser) -> ApiResult {
+    crate::storage::remove_avatar(&db, "User", user.id).await?;
+    Ok(Json(user_json(&db, user.id).await?))
+}
+
+/// POST /api/v1/profile/resend_confirmation. Confirmation email sending is not ported; mirrors Chatwoot's `head :ok`.
+pub async fn resend_confirmation(_user: CurrentUser) -> StatusCode {
+    StatusCode::OK
+}
+
+/// POST /api/v1/profile/reset_access_token: regenerates the user's API access token.
+pub async fn reset_access_token(State(db): State<PgPool>, user: CurrentUser) -> ApiResult {
+    let token = random_token(16);
+    let updated = sqlx::query("UPDATE access_tokens SET token=$1, updated_at=now() WHERE owner_type='User' AND owner_id=$2")
+        .bind(&token)
+        .bind(user.id)
+        .execute(&db)
+        .await?;
+    if updated.rows_affected() == 0 {
+        sqlx::query("INSERT INTO access_tokens (owner_type, owner_id, token, created_at, updated_at) VALUES ('User', $1, $2, now(), now())")
+            .bind(user.id)
+            .bind(&token)
             .execute(&db)
             .await?;
     }
