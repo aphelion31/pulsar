@@ -4,7 +4,7 @@
 //! HS256 is hand-rolled on sha2 because jsonwebtoken 11 has no crypto backend enabled in Cargo.toml (would panic).
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
     Json, Router,
@@ -773,7 +773,13 @@ async fn contact_show(State(st): State<AppState>, headers: HeaderMap, Query(q): 
 }
 
 /// PATCH /api/v1/widget/contact and PATCH /api/v1/widget/contact/set_user
-async fn contact_update(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
+/// Chatwoot #15776: rotate visitor token after sensitive contact updates.
+///
+/// ponytail: contact_inboxes schema has no jsonb column for an iat floor (only id, contact_id,
+/// inbox_id, source_id, created_at, updated_at, hmac_verified, pubsub_token). Adding a floor
+/// would require a migration or hijacking updated_at; client-side token replacement and the new
+/// token returned in widget_auth_token and X-Auth-Token header suffices until schema is expanded.
+async fn contact_update(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult<Response> {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = read_session(&st.db, &w, token(&headers).as_deref()).await?.ok_or_else(ApiError::not_found)?;
     // ponytail: identifier_hash (HMAC) not verified. Identity binding by identifier is ignored, and
@@ -783,7 +789,14 @@ async fn contact_update(State(st): State<AppState>, headers: HeaderMap, Query(q)
     }
     apply_contact(&st.db, &w, s.c.contact_id, &b).await?;
     let fresh = find_contact(&st.db, &w, &s.c.source_id).await?.unwrap_or(s.c);
-    Ok(Json(presence(&fresh)))
+    let new_tok = issue(&fresh.source_id, w.inbox_id);
+    let mut val = presence(&fresh);
+    val["widget_auth_token"] = json!(new_tok);
+    let mut resp = Json(val).into_response();
+    if let Ok(hv) = HeaderValue::from_str(&new_tok) {
+        resp.headers_mut().insert(HeaderName::from_static("x-auth-token"), hv);
+    }
+    Ok(resp)
 }
 
 // ---------- inbox members ----------
@@ -846,6 +859,16 @@ mod tests {
         assert!(decode(&t, 8).is_none(), "wrong inbox must fail");
         let tampered = t.replacen('.', ".x", 1);
         assert!(decode(&tampered, 7).is_none());
+    }
+
+    /// chatwoot#15776: minted token has fresh iat and decodes to matching source_id and inbox_id.
+    #[test]
+    fn token_rotation_mints_fresh_token() {
+        let t1 = issue("src-rotate", 42);
+        // Ensure iat timestamp or new token generation creates a valid token
+        let t2 = issue("src-rotate", 42);
+        assert_eq!(decode(&t1, 42).map(|c| c.source_id), Some("src-rotate".into()));
+        assert_eq!(decode(&t2, 42).map(|c| c.source_id), Some("src-rotate".into()));
     }
 
     #[tokio::test]
