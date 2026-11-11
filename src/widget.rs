@@ -4,7 +4,8 @@
 //! HS256 is hand-rolled on sha2 because jsonwebtoken 11 has no crypto backend enabled in Cargo.toml (would panic).
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, patch, post},
     Json, Router,
 };
@@ -521,8 +522,27 @@ async fn channel_json(db: &PgPool, w: &Wd, token: &str) -> Value {
 }
 
 /// GET /widget?website_token=: the widget UI is the React route /app/widget (same SPA build).
-async fn page(axum::extract::RawQuery(q): axum::extract::RawQuery) -> axum::response::Redirect {
-    axum::response::Redirect::to(&format!("/app/widget?{}", q.unwrap_or_default()))
+/// Chatwoot #15775 (CWE-598): cw_conversation is accepted from query for backward compatibility,
+/// but stripped before redirecting so the visitor JWT never leaks into browser history or logs.
+/// Response sets Referrer-Policy: no-referrer and Cache-Control: no-store.
+async fn page(axum::extract::RawQuery(q): axum::extract::RawQuery) -> Response {
+    let raw = q.unwrap_or_default();
+    let cleaned: String = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(
+            url::form_urlencoded::parse(raw.as_bytes())
+                .filter(|(k, _)| k != "cw_conversation"),
+        )
+        .finish();
+    let target = if cleaned.is_empty() {
+        "/app/widget".to_string()
+    } else {
+        format!("/app/widget?{cleaned}")
+    };
+    let mut res = axum::response::Redirect::to(&target).into_response();
+    let h = res.headers_mut();
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
 }
 
 /// POST /api/v1/widget/config?website_token=
@@ -825,5 +845,26 @@ mod tests {
         assert!(decode(&t, 8).is_none(), "wrong inbox must fail");
         let tampered = t.replacen('.', ".x", 1);
         assert!(decode(&tampered, 7).is_none());
+    }
+
+    #[tokio::test]
+    async fn page_strips_cw_conversation_and_sets_security_headers() {
+        let res = page(axum::extract::RawQuery(Some(
+            "website_token=wt1&cw_conversation=secret.jwt.here&locale=en".into(),
+        )))
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            res.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()),
+            Some("/app/widget?website_token=wt1&locale=en")
+        );
+        assert_eq!(
+            res.headers().get(header::REFERRER_POLICY).and_then(|v| v.to_str().ok()),
+            Some("no-referrer")
+        );
+        assert_eq!(
+            res.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
     }
 }
