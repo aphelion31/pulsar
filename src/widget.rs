@@ -614,18 +614,55 @@ async fn msg_create(State(st): State<AppState>, headers: HeaderMap, Query(q): Qu
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = required(&st, &w, &headers).await?;
     let content = msg_content(&b["message"])?;
-    let conv = match latest_conv(&st.db, &w, s.c.ci_id).await? {
+    // Chatwoot #16417: two first messages sent together opened two conversations. Serialize the
+    // find-or-create per contact_inbox with a transaction-scoped advisory lock (no schema change).
+    let mut tx = st.db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('pulsar_widget_conv'), $1::int)")
+        .bind(s.c.ci_id as i32)
+        .execute(&mut *tx)
+        .await?;
+    let existing: Option<Conv> = sqlx::query_as(&format!(
+        "SELECT {CONV_COLS} FROM conversations c
+         WHERE c.account_id = $1 AND c.inbox_id = $2 AND c.contact_inbox_id = $3
+         ORDER BY c.id DESC LIMIT 1"
+    ))
+    .bind(w.account_id as i32)
+    .bind(w.inbox_id as i32)
+    .bind(s.c.ci_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (conv, created_new) = match existing {
         Some(c) => {
             if c.status == 1 && !w.allow_messages_after_resolved.unwrap_or(true) {
                 return Err(ApiError(StatusCode::FORBIDDEN, "Conversation is resolved. Start a new conversation.".into()));
             }
-            c
+            (c, false)
         }
         None => {
             let extra = json!({ "referer": b["message"]["referer_url"], "initiated_at": b["message"]["timestamp"] });
-            create_conv(&st, &w, &s, extra, json!({})).await?
+            let id: i64 = sqlx::query_scalar(
+                "INSERT INTO conversations (account_id, inbox_id, status, contact_id, contact_inbox_id,
+                    additional_attributes, custom_attributes, last_activity_at, created_at, updated_at)
+                 VALUES ($1, $2, 0, $3, $4, $5::jsonb, '{}'::jsonb, now(), now(), now()) RETURNING id::bigint",
+            )
+            .bind(w.account_id as i32)
+            .bind(w.inbox_id as i32)
+            .bind(s.c.contact_id)
+            .bind(s.c.ci_id)
+            .bind(extra)
+            .fetch_one(&mut *tx)
+            .await?;
+            let c: Conv = sqlx::query_as(&format!("SELECT {CONV_COLS} FROM conversations c WHERE c.id = $1"))
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+            (c, true)
         }
     };
+    tx.commit().await?;
+    if created_new {
+        notify_conv(&st, &conv, "conversation.created").await?;
+    }
     let echo = b["message"]["echo_id"].as_str();
     let created = insert_message(&st, &conv, Some(("Contact", s.c.contact_id)), &content, 0, false, 0, json!({}), echo).await?;
     let id = created["id"].as_i64().unwrap_or_default();
