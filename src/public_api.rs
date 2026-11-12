@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use crate::common::{ApiError, ApiResult, AppState};
 use hmac::{Hmac, Mac};
 use sha2_compat::Sha256;
-use crate::conversations::{Conv, CONV_COLS, MSG_COLS, Msg, emit, emit_conv, msg_json, contact_json};
+use crate::conversations::{Conv, CONV_COLS, MSG_COLS, Msg, emit, emit_conv, msg_json, contact_json, insert_message};
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/public/api/v1/inboxes/{inbox_identifier}", get(show))
@@ -14,6 +14,39 @@ pub fn routes() -> Router<AppState> {
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/toggle_status", axum::routing::post(toggle_status))
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/toggle_typing", axum::routing::post(toggle_typing))
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/update_last_seen", axum::routing::post(update_last_seen))
+        .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/messages", get(message_index).post(message_create))
+        .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/messages/{message_id}", axum::routing::patch(message_update))
+}
+
+async fn message_index(State(st): State<AppState>, Path((ident, source, id)): Path<(String, String, i64)>, query: axum::extract::Query<std::collections::HashMap<String, String>>) -> ApiResult {
+    let c = scoped_conv(&st, &ident, &source, id).await?;
+    let before = query.get("before").and_then(|v| v.parse::<i64>().ok()).unwrap_or(i64::MAX);
+    let rows: Vec<Msg> = sqlx::query_as(&format!("SELECT {MSG_COLS} FROM messages m WHERE m.conversation_id = $1 AND m.account_id = $2 AND m.private = false AND m.id < $3 ORDER BY m.id DESC LIMIT 20"))
+        .bind(c.id as i32).bind(c.account_id as i32).bind(before).fetch_all(&st.db).await?;
+    let mut result = Vec::new(); for m in rows.iter().rev() { result.push(public_message(&st, &c, m).await); } Ok(Json(json!(result)))
+}
+async fn message_create(State(st): State<AppState>, Path((ident, source, id)): Path<(String, String, i64)>, Json(body): Json<Value>) -> ApiResult {
+    let c = scoped_conv(&st, &ident, &source, id).await?;
+    let content = body["content"].as_str().ok_or_else(|| ApiError::bad("Content is required"))?;
+    let value = insert_message(&st, &c, c.contact_id.map(|id| ("Contact", id)), content, 0, false, 0, json!({}), body["echo_id"].as_str()).await?;
+    let mid = value["id"].as_i64().ok_or_else(|| ApiError::bad("Message creation failed"))?;
+    let m: Msg = sqlx::query_as(&format!("SELECT {MSG_COLS} FROM messages m WHERE m.id = $1 AND m.conversation_id = $2 AND m.account_id = $3"))
+        .bind(mid as i32).bind(c.id as i32).bind(c.account_id as i32).fetch_one(&st.db).await?;
+    Ok(Json(public_message(&st, &c, &m).await))
+}
+async fn message_update(State(st): State<AppState>, Path((ident, source, id, mid)): Path<(String, String, i64, i64)>, Json(body): Json<Value>) -> ApiResult {
+    let c = scoped_conv(&st, &ident, &source, id).await?;
+    let m: Msg = sqlx::query_as(&format!("SELECT {MSG_COLS} FROM messages m WHERE m.id = $1 AND m.conversation_id = $2 AND m.account_id = $3"))
+        .bind(mid as i32).bind(c.id as i32).bind(c.account_id as i32).fetch_one(&st.db).await?;
+    if m.content_type == 9 && (chrono::Utc::now().date_naive() - m.created_at.date()).num_days() > 14 { return Err(ApiError::bad("You cannot update the CSAT survey after 14 days")); }
+    let attrs = body.get("submitted_values").cloned().unwrap_or(Value::Null);
+    if !attrs.is_null() {
+        sqlx::query("UPDATE messages SET content_attributes = jsonb_set(coalesce(content_attributes::jsonb,'{}'::jsonb), '{submitted_values}', $1::jsonb), updated_at = now() WHERE id = $2 AND conversation_id = $3 AND account_id = $4")
+            .bind(attrs).bind(mid as i32).bind(c.id as i32).bind(c.account_id as i32).execute(&st.db).await?;
+    }
+    let updated: Msg = sqlx::query_as(&format!("SELECT {MSG_COLS} FROM messages m WHERE m.id = $1 AND m.conversation_id = $2 AND m.account_id = $3"))
+        .bind(mid as i32).bind(c.id as i32).bind(c.account_id as i32).fetch_one(&st.db).await?;
+    Ok(Json(public_message(&st, &c, &updated).await))
 }
 
 async fn scoped_conv(st: &AppState, ident: &str, source: &str, display_id: i64) -> Result<Conv, ApiError> {
