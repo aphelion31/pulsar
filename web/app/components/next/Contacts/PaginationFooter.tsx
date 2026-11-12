@@ -29,6 +29,7 @@ export default function PaginationFooter({
       startItem,
       endItem,
       totalItems,
+      count: totalItems,
     });
   }, [startItem, endItem, totalItems]);
 
@@ -36,6 +37,7 @@ export default function PaginationFooter({
     return t("PAGINATION_FOOTER.CURRENT_PAGE_INFO", {
       currentPage: "",
       totalPages,
+      count: totalPages,
     });
   }, [totalPages]);
 

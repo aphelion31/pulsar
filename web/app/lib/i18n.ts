@@ -49,7 +49,8 @@ import whatsappTemplateMgmt from "../i18n/en/whatsappTemplateMgmt.json";
 import whatsappTemplates from "../i18n/en/whatsappTemplates.json";
 import yearInReview from "../i18n/en/yearInReview.json";
 
-export type Vars = Record<string, string | number>;
+import { pickPlural, type Vars } from "./plural";
+export type { Vars };
 
 const messages: Record<string, unknown> = {
   ...advancedFilters,
@@ -113,7 +114,7 @@ function lookup(key: string): string | undefined {
 }
 
 export function t(key: string, vars?: Vars): string {
-  const raw = lookup(key) ?? key;
+  const raw = pickPlural(lookup(key) ?? key, vars);
   if (!vars) return raw;
   return raw.replace(/\{(\w+)\}/g, (match, name: string) =>
     Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match,

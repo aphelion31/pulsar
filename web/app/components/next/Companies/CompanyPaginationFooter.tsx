@@ -32,6 +32,7 @@ export default function CompanyPaginationFooter({
   const pageOfText = t("PAGINATION_FOOTER.CURRENT_PAGE_INFO", {
     currentPage: "",
     totalPages,
+    count: totalPages,
   });
 
   return (
