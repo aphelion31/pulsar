@@ -94,7 +94,7 @@ export default [
 
     // Settings sub-routes
     ph("accounts/:accountId/settings/general", "cw-settings-general"),
-    ph("accounts/:accountId/settings/agents/list", "cw-settings-agents-list"),
+    route("accounts/:accountId/settings/agents/list", "routes/settings/agents.tsx"),
     ph("accounts/:accountId/settings/assignment-policy", "cw-settings-assignment-policy"),
     ph("accounts/:accountId/settings/assignment-policy/index", "cw-settings-assignment-policy-index"),
     ph("accounts/:accountId/settings/assignment-policy/assignment", "cw-settings-assignment-policy-assignment"),
