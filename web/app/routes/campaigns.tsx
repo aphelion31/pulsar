@@ -2,7 +2,7 @@
 // (routes/dashboard/campaigns/pages/LiveChatCampaignsPage.vue, components-next/Campaigns/*).
 // SMS and WhatsApp tabs are shown but disabled until those channels exist in Pulsar.
 import { useEffect, useState, type FormEvent } from "react";
-import { Link, useOutletContext } from "react-router";
+import { useOutletContext } from "react-router";
 import Button from "~/components/next/Button";
 import Switch from "~/components/next/Switch";
 import { acct, api } from "~/lib/api";
@@ -28,8 +28,6 @@ type Form = { title: string; message: string; inboxId: string; senderId: string;
 const WEBSITE = "Channel::WebWidget";
 const empty: Form = { title: "", message: "", inboxId: "", senderId: "0", enabled: true, businessHours: false, url: "", timeOnPage: "10" };
 const input = "rounded-lg border border-n-weak bg-n-background px-3 py-2 text-sm";
-const disabledTab = "px-3 py-2 text-sm text-n-slate-9 cursor-not-allowed";
-const tabClass = "px-3 py-2 text-sm border-b-2";
 
 function validUrl(value: string) {
   try {
@@ -166,12 +164,6 @@ export default function CampaignsPage() {
       {isAdmin && <Button sm label={t("CAMPAIGN.LIVE_CHAT.NEW_CAMPAIGN")} icon="plus" onClick={() => open()} />}
     </header>
 
-    <nav aria-label="Campaign types" className="mb-6 flex gap-2 border-b border-n-weak">
-      <Link to={`/accounts/${accountId}/campaigns/live_chat`} aria-current="page" className={`${tabClass} border-n-brand text-n-blue-11`}>Live Chat</Link>
-      <button type="button" disabled aria-disabled="true" title="Not supported yet" className={`${disabledTab} border-b-2 border-transparent`}>SMS</button>
-      <button type="button" disabled aria-disabled="true" title="Not supported yet" className={`${disabledTab} border-b-2 border-transparent`}>WhatsApp</button>
-    </nav>
-
     {notice && !mode && <p role="status" className="mb-4 text-sm text-n-teal-11">{notice}</p>}
     {error && !mode && <p role="alert" className="mb-4 text-sm text-n-ruby-11">{error}</p>}
 
@@ -223,7 +215,7 @@ export default function CampaignsPage() {
           </label>
           <label className="grid gap-1 text-sm">{t("CAMPAIGN.LIVE_CHAT.CREATE.FORM.SENT_BY.LABEL")}
             <select className={input} value={form.senderId} disabled={!form.inboxId} onChange={e => setForm({ ...form, senderId: e.target.value })}>
-              <option value="0">Bot</option>
+              <option value="0">{t("CAMPAIGN.LIVE_CHAT.CARD.CAMPAIGN_DETAILS.BOT")}</option>
               {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
           </label>

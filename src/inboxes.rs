@@ -21,7 +21,7 @@ const FEATURE_BITS: [(&str, i64); 4] = [
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/inboxes", get(inbox_index).post(inbox_create))
-        .route("/inboxes/{id}", get(inbox_show).patch(inbox_update).delete(inbox_destroy))
+        .route("/inboxes/{id}", get(inbox_show).patch(inbox_update).put(inbox_update).delete(inbox_destroy))
         .route("/inboxes/{id}/assignable_agents", get(inbox_assignable))
         .route("/assignable_agents", get(assignable_index))
         .route(
@@ -33,7 +33,7 @@ pub fn routes() -> Router<AppState> {
         .route("/agents", get(agents_index).post(agent_create))
         .route("/agents/{id}", patch(agent_update).delete(agent_destroy))
         .route("/teams", get(teams_index).post(team_create))
-        .route("/teams/{id}", get(team_show).patch(team_update).delete(team_destroy))
+        .route("/teams/{id}", get(team_show).patch(team_update).put(team_update).delete(team_destroy))
         .route(
             "/teams/{id}/team_members",
             get(team_members_index)
