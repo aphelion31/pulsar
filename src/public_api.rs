@@ -3,11 +3,81 @@ use serde_json::{json, Value};
 use crate::common::{ApiError, ApiResult, AppState};
 use hmac::{Hmac, Mac};
 use sha2_compat::Sha256;
+use crate::conversations::{Conv, CONV_COLS, MSG_COLS, Msg, emit, emit_conv, msg_json, contact_json};
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/public/api/v1/inboxes/{inbox_identifier}", get(show))
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts", axum::routing::post(contact_create))
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}", get(contact_show).patch(contact_update))
+        .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations", get(conv_index).post(conv_create))
+        .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}", get(conv_show))
+        .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/toggle_status", axum::routing::post(toggle_status))
+        .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/toggle_typing", axum::routing::post(toggle_typing))
+        .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/update_last_seen", axum::routing::post(update_last_seen))
+}
+
+async fn scoped_conv(st: &AppState, ident: &str, source: &str, display_id: i64) -> Result<Conv, ApiError> {
+    let (inbox_id, account_id, _, _) = inbox(st, ident).await?;
+    let (ci, _) = contact(st, inbox_id, source).await?;
+    Ok(sqlx::query_as(&format!("SELECT {CONV_COLS} FROM conversations c WHERE c.inbox_id = $1 AND c.account_id = $2 AND c.contact_inbox_id = $3 AND c.display_id = $4"))
+        .bind(inbox_id as i32).bind(account_id as i32).bind(ci).bind(display_id as i32).fetch_one(&st.db).await?)
+}
+
+async fn public_message(st: &AppState, c: &Conv, m: &Msg) -> Value {
+    let v = msg_json(&st.db, m, c).await;
+    let mut out = json!({"id":v["id"],"content":v["content"],"message_type":v["message_type"],"content_type":v["content_type"],"content_attributes":v["content_attributes"],"created_at":v["created_at"],"conversation_id":v["conversation_id"]});
+    for key in ["sender", "attachments"] { if let Some(value) = v.get(key) { out[key] = value.clone(); } }
+    out
+}
+
+async fn public_conv(st: &AppState, c: &Conv) -> Result<Value, ApiError> {
+    let messages: Vec<Msg> = sqlx::query_as(&format!("SELECT {MSG_COLS} FROM messages m WHERE m.conversation_id = $1 AND m.account_id = $2 AND m.private = false AND m.message_type <> 2 ORDER BY m.id"))
+        .bind(c.id as i32).bind(c.account_id as i32).fetch_all(&st.db).await?;
+    let mut values = Vec::new();
+    for m in &messages { values.push(public_message(st, c, m).await); }
+    let status = ["open", "resolved", "pending", "snoozed"].get(c.status as usize).unwrap_or(&"open");
+    Ok(json!({"id":c.display_id,"uuid":c.uuid,"inbox_id":c.inbox_id,"contact_last_seen_at":c.contact_last_seen_at.map(|v| v.and_utc().timestamp()).unwrap_or(0),"agent_last_seen_at":c.agent_last_seen_at.map(|v| v.and_utc().timestamp()).unwrap_or(0),"status":status,"messages":values,"contact":contact_json(&st.db,c.contact_id).await}))
+}
+
+async fn conv_index(State(st): State<AppState>, Path((ident, source)): Path<(String, String)>) -> ApiResult {
+    let (inbox_id, account_id, _, _) = inbox(&st, &ident).await?;
+    let (ci, _) = contact(&st, inbox_id, &source).await?;
+    let rows: Vec<Conv> = sqlx::query_as(&format!("SELECT {CONV_COLS} FROM conversations c WHERE c.inbox_id = $1 AND c.account_id = $2 AND c.contact_inbox_id = $3 ORDER BY c.id DESC"))
+        .bind(inbox_id as i32).bind(account_id as i32).bind(ci).fetch_all(&st.db).await?;
+    let mut out = Vec::new(); for c in &rows { out.push(public_conv(&st, c).await?); } Ok(Json(json!(out)))
+}
+
+async fn conv_create(State(st): State<AppState>, Path((ident, source)): Path<(String, String)>, Json(body): Json<Value>) -> ApiResult {
+    let (inbox_id, account_id, _, _) = inbox(&st, &ident).await?;
+    let (ci, cid) = contact(&st, inbox_id, &source).await?;
+    let id: i64 = sqlx::query_scalar("INSERT INTO conversations (account_id,inbox_id,status,contact_id,contact_inbox_id,additional_attributes,custom_attributes,last_activity_at,created_at,updated_at) VALUES ($1,$2,0,$3,$4,'{}'::jsonb,$5,now(),now(),now()) RETURNING id::bigint")
+        .bind(account_id as i32).bind(inbox_id as i32).bind(cid).bind(ci).bind(body.get("custom_attributes").cloned().unwrap_or(json!({}))).fetch_one(&st.db).await?;
+    let c = emit_conv(&st, id, "conversation.created").await?;
+    Ok(Json(public_conv(&st, &c).await?))
+}
+
+async fn conv_show(State(st): State<AppState>, Path((ident, source, id)): Path<(String, String, i64)>) -> ApiResult {
+    let c = scoped_conv(&st, &ident, &source, id).await?; Ok(Json(public_conv(&st, &c).await?))
+}
+async fn toggle_status(State(st): State<AppState>, Path((ident, source, id)): Path<(String, String, i64)>) -> ApiResult {
+    let mut c = scoped_conv(&st, &ident, &source, id).await?;
+    if c.status != 1 {
+        sqlx::query("UPDATE conversations SET status = 1, updated_at = now() WHERE id = $1 AND account_id = $2 AND inbox_id = $3 AND contact_inbox_id = $4").bind(c.id as i32).bind(c.account_id as i32).bind(c.inbox_id as i32).bind(c.contact_inbox_id).execute(&st.db).await?;
+        c = emit_conv(&st, c.id, "conversation.status_changed").await?;
+    }
+    Ok(Json(public_conv(&st, &c).await?))
+}
+async fn toggle_typing(State(st): State<AppState>, Path((ident, source, id)): Path<(String, String, i64)>, Json(body): Json<Value>) -> Result<axum::http::StatusCode, ApiError> {
+    let c = scoped_conv(&st, &ident, &source, id).await?;
+    if let Some(event) = match body["typing_status"].as_str() { Some("on") => Some("conversation.typing_on"), Some("off") => Some("conversation.typing_off"), _ => None } {
+        emit(&st, &c, event, json!({"conversation":public_conv(&st,&c).await?,"user":contact_json(&st.db,c.contact_id).await})).await;
+    }
+    Ok(axum::http::StatusCode::OK)
+}
+async fn update_last_seen(State(st): State<AppState>, Path((ident, source, id)): Path<(String, String, i64)>) -> Result<axum::http::StatusCode, ApiError> {
+    let c = scoped_conv(&st, &ident, &source, id).await?;
+    sqlx::query("UPDATE conversations SET contact_last_seen_at = now(), updated_at = now() WHERE id = $1 AND account_id = $2 AND inbox_id = $3 AND contact_inbox_id = $4").bind(c.id as i32).bind(c.account_id as i32).bind(c.inbox_id as i32).bind(c.contact_inbox_id).execute(&st.db).await?;
+    Ok(axum::http::StatusCode::OK)
 }
 
 async fn inbox(st: &AppState, identifier: &str) -> Result<(i64, i64, bool, Option<String>), ApiError> {
