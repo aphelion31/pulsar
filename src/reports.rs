@@ -1418,14 +1418,35 @@ async fn reports_bot_metrics(
     State(st): State<AppState>,
     user: CurrentUser,
     Path(account_id): Path<i64>,
-    Query(_params): Query<ReportParams>,
+    Query(params): Query<ReportParams>,
 ) -> ApiResult {
     let _au = require_report_viewer(&st.db, &user, account_id).await?;
+    // mirrors chatwoot/app/builders/v2/reports/bot_metrics_builder.rb (empty range = no rows, as Rails `where(created_at: nil)`)
+    let since = parse_ts(params.since.as_deref());
+    let until = parse_ts(params.r#until.as_deref());
+    let (convs, msgs, resolved, handoffs): (i64, i64, i64, i64) = sqlx::query_as(
+        "WITH bi AS (
+           SELECT i.id FROM inboxes i WHERE i.account_id=$1 AND (
+             EXISTS (SELECT 1 FROM agent_bot_inboxes abi JOIN agent_bots ab ON ab.id=abi.agent_bot_id WHERE abi.inbox_id=i.id AND abi.status=0)
+             OR EXISTS (SELECT 1 FROM integrations_hooks h WHERE h.inbox_id=i.id AND h.app_id='dialogflow' AND h.status=1))),
+         bc AS (SELECT c.id FROM conversations c WHERE c.account_id=$1 AND c.inbox_id IN (SELECT id FROM bi) AND c.created_at >= $2 AND c.created_at < $3),
+         ho AS (SELECT DISTINCT r.conversation_id FROM reporting_events r JOIN conversations c ON c.id=r.conversation_id WHERE r.account_id=$1 AND r.name='conversation_bot_handoff' AND r.created_at >= $2 AND r.created_at < $3)
+         SELECT (SELECT count(*) FROM bc),
+                (SELECT count(*) FROM messages m WHERE m.account_id=$1 AND m.message_type=1 AND m.conversation_id IN (SELECT id FROM bc) AND m.created_at >= $2 AND m.created_at < $3),
+                (SELECT count(DISTINCT r.conversation_id) FROM reporting_events r JOIN conversations c ON c.id=r.conversation_id WHERE r.account_id=$1 AND r.name='conversation_bot_resolved' AND r.created_at >= $2 AND r.created_at < $3 AND r.conversation_id NOT IN (SELECT conversation_id FROM ho)),
+                (SELECT count(*) FROM ho)",
+    )
+    .bind(account_id)
+    .bind(since)
+    .bind(until)
+    .fetch_one(&st.db)
+    .await?;
+    let rate = |n: i64| if convs == 0 { 0 } else { (n as f64 / convs as f64 * 100.0) as i64 };
     Ok(Json(json!({
-        "conversation_count": 0,
-        "message_count": 0,
-        "resolution_rate": 0,
-        "handoff_rate": 0
+        "conversation_count": convs,
+        "message_count": msgs,
+        "resolution_rate": rate(resolved),
+        "handoff_rate": rate(handoffs)
     })))
 }
 
