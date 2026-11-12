@@ -43,13 +43,13 @@ export default [
     ph("accounts/:accountId/contacts/segments/:segmentId", "cw-contacts-segments"),
     ph("accounts/:accountId/contacts/labels/:label", "cw-contacts-labels"),
     ph("accounts/:accountId/contacts/active", "cw-contacts-active"),
-    ph("accounts/:accountId/contacts/:contactId", "cw-contact-detail"),
+    route("accounts/:accountId/contacts/:contactId", "routes/contacts.detail.tsx"),
     ph("accounts/:accountId/contacts/:contactId/segments/:segmentId", "cw-contact-detail-segment"),
     ph("accounts/:accountId/contacts/:contactId/labels/:label", "cw-contact-detail-label"),
 
     // Companies
-    ph("accounts/:accountId/companies", "cw-companies"),
-    ph("accounts/:accountId/companies/:companyId", "cw-company-detail"),
+    route("accounts/:accountId/companies", "routes/companies.tsx"),
+    route("accounts/:accountId/companies/:companyId", "routes/companies.detail.tsx"),
 
     // Search
     ph("accounts/:accountId/search/:tab?", "cw-search"),
