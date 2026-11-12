@@ -66,9 +66,9 @@ export default [
     ph("accounts/:accountId/campaigns/whatsapp/:campaignId", "cw-campaigns-whatsapp-edit"),
 
     // Reports
-    ph("accounts/:accountId/reports", "cw-reports"),
-    ph("accounts/:accountId/reports/overview", "cw-reports-overview"),
-    ph("accounts/:accountId/reports/conversation", "cw-reports-conversation"),
+    route("accounts/:accountId/reports", "routes/reports.tsx", { id: "cw-reports" }),
+    route("accounts/:accountId/reports/overview", "routes/reports.tsx", { id: "cw-reports-overview" }),
+    route("accounts/:accountId/reports/conversation", "routes/reports.tsx", { id: "cw-reports-conversation" }),
     ph("accounts/:accountId/reports/agent", "cw-reports-agent"),
     ph("accounts/:accountId/reports/agents_overview", "cw-reports-agents-overview"),
     ph("accounts/:accountId/reports/agents/:id", "cw-reports-agent-detail"),
