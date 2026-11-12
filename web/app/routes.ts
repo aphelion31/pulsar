@@ -93,7 +93,7 @@ export default [
     ph("accounts/:accountId/profile/mfa", "cw-profile-mfa"),
 
     // Settings sub-routes
-    ph("accounts/:accountId/settings/general", "cw-settings-general"),
+    route("accounts/:accountId/settings/general", "routes/settings/account.tsx"),
     route("accounts/:accountId/settings/agents/list", "routes/settings/agents.tsx"),
     ph("accounts/:accountId/settings/assignment-policy", "cw-settings-assignment-policy"),
     ph("accounts/:accountId/settings/assignment-policy/index", "cw-settings-assignment-policy-index"),
