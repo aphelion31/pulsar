@@ -11,18 +11,18 @@ pub fn routes() -> Router<AppState> {
         .route("/webhooks", get(webhooks_index).post(webhooks_create))
         .route(
             "/webhooks/{id}",
-            axum::routing::patch(webhooks_update).delete(webhooks_delete),
+            axum::routing::patch(webhooks_update).put(webhooks_update).delete(webhooks_delete),
         )
         .route("/macros", get(macros_index).post(macros_create))
         .route(
             "/macros/{id}",
-            get(macros_show).patch(macros_update).delete(macros_delete),
+            get(macros_show).patch(macros_update).put(macros_update).delete(macros_delete),
         )
         .route("/macros/{id}/execute", post(macros_execute))
         .route("/automation_rules", get(rules_index).post(rules_create))
         .route(
             "/automation_rules/{id}",
-            get(rules_show).patch(rules_update).delete(rules_delete),
+            get(rules_show).patch(rules_update).put(rules_update).delete(rules_delete),
         )
         .route("/automation_rules/{id}/clone", post(rules_clone))
 }
@@ -198,6 +198,12 @@ fn actions(v: &Value) -> Result<Value, ApiError> {
                 | "add_private_note"
                 | "resolve_conversation"
                 | "snooze_conversation"
+                | "open_conversation"
+                | "pending_conversation"
+                | "mute_conversation"
+                | "remove_assigned_agent"
+                | "remove_assigned_team"
+                | "send_webhook_event"
         ) {
             return Err(ApiError::bad("Unsupported macro action"));
         }
@@ -431,10 +437,31 @@ async fn macros_execute(
                     }
                     sqlx::query("UPDATE conversations c SET cached_label_list=(SELECT string_agg(t.name, ', ' ORDER BY t.name) FROM taggings tg JOIN tags t ON t.id=tg.tag_id WHERE tg.taggable_type='Conversation' AND tg.taggable_id=c.id AND tg.context='labels'),updated_at=now() WHERE c.account_id=$1 AND c.id=$2").bind(a).bind(conv.id).execute(&st.db).await?;
                 }
-                "change_status" | "resolve_conversation" | "snooze_conversation" => {
+                // mirrors chatwoot/app/services/action_service.rb + macros/execution_service.rb
+                "mute_conversation" => {
+                    if let Some(cid) = conv.contact_id {
+                        sqlx::query("UPDATE contacts SET blocked=true,updated_at=now() WHERE id=$1").bind(cid).execute(&st.db).await?;
+                    }
+                    sqlx::query("UPDATE conversations SET status=1,status_changed_at=now(),updated_at=now() WHERE account_id=$1 AND id=$2").bind(a).bind(conv.id).execute(&st.db).await?;
+                }
+                "remove_assigned_agent" | "remove_assigned_team" => {
+                    let col = if action["action_name"] == "remove_assigned_agent" { "assignee_id" } else { "team_id" };
+                    sqlx::query(&format!("UPDATE conversations SET {col}=NULL,updated_at=now() WHERE account_id=$1 AND id=$2")).bind(a).bind(conv.id).execute(&st.db).await?;
+                }
+                "send_webhook_event" => {
+                    if !text.is_empty() {
+                        let mut payload = crate::conversations::conv_json(&st.db, &conv).await;
+                        payload["event"] = json!("macro.executed");
+                        let url = text.to_string();
+                        tokio::spawn(async move { let _ = crate::listeners::automation::send_webhook(&url, &payload).await; });
+                    }
+                }
+                "change_status" | "resolve_conversation" | "snooze_conversation" | "open_conversation" | "pending_conversation" => {
                     let status = match action["action_name"].as_str().unwrap() {
                         "resolve_conversation" => 1,
                         "snooze_conversation" => 3,
+                        "open_conversation" => 0,
+                        "pending_conversation" => 2,
                         _ => match text {
                             "open" => 0,
                             "resolved" => 1,
@@ -459,6 +486,8 @@ async fn macros_execute(
                 "assign_agent" | "assign_team" => {
                     let target = if first.is_null() || text == "nil" || text == "0" {
                         None
+                    } else if text == "self" && action["action_name"] == "assign_agent" {
+                        Some(u.id as i64)
                     } else {
                         Some(
                             first

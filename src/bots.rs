@@ -14,20 +14,20 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/campaigns/{id}",
             get(campaign_show)
-                .patch(campaign_update)
+                .patch(campaign_update).put(campaign_update)
                 .delete(campaign_delete),
         )
         .route("/agent_bots", get(bots).post(bot_create))
         .route(
             "/agent_bots/{id}",
-            get(bot_show).patch(bot_update).delete(bot_delete),
+            get(bot_show).patch(bot_update).put(bot_update).delete(bot_delete),
         )
         .route("/inboxes/{inbox_id}/agent_bot", get(inbox_bot))
         .route("/inboxes/{inbox_id}/set_agent_bot", post(set_inbox_bot))
         .route("/dashboard_apps", get(apps).post(app_create))
         .route(
             "/dashboard_apps/{id}",
-            get(app_show).patch(app_update).delete(app_delete),
+            get(app_show).patch(app_update).put(app_update).delete(app_delete),
         )
 }
 

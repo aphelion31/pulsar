@@ -769,7 +769,7 @@ fn matches_conditions(
 
 // ---------- Actions execution ----------
 
-async fn send_webhook(url_str: &str, payload: &Value) -> anyhow::Result<()> {
+pub(crate) async fn send_webhook(url_str: &str, payload: &Value) -> anyhow::Result<()> {
     let url = url::Url::parse(url_str)?;
     anyhow::ensure!(
         matches!(url.scheme(), "http" | "https")
