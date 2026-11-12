@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { useLocation, useOutletContext } from "react-router";
+import { useLocation, useOutletContext, useParams } from "react-router";
 import Live from "~/components/next/reports/Live";
+import EntityReport from "~/components/next/reports/EntityReport";
 import { api } from "~/lib/api";
 import type { ShellCtx } from "./shell";
 
@@ -30,7 +31,11 @@ function Chart({ points, label }: { points: Point[]; label: string }) {
 export default function Reports() {
   const { accountId } = useOutletContext<ShellCtx>();
   const { pathname } = useLocation();
+  const { id } = useParams();
   if (pathname.endsWith("/overview")) return <Live accountId={accountId} />;
+  const section = pathname.split("/reports/")[1]?.split("/")[0] ?? "";
+  const kind = section.startsWith("agent") ? "agent" : section.startsWith("inbox") ? "inbox" : section.startsWith("label") ? "label" : section.startsWith("team") ? "team" : undefined;
+  if (kind) return <EntityReport accountId={accountId} kind={kind} id={id} />;
   return <ConversationReport accountId={accountId} />;
 }
 
