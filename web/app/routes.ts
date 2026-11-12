@@ -105,7 +105,7 @@ export default [
     ph("accounts/:accountId/settings/assignment-policy/capacity/edit/:id", "cw-settings-assignment-policy-capacity-edit"),
     route("accounts/:accountId/settings/agent-bots", "routes/settings/agent-bots.tsx", { id: "cw-settings-agent-bots" }),
     ph("accounts/:accountId/settings/custom-attributes", "cw-settings-custom-attributes"),
-    ph("accounts/:accountId/settings/custom-attributes/list", "cw-settings-custom-attributes-list"),
+    route("accounts/:accountId/settings/custom-attributes/list", "routes/settings/attributes.tsx"),
     ph("accounts/:accountId/settings/automation", "cw-settings-automation"),
     ph("accounts/:accountId/settings/automation/list", "cw-settings-automation-list"),
     ph("accounts/:accountId/settings/audit-logs", "cw-settings-audit-logs"),
