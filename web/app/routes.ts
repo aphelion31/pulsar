@@ -121,7 +121,7 @@ export default [
     ph("accounts/:accountId/settings/templates", "cw-settings-templates"),
     ph("accounts/:accountId/settings/integrations", "cw-settings-integrations"),
     ph("accounts/:accountId/settings/integrations/dashboard_apps", "cw-settings-integrations-dashboard-apps"),
-    ph("accounts/:accountId/settings/integrations/webhook", "cw-settings-integrations-webhook"),
+    route("accounts/:accountId/settings/integrations/webhook", "routes/settings/webhooks.tsx"),
     ph("accounts/:accountId/settings/integrations/slack", "cw-settings-integrations-slack"),
     ph("accounts/:accountId/settings/integrations/linear", "cw-settings-integrations-linear"),
     ph("accounts/:accountId/settings/integrations/stripe", "cw-settings-integrations-stripe"),
