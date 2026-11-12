@@ -5,18 +5,39 @@ import EntityReport from "~/components/next/reports/EntityReport";
 import Csat from "~/components/next/reports/Csat";
 import Bot from "~/components/next/reports/Bot";
 import { api } from "~/lib/api";
+import { t } from "~/lib/i18n";
 import type { ShellCtx } from "./shell";
 
 type Point = { timestamp: number; value: number };
+// mirrors chatwoot ReportContainer.vue metric keys + REPORT.METRICS labels
 const metrics = [
-  ["conversations_count", "Conversations"],
-  ["incoming_messages_count", "Incoming messages"],
-  ["outgoing_messages_count", "Outgoing messages"],
-  ["avg_first_response_time", "First response time"],
-  ["avg_resolution_time", "Resolution time"],
-  ["resolutions_count", "Resolutions"],
-  ["reply_time", "Reply time"],
+  ["conversations_count", "CONVERSATIONS"],
+  ["incoming_messages_count", "INCOMING_MESSAGES"],
+  ["outgoing_messages_count", "OUTGOING_MESSAGES"],
+  ["avg_first_response_time", "FIRST_RESPONSE_TIME"],
+  ["avg_resolution_time", "RESOLUTION_TIME"],
+  ["resolutions_count", "RESOLUTION_COUNT"],
+  ["reply_time", "REPLY_TIME"],
 ] as const;
+
+// mirrors chatwoot reports/constants.js DATE_RANGE_OPTIONS
+const RANGES = {
+  LAST_7_DAYS: { offset: 6, groups: ["day"] },
+  LAST_30_DAYS: { offset: 29, groups: ["day", "week"] },
+  LAST_3_MONTHS: { offset: 89, groups: ["day", "week", "month"] },
+  LAST_6_MONTHS: { offset: 179, groups: ["week", "month"] },
+  LAST_YEAR: { offset: 364, groups: ["week", "month"] },
+  CUSTOM_DATE_RANGE: { offset: null, groups: ["day", "week", "month", "year"] },
+} as const;
+type RangeId = keyof typeof RANGES;
+
+// port of @chatwoot/utils formatTime
+export function formatTime(s: number) {
+  if (s >= 60 && s < 3600) { const m = Math.floor(s / 60), sec = m === 60 ? 0 : Math.floor(s % 60); return `${m} Min${sec > 0 ? ` ${sec} Sec` : ""}`; }
+  if (s >= 3600 && s < 86400) { const h = Math.floor(s / 3600), m = s % 3600 < 60 || h === 24 ? 0 : Math.floor((s % 3600) / 60); return `${h} Hr${m > 0 ? ` ${m} Min` : ""}`; }
+  if (s >= 86400) { const d = Math.floor(s / 86400), h = s % 86400 < 3600 || d >= 364 ? 0 : Math.floor((s % 86400) / 3600); return `${d} Day${h > 0 ? ` ${h} Hr` : ""}`; }
+  return `${Math.floor(s)} Sec`;
+}
 
 function dateInput(date: Date) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
@@ -44,19 +65,25 @@ export default function Reports() {
 }
 
 function ConversationReport({ accountId }: { accountId: number }) {
+  const [range, setRange] = useState<RangeId>("LAST_7_DAYS");
   const [from, setFrom] = useState(() => dateInput(new Date(Date.now() - 29 * 86400000)));
   const [to, setTo] = useState(() => dateInput(new Date()));
   const [group, setGroup] = useState("day");
+  const [businessHours, setBusinessHours] = useState(false);
   const [summary, setSummary] = useState<Record<string, number>>({});
   const [series, setSeries] = useState<Record<string, Point[]>>({});
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const offset = RANGES[range].offset;
+  const groups = RANGES[range].groups as readonly string[];
+  const pickRange = (id: RangeId) => { setRange(id); setGroup(RANGES[id].groups[0]); };
   useEffect(() => {
     let active = true;
-    const start = new Date(`${from}T00:00:00`).getTime();
-    const end = new Date(`${to}T23:59:59`).getTime();
+    const today = dateInput(new Date());
+    const start = new Date(`${offset === null ? from : dateInput(new Date(Date.now() - offset * 86400000))}T00:00:00`).getTime();
+    const end = new Date(`${offset === null ? to : today}T23:59:59`).getTime();
     if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) { setError("Select a valid date range"); setLoading(false); return; }
-    const query = new URLSearchParams({ since: String(Math.floor(start / 1000)), until: String(Math.floor(end / 1000)), group_by: group, type: "account" });
+    const query = new URLSearchParams({ since: String(Math.floor(start / 1000)), until: String(Math.floor(end / 1000)), group_by: group, type: "account", business_hours: String(businessHours), timezone_offset: String(-new Date().getTimezoneOffset() / 60) });
     const base = `/api/v2/accounts/${accountId}`;
     setLoading(true); setError("");
     Promise.all([api<Record<string, number>>(`${base}/reports/summary?${query}`), ...metrics.map(([key]) => api<Point[]>(`${base}/reports?${query}&metric=${key}`))]).then(([totals, ...charts]) => {
@@ -65,6 +92,15 @@ function ConversationReport({ accountId }: { accountId: number }) {
       setSeries(Object.fromEntries(metrics.map(([key], i) => [key, charts[i] as Point[]])));
     }).catch((err: unknown) => { if (active) setError(err instanceof Error ? err.message : "Failed to load reports"); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [accountId, from, to, group]);
-  return <div className="h-full overflow-auto p-6"><header className="mb-6"><h1 className="text-xl font-semibold">Conversation Reports</h1></header><div className="mb-6 flex flex-wrap items-end gap-4"><label className="grid gap-1 text-sm">From<input className="rounded border border-slate-300 bg-transparent p-2" type="date" value={from} onChange={event => setFrom(event.target.value)} /></label><label className="grid gap-1 text-sm">To<input className="rounded border border-slate-300 bg-transparent p-2" type="date" value={to} onChange={event => setTo(event.target.value)} /></label><label className="grid gap-1 text-sm">Group by<select className="rounded border border-slate-300 bg-transparent p-2" value={group} onChange={event => setGroup(event.target.value)}><option value="hour">Hour</option><option value="day">Day</option><option value="week">Week</option><option value="month">Month</option><option value="year">Year</option></select></label></div>{error && <p role="alert" className="mb-4 text-red-700">{error}</p>}{loading ? <p>Loading reports…</p> : !error && <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">{metrics.map(([key, label]) => <section key={key} className="rounded-lg border border-slate-200 p-5"><h2 className="text-sm font-medium">{label}</h2><p className="my-3 text-2xl font-semibold">{Number(summary[key] ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}{key.includes("time") ? " s" : ""}</p><Chart points={series[key] ?? []} label={label} /></section>)}</div>}</div>;
+  }, [accountId, from, to, group, offset, businessHours]);
+  const field = "rounded-lg border border-n-weak bg-n-background p-2 text-sm";
+  return <div className="h-full overflow-auto p-6"><header className="mb-6 flex items-center justify-between"><h1 className="text-xl font-medium">{t("REPORT.HEADER")}</h1></header>
+    <div className="mb-6 flex flex-wrap items-end gap-4">
+      <label className="grid gap-1 text-sm">{t("REPORT.DURATION_FILTER_LABEL")}<select className={field} value={range} onChange={e => pickRange(e.target.value as RangeId)}>{(Object.keys(RANGES) as RangeId[]).map(id => <option key={id} value={id}>{t(`REPORT.DATE_RANGE_OPTIONS.${id}`)}</option>)}</select></label>
+      {offset === null && <><label className="grid gap-1 text-sm">{t("REPORT.CUSTOM_DATE_RANGE.PLACEHOLDER")}<input className={field} type="date" value={from} onChange={e => setFrom(e.target.value)} /></label><label className="grid gap-1 text-sm"><span className="sr-only">To</span><input className={field} type="date" value={to} onChange={e => setTo(e.target.value)} /></label></>}
+      <label className="grid gap-1 text-sm">{t("REPORT.GROUP_BY_FILTER_DROPDOWN_LABEL")}<select className={field} value={group} onChange={e => setGroup(e.target.value)}>{groups.map(g => <option key={g} value={g}>{t(`REPORT.GROUPING_OPTIONS.${g.toUpperCase()}`)}</option>)}</select></label>
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={businessHours} onChange={e => setBusinessHours(e.target.checked)} />{t("REPORT.BUSINESS_HOURS")}</label>
+    </div>
+    {error && <p role="alert" className="mb-4 text-n-ruby-11">{error}</p>}
+    {loading ? <p>{t("REPORT.LOADING_CHART")}</p> : !error && <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">{metrics.map(([key, label]) => { const name = t(`REPORT.METRICS.${label}.NAME`); return <section key={key} className="rounded-lg border border-n-weak p-5"><h2 className="text-sm font-medium">{name} <span className="text-n-slate-11">{t(`REPORT.METRICS.${label}.DESC`)}</span></h2><p className="my-3 text-2xl font-semibold">{key.includes("time") ? formatTime(Number(summary[key] ?? 0)) : Number(summary[key] ?? 0).toLocaleString()}</p><Chart points={series[key] ?? []} label={name} /></section>; })}</div>}</div>;
 }
