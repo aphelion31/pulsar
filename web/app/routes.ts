@@ -83,7 +83,7 @@ export default [
     route("accounts/:accountId/reports/teams/:id", "routes/reports.tsx", { id: "cw-reports-team-detail" }),
     ph("accounts/:accountId/reports/sla", "cw-reports-sla"),
     route("accounts/:accountId/reports/csat", "routes/reports.tsx", { id: "cw-reports-csat" }),
-    ph("accounts/:accountId/reports/bot", "cw-reports-bot"),
+    route("accounts/:accountId/reports/bot", "routes/reports.tsx", { id: "cw-reports-bot" }),
     ph("accounts/:accountId/reports/monitors", "cw-reports-monitors"),
     ph("accounts/:accountId/reports/monitors/:monitorId", "cw-reports-monitor-detail"),
 

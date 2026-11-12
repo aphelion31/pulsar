@@ -3,6 +3,7 @@ import { useLocation, useOutletContext, useParams } from "react-router";
 import Live from "~/components/next/reports/Live";
 import EntityReport from "~/components/next/reports/EntityReport";
 import Csat from "~/components/next/reports/Csat";
+import Bot from "~/components/next/reports/Bot";
 import { api } from "~/lib/api";
 import type { ShellCtx } from "./shell";
 
@@ -36,6 +37,7 @@ export default function Reports() {
   if (pathname.endsWith("/overview")) return <Live accountId={accountId} />;
   const section = pathname.split("/reports/")[1]?.split("/")[0] ?? "";
   if (section === "csat") return <Csat accountId={accountId} />;
+  if (section === "bot") return <Bot accountId={accountId} />;
   const kind = section.startsWith("agent") ? "agent" : section.startsWith("inbox") ? "inbox" : section.startsWith("label") ? "label" : section.startsWith("team") ? "team" : undefined;
   if (kind) return <EntityReport accountId={accountId} kind={kind} id={id} />;
   return <ConversationReport accountId={accountId} />;
