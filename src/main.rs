@@ -1,3 +1,4 @@
+mod account_more;
 mod auth;
 mod automation;
 mod bots;
@@ -9,6 +10,7 @@ mod events;
 mod conversations;
 mod inboxes;
 mod listeners;
+mod public_api;
 mod reports;
 mod seed;
 mod settings;
@@ -33,6 +35,7 @@ fn account_routes() -> Router<AppState> {
         .merge(companies::routes())
         .merge(automation::routes())
         .merge(bots::routes())
+        .merge(account_more::routes())
         .fallback(web::not_implemented)
 }
 
@@ -70,6 +73,7 @@ pub fn app(state: AppState) -> Router {
         .nest("/api/v1/accounts/{account_id}", account_routes())
         .nest("/api/v2/accounts/{account_id}", reports::routes().fallback(web::not_implemented))
         .merge(widget::routes())
+        .merge(public_api::routes())
         .merge(storage::routes())
         .route("/api/{*rest}", any(web::not_implemented))
         .route("/cable", get(cable::ws_handler))
