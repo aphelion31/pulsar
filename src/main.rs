@@ -1,3 +1,4 @@
+mod account_more;
 mod auth;
 mod automation;
 mod bots;
@@ -34,6 +35,7 @@ fn account_routes() -> Router<AppState> {
         .merge(companies::routes())
         .merge(automation::routes())
         .merge(bots::routes())
+        .merge(account_more::routes())
         .fallback(web::not_implemented)
 }
 
