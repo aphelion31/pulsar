@@ -132,7 +132,7 @@ export default [
     ph("accounts/:accountId/settings/data", "cw-settings-data"),
     ph("accounts/:accountId/settings/data/:dataImportId", "cw-settings-data-detail"),
     route("accounts/:accountId/settings/labels/list", "routes/settings/labels.tsx"),
-    ph("accounts/:accountId/settings/macros", "cw-settings-macros"),
+    route("accounts/:accountId/settings/macros", "routes/settings/macros.tsx"),
     ph("accounts/:accountId/settings/macros/:macroId/edit", "cw-settings-macros-edit"),
     ph("accounts/:accountId/settings/macros/new", "cw-settings-macros-new"),
     ph("accounts/:accountId/settings/sla", "cw-settings-sla"),
