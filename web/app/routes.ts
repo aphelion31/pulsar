@@ -55,10 +55,10 @@ export default [
     ph("accounts/:accountId/search/:tab?", "cw-search"),
 
     // Campaigns
-    ph("accounts/:accountId/campaigns", "cw-campaigns"),
+    route("accounts/:accountId/campaigns", "routes/campaigns.tsx", { id: "cw-campaigns" }),
     ph("accounts/:accountId/campaigns/ongoing", "cw-campaigns-ongoing"),
     ph("accounts/:accountId/campaigns/one_off", "cw-campaigns-one-off"),
-    ph("accounts/:accountId/campaigns/live_chat", "cw-campaigns-live-chat"),
+    route("accounts/:accountId/campaigns/live_chat", "routes/campaigns.tsx", { id: "cw-campaigns-live-chat" }),
     ph("accounts/:accountId/campaigns/sms", "cw-campaigns-sms"),
     ph("accounts/:accountId/campaigns/whatsapp", "cw-campaigns-whatsapp"),
     ph("accounts/:accountId/campaigns/whatsapp/new", "cw-campaigns-whatsapp-new"),
