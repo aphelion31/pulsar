@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { useOutletContext } from "react-router";
+import { useLocation, useOutletContext } from "react-router";
+import Live from "~/components/next/reports/Live";
 import { api } from "~/lib/api";
 import type { ShellCtx } from "./shell";
 
@@ -28,6 +29,12 @@ function Chart({ points, label }: { points: Point[]; label: string }) {
 
 export default function Reports() {
   const { accountId } = useOutletContext<ShellCtx>();
+  const { pathname } = useLocation();
+  if (pathname.endsWith("/overview")) return <Live accountId={accountId} />;
+  return <ConversationReport accountId={accountId} />;
+}
+
+function ConversationReport({ accountId }: { accountId: number }) {
   const [from, setFrom] = useState(() => dateInput(new Date(Date.now() - 29 * 86400000)));
   const [to, setTo] = useState(() => dateInput(new Date()));
   const [group, setGroup] = useState("day");
