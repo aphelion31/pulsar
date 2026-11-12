@@ -34,4 +34,7 @@ run pulsar pulsar web \
   -l traefik.http.routers.pulsar-router.service=pulsar-service -l traefik.http.services.pulsar-service.loadbalancer.server.port=3000
 docker network connect traefik-network pulsar
 for i in $(seq 1 20); do health pulsar && break; sleep 1; done
+# Traefik needs a few seconds to pick up the recreated container; report only once the public URL answers.
+for i in $(seq 1 30); do [ "$(curl -s -o /dev/null -w '%{http_code}' "https://$H/health")" = 200 ] && break; sleep 1; done
+echo "public /health: $(curl -s -o /dev/null -w '%{http_code}' "https://$H/health")"
 docker ps --filter name=^pulsar$ --format "{{.Names}} {{.Status}}"
