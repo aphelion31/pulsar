@@ -88,12 +88,12 @@ export default [
     ph("accounts/:accountId/reports/monitors/:monitorId", "cw-reports-monitor-detail"),
 
     // Profile
-    ph("accounts/:accountId/profile", "cw-profile"),
-    ph("accounts/:accountId/profile/settings", "cw-profile-settings"),
+    route("accounts/:accountId/profile", "routes/settings/profile.tsx", { id: "cw-profile" }),
+    route("accounts/:accountId/profile/settings", "routes/settings/profile.tsx", { id: "cw-profile-settings" }),
     ph("accounts/:accountId/profile/mfa", "cw-profile-mfa"),
 
     // Settings sub-routes
-    ph("accounts/:accountId/settings/general", "cw-settings-general"),
+    route("accounts/:accountId/settings/general", "routes/settings/account.tsx"),
     route("accounts/:accountId/settings/agents/list", "routes/settings/agents.tsx"),
     ph("accounts/:accountId/settings/assignment-policy", "cw-settings-assignment-policy"),
     ph("accounts/:accountId/settings/assignment-policy/index", "cw-settings-assignment-policy-index"),
@@ -106,10 +106,10 @@ export default [
     route("accounts/:accountId/settings/agent-bots", "routes/settings/agent-bots.tsx", { id: "cw-settings-agent-bots" }),
     ph("accounts/:accountId/settings/custom-attributes", "cw-settings-custom-attributes"),
     route("accounts/:accountId/settings/custom-attributes/list", "routes/settings/attributes.tsx"),
-    ph("accounts/:accountId/settings/automation", "cw-settings-automation"),
-    ph("accounts/:accountId/settings/automation/list", "cw-settings-automation-list"),
-    ph("accounts/:accountId/settings/audit-logs", "cw-settings-audit-logs"),
-    ph("accounts/:accountId/settings/audit-logs/list", "cw-settings-audit-logs-list"),
+    route("accounts/:accountId/settings/automation", "routes/settings/automation.tsx", { id: "cw-settings-automation" }),
+    route("accounts/:accountId/settings/automation/list", "routes/settings/automation.tsx", { id: "cw-settings-automation-list" }),
+    route("accounts/:accountId/settings/audit-logs", "routes/settings/auditlogs.tsx", { id: "cw-settings-audit-logs" }),
+    route("accounts/:accountId/settings/audit-logs/list", "routes/settings/auditlogs.tsx", { id: "cw-settings-audit-logs-list" }),
     route("accounts/:accountId/settings/canned-response", "routes/settings/canned.tsx", { id: "cw-settings-canned-response" }),
     route("accounts/:accountId/settings/canned-response/list", "routes/settings/canned.tsx", { id: "cw-settings-canned-response-list" }),
     ph("accounts/:accountId/settings/inboxes/list", "cw-settings-inboxes-list"),
@@ -144,8 +144,8 @@ export default [
     ph("accounts/:accountId/settings/teams/:teamId/edit", "cw-settings-teams-edit"),
     ph("accounts/:accountId/settings/teams/:teamId/edit/agents", "cw-settings-teams-edit-agents"),
     ph("accounts/:accountId/settings/teams/:teamId/edit/finish", "cw-settings-teams-edit-finish"),
-    ph("accounts/:accountId/settings/custom-roles", "cw-settings-custom-roles"),
-    ph("accounts/:accountId/settings/custom-roles/list", "cw-settings-custom-roles-list"),
+    route("accounts/:accountId/settings/custom-roles", "routes/settings/custom-roles.tsx", { id: "cw-settings-custom-roles" }),
+    route("accounts/:accountId/settings/custom-roles/list", "routes/settings/custom-roles.tsx", { id: "cw-settings-custom-roles-list" }),
     ph("accounts/:accountId/settings/security", "cw-settings-security"),
     ph("accounts/:accountId/settings/conversation-workflow", "cw-settings-conversation-workflow"),
 
