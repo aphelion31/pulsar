@@ -58,8 +58,20 @@ pub fn routes() -> Router<AppState> {
         // live_reports
         .route("/live_reports/conversation_metrics", get(live_conversation_metrics))
         .route("/live_reports/grouped_conversation_metrics", get(live_grouped_conversation_metrics))
-        // year_in_review
+        // ReportPolicy#view?: every report handler above calls `require_report_viewer`.
+        // year_in_review is per-user (YearInReviewsController has no report check)
         .route("/year_in_review", get(year_in_review_show))
+}
+
+/// Chatwoot gates reports, summary_reports and live_reports with `authorize :report, :view?`:
+/// administrators, or custom roles with report_manage.
+async fn require_report_viewer(db: &sqlx::PgPool, user: &CurrentUser, account_id: i64) -> Result<crate::common::AccountUser, ApiError> {
+    let au = require_account(db, user, account_id).await?;
+    if au.is_admin() || au.custom_perms.as_ref().is_some_and(|p| p.iter().any(|x| x == "report_manage")) {
+        Ok(au)
+    } else {
+        Err(ApiError::unauthorized())
+    }
 }
 
 fn parse_ts(val: Option<&str>) -> Option<NaiveDateTime> {
@@ -94,7 +106,7 @@ async fn reports_index(
     Path(account_id): Path<i64>,
     Query(params): Query<ReportParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     let metric = params.metric.as_deref().unwrap_or("conversations_count");
     let since = parse_ts(params.since.as_deref());
     let until = parse_ts(params.r#until.as_deref());
@@ -635,7 +647,7 @@ async fn reports_summary(
     Path(account_id): Path<i64>,
     Query(params): Query<ReportParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     let dim_type = params.r#type.as_deref().unwrap_or("account");
     let dim_id = parse_num_param(params.id.as_deref());
 
@@ -681,7 +693,7 @@ async fn reports_bot_summary(
     Path(account_id): Path<i64>,
     Query(_params): Query<ReportParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     Ok(Json(json!({
         "bot_resolutions_count": 0,
         "bot_handoffs_count": 0,
@@ -701,7 +713,7 @@ async fn reports_conversations(
     Path(account_id): Path<i64>,
     Query(params): Query<ReportParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     let dim_type = params.r#type.as_deref().unwrap_or("account");
 
     if dim_type == "account" {
@@ -820,7 +832,7 @@ async fn reports_conversation_traffic(
     Path(account_id): Path<i64>,
     Query(_params): Query<ReportParams>,
 ) -> impl IntoResponse {
-    let au = match require_account(&st.db, &user, account_id).await {
+    let au = match require_report_viewer(&st.db, &user, account_id).await {
         Ok(au) => au,
         Err(e) => return e.into_response(),
     };
@@ -874,7 +886,7 @@ async fn reports_conversations_summary(
     Path(account_id): Path<i64>,
     Query(params): Query<ReportParams>,
 ) -> impl IntoResponse {
-    let au = match require_account(&st.db, &user, account_id).await {
+    let au = match require_report_viewer(&st.db, &user, account_id).await {
         Ok(au) => au,
         Err(e) => return e.into_response(),
     };
@@ -985,7 +997,7 @@ async fn reports_agents(
     Path(account_id): Path<i64>,
     Query(params): Query<ReportParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     let since = parse_ts(params.since.as_deref());
     let until = parse_ts(params.r#until.as_deref());
     let list = build_agents_summary(&st.db, account_id, since, until).await?;
@@ -1063,7 +1075,7 @@ async fn reports_inboxes(
     Path(account_id): Path<i64>,
     Query(params): Query<ReportParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     let since = parse_ts(params.since.as_deref());
     let until = parse_ts(params.r#until.as_deref());
     let list = build_inboxes_summary(&st.db, account_id, since, until).await?;
@@ -1139,7 +1151,7 @@ async fn reports_teams(
     Path(account_id): Path<i64>,
     Query(params): Query<ReportParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     let since = parse_ts(params.since.as_deref());
     let until = parse_ts(params.r#until.as_deref());
     let list = build_teams_summary(&st.db, account_id, since, until).await?;
@@ -1222,7 +1234,7 @@ async fn reports_labels(
     Path(account_id): Path<i64>,
     Query(params): Query<ReportParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     let since = parse_ts(params.since.as_deref());
     let until = parse_ts(params.r#until.as_deref());
     let list = build_labels_summary(&st.db, account_id, since, until).await?;
@@ -1274,7 +1286,7 @@ async fn summary_reports_channel(
     Path(account_id): Path<i64>,
     Query(_params): Query<ReportParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     // ponytail: channel summary unused in core dashboard, return empty array
     Ok(Json(json!([])))
 }
@@ -1288,7 +1300,7 @@ async fn live_conversation_metrics(
     Path(account_id): Path<i64>,
     Query(params): Query<LiveParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     let metrics = get_account_conversation_metrics(&st.db, account_id, params.team_id).await?;
     Ok(Json(metrics))
 }
@@ -1302,7 +1314,7 @@ async fn live_grouped_conversation_metrics(
     Path(account_id): Path<i64>,
     Query(params): Query<LiveParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     let group = params.group_by.as_deref().unwrap_or("assignee_id");
 
     if group == "team_id" {
@@ -1387,7 +1399,7 @@ async fn reports_drilldown(
     Path(account_id): Path<i64>,
     Query(params): Query<ReportParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     let metric = params.metric.unwrap_or_else(|| "conversations_count".into());
     Ok(Json(json!({
         "meta": {
@@ -1408,7 +1420,7 @@ async fn reports_bot_metrics(
     Path(account_id): Path<i64>,
     Query(_params): Query<ReportParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     Ok(Json(json!({
         "conversation_count": 0,
         "message_count": 0,
@@ -1423,7 +1435,7 @@ async fn reports_inbox_label_matrix(
     Path(account_id): Path<i64>,
     Query(_params): Query<ReportParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     Ok(Json(json!({})))
 }
 
@@ -1433,7 +1445,7 @@ async fn reports_first_response_time_distribution(
     Path(account_id): Path<i64>,
     Query(_params): Query<ReportParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     Ok(Json(json!({})))
 }
 
@@ -1443,7 +1455,7 @@ async fn reports_outgoing_messages_count(
     Path(account_id): Path<i64>,
     Query(_params): Query<ReportParams>,
 ) -> ApiResult {
-    let _au = require_account(&st.db, &user, account_id).await?;
+    let _au = require_report_viewer(&st.db, &user, account_id).await?;
     Ok(Json(json!([])))
 }
 
