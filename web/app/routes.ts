@@ -43,7 +43,7 @@ export default [
     ph("accounts/:accountId/contacts/segments/:segmentId", "cw-contacts-segments"),
     ph("accounts/:accountId/contacts/labels/:label", "cw-contacts-labels"),
     ph("accounts/:accountId/contacts/active", "cw-contacts-active"),
-    ph("accounts/:accountId/contacts/:contactId", "cw-contact-detail"),
+    route("accounts/:accountId/contacts/:contactId", "routes/contacts.detail.tsx"),
     ph("accounts/:accountId/contacts/:contactId/segments/:segmentId", "cw-contact-detail-segment"),
     ph("accounts/:accountId/contacts/:contactId/labels/:label", "cw-contact-detail-label"),
 
