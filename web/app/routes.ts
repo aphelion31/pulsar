@@ -48,8 +48,8 @@ export default [
     ph("accounts/:accountId/contacts/:contactId/labels/:label", "cw-contact-detail-label"),
 
     // Companies
-    ph("accounts/:accountId/companies", "cw-companies"),
-    ph("accounts/:accountId/companies/:companyId", "cw-company-detail"),
+    route("accounts/:accountId/companies", "routes/companies.tsx"),
+    route("accounts/:accountId/companies/:companyId", "routes/companies.detail.tsx"),
 
     // Search
     ph("accounts/:accountId/search/:tab?", "cw-search"),
