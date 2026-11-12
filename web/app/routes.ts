@@ -137,7 +137,7 @@ export default [
     ph("accounts/:accountId/settings/macros/new", "cw-settings-macros-new"),
     ph("accounts/:accountId/settings/sla", "cw-settings-sla"),
     ph("accounts/:accountId/settings/sla/list", "cw-settings-sla-list"),
-    ph("accounts/:accountId/settings/teams/list", "cw-settings-teams-list"),
+    route("accounts/:accountId/settings/teams/list", "routes/settings/teams.tsx"),
     ph("accounts/:accountId/settings/teams/new", "cw-settings-teams-new"),
     ph("accounts/:accountId/settings/teams/new/:teamId/finish", "cw-settings-teams-finish"),
     ph("accounts/:accountId/settings/teams/new/:teamId/agents", "cw-settings-teams-add-agents"),
