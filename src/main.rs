@@ -136,6 +136,10 @@ async fn main() -> anyhow::Result<()> {
         .execute(&db)
         .await
         .map_err(|e| anyhow::anyhow!("creating pulsar_draft_messages: {e}"))?;
+    sqlx::query(include_str!("../migrations/0005_pulsar_events.sql"))
+        .execute(&db)
+        .await
+        .map_err(|e| anyhow::anyhow!("creating pulsar_events: {e}"))?;
 
     let state = AppState {
         db,
