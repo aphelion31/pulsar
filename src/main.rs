@@ -14,6 +14,7 @@ mod events;
 mod conversations;
 mod email_inbound;
 mod scheduler;
+mod inbox_actions;
 mod inboxes;
 mod help_center;
 mod listeners;
@@ -39,6 +40,7 @@ fn account_routes() -> Router<AppState> {
         .merge(conversations::routes())
         .merge(contacts::routes())
         .merge(inboxes::routes())
+        .merge(inbox_actions::routes())
         .merge(assignment_policies::routes())
         .merge(settings::routes())
         .merge(help_center::routes())
