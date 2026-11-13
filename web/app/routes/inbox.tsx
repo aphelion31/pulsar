@@ -188,7 +188,7 @@ export default function InboxRoute() {
   );
 }
 
-function Thread({ id, epoch, accountId, meId, subscribe, onGone }: { id: number; epoch: number; accountId: number; meId: number; subscribe: ShellCtx["subscribe"]; onGone: () => void }) {
+export function Thread({ id, epoch, accountId, meId, subscribe, onGone }: { id: number; epoch: number; accountId: number; meId: number; subscribe: ShellCtx["subscribe"]; onGone: () => void }) {
   const base = `${acct(accountId)}/conversations/${id}`;
   const [conv, setConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);

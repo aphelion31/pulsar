@@ -229,7 +229,8 @@ async fn bot_get(st: &AppState, a: i64, id: i64, admin: bool) -> Result<Value, A
         .bind(admin)
         .bind(id)
         .fetch_one(&st.db)
-        .await?)
+        .await
+        .map(crate::ar_encryption::reveal_secret)?)
 }
 async fn bots(State(st): State<AppState>, user: CurrentUser, Path(a): Path<i64>) -> ApiResult {
     let au = require_account(&st.db, &user, a).await?;
@@ -238,6 +239,7 @@ async fn bots(State(st): State<AppState>, user: CurrentUser, Path(a): Path<i64>)
         .bind(au.is_admin())
         .fetch_all(&st.db)
         .await?;
+    let rows: Vec<Value> = rows.into_iter().map(crate::ar_encryption::reveal_secret).collect();
     Ok(Json(json!(rows)))
 }
 async fn bot_show(
@@ -270,7 +272,7 @@ async fn bot_create(
     merge(&mut v, payload(&body, "agent_bot"));
     bot_validate(&v)?;
     let mut tx = st.db.begin().await?;
-    let id:i64=sqlx::query_scalar("INSERT INTO agent_bots(account_id,name,description,outgoing_url,bot_type,bot_config,created_at,updated_at) VALUES($1,$2->>'name',$2->>'description',$2->>'outgoing_url',CASE WHEN $2->>'bot_type'='dialogflow' THEN 1 ELSE 0 END,$2->'bot_config',now(),now()) RETURNING id").bind(a).bind(&v).fetch_one(&mut *tx).await?;
+    let id:i64=sqlx::query_scalar("INSERT INTO agent_bots(account_id,name,description,outgoing_url,bot_type,bot_config,secret,created_at,updated_at) VALUES($1,$2->>'name',$2->>'description',$2->>'outgoing_url',CASE WHEN $2->>'bot_type'='dialogflow' THEN 1 ELSE 0 END,$2->'bot_config',$3,now(),now()) RETURNING id").bind(a).bind(&v).bind(crate::ar_encryption::new_secret().1).fetch_one(&mut *tx).await?;
     let token: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
         .take(24)
@@ -497,7 +499,7 @@ async fn bot_reset_secret(State(st): State<AppState>, user: CurrentUser, Path((a
     let n = sqlx::query("UPDATE agent_bots SET secret=$3, updated_at=now() WHERE account_id=$1 AND id=$2")
         .bind(a)
         .bind(id)
-        .bind(secure_token())
+        .bind(crate::ar_encryption::new_secret().1)
         .execute(&st.db)
         .await?
         .rows_affected();

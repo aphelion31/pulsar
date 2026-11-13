@@ -33,8 +33,8 @@ export default [
     route("accounts/:accountId/label/:label/conversations/:conversation_id", "routes/inbox.tsx", { id: "cw-label-conv" }),
     route("accounts/:accountId/team/:teamId", "routes/inbox.tsx", { id: "cw-team-convs" }),
     route("accounts/:accountId/team/:teamId/conversations/:conversationId", "routes/inbox.tsx", { id: "cw-team-conv" }),
-    ph("accounts/:accountId/custom_view/:id", "cw-custom-view-convs"),
-    ph("accounts/:accountId/custom_view/:id/conversations/:conversation_id", "cw-custom-view-conv"),
+    route("accounts/:accountId/custom_view/:id", "routes/r2/custom-view.tsx", { id: "cw-custom-view-convs" }),
+    route("accounts/:accountId/custom_view/:id/conversations/:conversation_id", "routes/r2/custom-view.tsx", { id: "cw-custom-view-conv" }),
     route("accounts/:accountId/mentions/conversations", "routes/inbox.tsx", { id: "cw-mentions" }),
     route("accounts/:accountId/mentions/conversations/:conversationId", "routes/inbox.tsx", { id: "cw-mentions-conv" }),
     route("accounts/:accountId/unattended/conversations", "routes/inbox.tsx", { id: "cw-unattended" }),
@@ -55,14 +55,14 @@ export default [
     route("accounts/:accountId/companies/:companyId", "routes/companies.detail.tsx"),
 
     // Search
-    ph("accounts/:accountId/search/:tab?", "cw-search"),
+    route("accounts/:accountId/search/:tab?", "routes/r2/search.tsx", { id: "cw-search" }),
 
     // Campaigns
     route("accounts/:accountId/campaigns", "routes/campaigns.tsx", { id: "cw-campaigns" }),
-    ph("accounts/:accountId/campaigns/ongoing", "cw-campaigns-ongoing"),
-    ph("accounts/:accountId/campaigns/one_off", "cw-campaigns-one-off"),
+    route("accounts/:accountId/campaigns/ongoing", "routes/campaigns.tsx", { id: "cw-campaigns-ongoing" }),
+    route("accounts/:accountId/campaigns/one_off", "routes/r2/campaigns-one-off.tsx", { id: "cw-campaigns-one-off" }),
     route("accounts/:accountId/campaigns/live_chat", "routes/campaigns.tsx", { id: "cw-campaigns-live-chat" }),
-    ph("accounts/:accountId/campaigns/sms", "cw-campaigns-sms"),
+    route("accounts/:accountId/campaigns/sms", "routes/r2/campaigns-one-off.tsx", { id: "cw-campaigns-sms" }),
     ph("accounts/:accountId/campaigns/whatsapp", "cw-campaigns-whatsapp"),
     ph("accounts/:accountId/campaigns/whatsapp/new", "cw-campaigns-whatsapp-new"),
     ph("accounts/:accountId/campaigns/whatsapp/:campaignId/analytics", "cw-campaigns-whatsapp-analytics"),
@@ -153,8 +153,8 @@ export default [
     route("accounts/:accountId/settings/conversation-workflow", "routes/settings/r1/conversation-workflow.tsx", { id: "cw-settings-conversation-workflow" }),
 
     // Onboarding & Suspended
-    ph("accounts/:accountId/onboarding", "cw-onboarding"),
-    ph("accounts/:accountId/onboarding/inbox-setup", "cw-onboarding-inbox-setup"),
+    route("accounts/:accountId/onboarding", "routes/r2/onboarding.tsx", { id: "cw-onboarding" }),
+    route("accounts/:accountId/onboarding/inbox-setup", "routes/r2/onboarding-inbox-setup.tsx", { id: "cw-onboarding-inbox-setup" }),
     route("accounts/:accountId/suspended", "routes/settings/r1/suspended.tsx", { id: "cw-suspended" }),
   ]),
 

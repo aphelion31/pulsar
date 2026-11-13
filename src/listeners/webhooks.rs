@@ -189,7 +189,7 @@ async fn process(st: &AppState, ev: &Event) -> anyhow::Result<()> {
     for row in rows {
         let url: String = row.try_get("url")?;
         let secret: Option<String> = row.try_get("secret")?;
-        if let Err(error) = deliver(&url, secret.as_deref(), &body).await {
+        if let Err(error) = deliver(&url, secret.map(|s| crate::ar_encryption::decrypt(&s)).as_deref(), &body).await {
             tracing::warn!(%error, "account webhook delivery failed");
         }
     }
@@ -200,7 +200,7 @@ async fn process(st: &AppState, ev: &Event) -> anyhow::Result<()> {
             if let Some(row) = row {
                 let url: String = row.try_get("webhook_url")?;
                 let secret: Option<String> = row.try_get("secret")?;
-                if let Err(error) = deliver(&url, secret.as_deref(), &body).await {
+                if let Err(error) = deliver(&url, secret.map(|s| crate::ar_encryption::decrypt(&s)).as_deref(), &body).await {
                     tracing::warn!(%error, "API inbox webhook delivery failed");
                     if is_message {
                         sqlx::query("UPDATE messages SET status=3, updated_at=now() WHERE id=$1 AND account_id=$2").bind(payload["id"].as_i64().map(|n| n as i32)).bind(ev.account_id as i32).execute(&st.db).await?;

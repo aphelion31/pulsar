@@ -105,12 +105,15 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/widget/messages", get(msg_index).post(msg_create))
         .route("/api/v1/widget/messages/{id}", patch(msg_update))
         .route("/api/v1/widget/contact", get(contact_show).patch(contact_update))
-        .route("/api/v1/widget/contact/set_user", patch(contact_update))
+        .route("/api/v1/widget/contact/set_user", patch(contact_set_user))
+        .route("/api/v1/widget/contact/destroy_custom_attributes", post(contact_destroy_custom_attributes))
+        .route("/api/v1/widget/conversations/set_custom_attributes", post(conv_set_custom_attributes))
+        .route("/api/v1/widget/conversations/destroy_custom_attributes", post(conv_destroy_custom_attributes))
+        .route("/api/v1/widget/conversations/transcript", post(conv_transcript))
         .route("/api/v1/widget/inbox_members", get(inbox_members))
         .route("/api/v1/widget/events", post(events))
         .route("/api/v1/widget/campaigns", get(campaigns))
-        // ponytail: widget labels not ported yet
-        .route("/api/v1/widget/labels", post(|| async { Json(json!({})) }))
+        .route("/api/v1/widget/labels", post(label_add).delete(label_remove))
 }
 
 /// GET /api/v1/widget/campaigns: mirrors widget/campaigns_controller.rb + campaigns/index.json.jbuilder.
@@ -1003,6 +1006,180 @@ async fn contact_update(State(st): State<AppState>, headers: HeaderMap, Query(q)
         resp.headers_mut().insert(HeaderName::from_static("x-auth-token"), hv);
     }
     Ok(resp)
+}
+
+/// PATCH /api/v1/widget/contact/set_user (contacts_controller#set_user). `identifier` binds the visitor to an
+/// identified contact, so it needs a matching identifier_hash (HMAC-SHA256 of identifier, keyed by the
+/// inbox hmac_token). Without that the request is refused with Chatwoot's 401 message.
+async fn contact_set_user(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult<Response> {
+    let w = widget_of(&st.db, q.website_token.as_deref()).await?;
+    let s = read_session(&st.db, &w, token(&headers).as_deref()).await?.ok_or_else(ApiError::not_found)?;
+    let identifier = b["identifier"].as_str().filter(|v| !v.is_empty());
+    let hash_given = b["identifier_hash"].as_str().filter(|v| !v.is_empty());
+    // should_verify_hmac?: verify when a hash is sent or the inbox is hmac_mandatory
+    let must_verify = hash_given.is_some() || w.hmac_mandatory == Some(true);
+    if must_verify && !valid_hmac(&st.db, &w, identifier, hash_given).await? {
+        return Err(ApiError(StatusCode::UNAUTHORIZED, "HMAC failed: Invalid Identifier Hash Provided".into()));
+    }
+    if must_verify && identifier.is_some() {
+        sqlx::query("UPDATE contact_inboxes SET hmac_verified = true WHERE id = $1").bind(s.c.ci_id).execute(&st.db).await?;
+    }
+    apply_contact(&st.db, &w, s.c.contact_id, &b).await?;
+    if let Some(id) = identifier {
+        // Identifier is unique per account. Only set it when no other contact already owns it.
+        sqlx::query("UPDATE contacts SET identifier = $2 WHERE id = $1::bigint AND account_id = $3::bigint
+            AND NOT EXISTS (SELECT 1 FROM contacts o WHERE o.account_id = $3::bigint AND o.identifier = $2 AND o.id <> $1::bigint)")
+            .bind(s.c.contact_id)
+            .bind(id)
+            .bind(w.account_id)
+            .execute(&st.db)
+            .await?;
+    }
+    contact_response(&st, &w, &s.c.source_id, s.c.ci_id, s.iat, s.c.contact_id).await
+}
+
+/// HMAC check for set_user. The hash must be present and match, otherwise the call is refused.
+async fn valid_hmac(db: &PgPool, w: &Wd, identifier: Option<&str>, hash: Option<&str>) -> ApiResult<bool> {
+    let key: Option<String> = sqlx::query_scalar("SELECT hmac_token FROM channel_web_widgets WHERE website_token = $1")
+        .bind(w.website_token.as_deref().unwrap_or_default())
+        .fetch_optional(db)
+        .await?
+        .flatten();
+    let (Some(key), Some(hash), Some(id)) = (key, hash, identifier) else { return Ok(false) };
+    let expect = hex::encode(hmac_sha256(key.as_bytes(), id.as_bytes()));
+    Ok(ct_eq(expect.as_bytes(), hash.as_bytes()))
+}
+
+/// Shared contact response: presence fields, rotated widget_auth_token, pubsub_token.
+async fn contact_response(st: &AppState, w: &Wd, source_id: &str, _ci_id: i64, iat: i64, _cid: i64) -> ApiResult<Response> {
+    let fresh = find_contact(&st.db, w, source_id).await?.ok_or_else(ApiError::not_found)?;
+    let new_tok = rotate_token(&st.db, w, fresh.ci_id, &fresh.source_id, iat).await?;
+    let mut val = presence(&fresh);
+    val["widget_auth_token"] = json!(new_tok);
+    val["pubsub_token"] = json!(fresh.pubsub_token);
+    let mut resp = Json(val).into_response();
+    if let Ok(hv) = HeaderValue::from_str(&new_tok) {
+        resp.headers_mut().insert(HeaderName::from_static("x-auth-token"), hv);
+    }
+    Ok(resp)
+}
+
+fn clone_cs(c: &Cs) -> Cs {
+    Cs {
+        ci_id: c.ci_id,
+        source_id: c.source_id.clone(),
+        pubsub_token: c.pubsub_token.clone(),
+        contact_id: c.contact_id,
+        name: c.name.clone(),
+        email: c.email.clone(),
+        phone_number: c.phone_number.clone(),
+        identifier: c.identifier.clone(),
+    }
+}
+
+/// POST /api/v1/widget/contact/destroy_custom_attributes {custom_attributes: [keys]}
+async fn contact_destroy_custom_attributes(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
+    let w = widget_of(&st.db, q.website_token.as_deref()).await?;
+    let s = required(&st, &w, &headers).await?;
+    let keys = string_list(&b["custom_attributes"]);
+    sqlx::query("UPDATE contacts SET custom_attributes = COALESCE(custom_attributes, '{}'::jsonb) - $2::text[], updated_at = now() WHERE id = $1::bigint")
+        .bind(s.c.contact_id)
+        .bind(&keys)
+        .execute(&st.db)
+        .await?;
+    let fresh = find_contact(&st.db, &w, &s.c.source_id).await?.unwrap_or_else(|| clone_cs(&s.c));
+    Ok(Json(presence(&fresh)))
+}
+
+fn string_list(v: &Value) -> Vec<String> {
+    v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default()
+}
+
+/// POST /api/v1/widget/conversations/set_custom_attributes {custom_attributes: {...}} on the visitor's latest conversation.
+async fn conv_set_custom_attributes(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
+    let w = widget_of(&st.db, q.website_token.as_deref()).await?;
+    let s = required(&st, &w, &headers).await?;
+    let c = latest_conv(&st.db, &w, s.c.ci_id).await?.ok_or_else(ApiError::not_found)?;
+    let attrs = if b["custom_attributes"].is_object() { b["custom_attributes"].clone() } else { json!({}) };
+    sqlx::query("UPDATE conversations SET custom_attributes = $2, updated_at = now() WHERE id = $1").bind(c.id).bind(&attrs).execute(&st.db).await?;
+    Ok(Json(json!({ "custom_attributes": attrs })))
+}
+
+/// POST /api/v1/widget/conversations/destroy_custom_attributes {custom_attribute: [keys]}
+async fn conv_destroy_custom_attributes(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
+    let w = widget_of(&st.db, q.website_token.as_deref()).await?;
+    let s = required(&st, &w, &headers).await?;
+    let c = latest_conv(&st.db, &w, s.c.ci_id).await?.ok_or_else(ApiError::not_found)?;
+    let keys = string_list(&b["custom_attribute"]);
+    let attrs: Value = sqlx::query_scalar(
+        "UPDATE conversations SET custom_attributes = COALESCE(custom_attributes, '{}'::jsonb) - $2::text[], updated_at = now()
+         WHERE id = $1 RETURNING custom_attributes",
+    )
+    .bind(c.id)
+    .bind(&keys)
+    .fetch_one(&st.db)
+    .await?;
+    Ok(Json(json!({ "custom_attributes": attrs })))
+}
+
+/// POST /api/v1/widget/conversations/transcript {email} (conversations_controller#transcript). Gated like
+/// Chatwoot: plan gate is always true in Pulsar, rate limit per account not implemented (ponytail).
+async fn conv_transcript(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>) -> ApiResult {
+    let w = widget_of(&st.db, q.website_token.as_deref()).await?;
+    let s = required(&st, &w, &headers).await?;
+    let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else {
+        return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, String::new()));
+    };
+    // Chatwoot sends to the contact's stored email, not a client-supplied address.
+    let Some(email) = s.c.email.clone().filter(|e| !e.trim().is_empty()) else { return Ok(Json(json!({}))) };
+    let messages: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT content FROM messages WHERE conversation_id = $1 AND account_id = $2 AND private = false
+         AND message_type IN (0, 1) AND content_attributes::jsonb ->> 'forwarded_message_id' IS NULL ORDER BY created_at, id",
+    )
+    .bind(c.id)
+    .bind(c.account_id)
+    .fetch_all(&st.db)
+    .await?;
+    let mut html = String::from("<html><body><ul>");
+    for m in messages.into_iter().flatten() {
+        html.push_str("<li>");
+        html.push_str(&m.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;"));
+        html.push_str("</li>");
+    }
+    html.push_str("</ul></body></html>");
+    if let Err(e) = crate::mailer::send_html(&email, "Conversation transcript", html).await {
+        tracing::error!("transcript email: {e}");
+        return Err(ApiError::bad("Unable to send transcript"));
+    }
+    Ok(Json(json!({})))
+}
+
+/// POST /api/v1/widget/labels {label}: adds the label to the visitor's latest conversation only when the
+/// label already exists in the account (labels_controller#create). Always 204.
+async fn label_add(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult<StatusCode> {
+    let w = widget_of(&st.db, q.website_token.as_deref()).await?;
+    let s = required(&st, &w, &headers).await?;
+    let Some(label) = b["label"].as_str().filter(|l| !l.is_empty()) else { return Ok(StatusCode::NO_CONTENT) };
+    let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else { return Ok(StatusCode::NO_CONTENT) };
+    let defined: Option<i32> = sqlx::query_scalar("SELECT 1 FROM labels WHERE account_id = $1 AND title = $2")
+        .bind(w.account_id)
+        .bind(label)
+        .fetch_optional(&st.db)
+        .await?;
+    if defined.is_some() {
+        crate::conversations::patch_labels_pub(&st.db, c.id, &[label.to_string()], &[]).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// DELETE /api/v1/widget/labels {label} removes the label from the visitor's latest conversation. Always 204.
+async fn label_remove(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult<StatusCode> {
+    let w = widget_of(&st.db, q.website_token.as_deref()).await?;
+    let s = required(&st, &w, &headers).await?;
+    let Some(label) = b["label"].as_str().filter(|l| !l.is_empty()) else { return Ok(StatusCode::NO_CONTENT) };
+    let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else { return Ok(StatusCode::NO_CONTENT) };
+    crate::conversations::patch_labels_pub(&st.db, c.id, &[], &[label.to_string()]).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------- inbox members ----------

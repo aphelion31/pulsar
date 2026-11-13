@@ -24,6 +24,8 @@ pub fn routes() -> Router<AppState> {
         .route("/inboxes", get(inbox_index).post(inbox_create))
         .route("/inboxes/{id}", get(inbox_show).patch(inbox_update).put(inbox_update).delete(inbox_destroy))
         .route("/inboxes/{id}/assignable_agents", get(inbox_assignable))
+        .route("/inboxes/{id}/avatar", delete(inbox_avatar_destroy))
+        .route("/inboxes/{id}/campaigns", get(inbox_campaigns))
         .route("/assignable_agents", get(assignable_index))
         .route(
             "/inbox_members",
@@ -331,7 +333,7 @@ async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admin: bool) ->
                 obj.insert("additional_attributes".into(), c.try_get::<Option<Value>, _>("additional_attributes")?.into());
                 if admin {
                     obj.insert("hmac_token".into(), c.try_get::<Option<String>, _>("hmac_token")?.into());
-                    obj.insert("secret".into(), c.try_get::<Option<String>, _>("secret")?.into());
+                    obj.insert("secret".into(), c.try_get::<Option<String>, _>("secret")?.map(|s| crate::ar_encryption::decrypt(&s)).into());
                 }
             }
         }
@@ -403,6 +405,32 @@ async fn inbox_show(
     Ok(Json(inbox_json(&st.db, account_id, id, au.is_admin()).await?))
 }
 
+/// DELETE /inboxes/{id}/avatar (inboxes_controller#avatar). Admin only, like Chatwoot check_authorization.
+async fn inbox_avatar_destroy(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    au.require_admin()?;
+    inbox_in_account(&st.db, account_id, id).await?;
+    crate::storage::remove_avatar(&st.db, "Inbox", id).await?;
+    Ok(Json(json!({})))
+}
+
+// Same row shape as bots.rs CAMPAIGN_SELECT (campaigns.json.jbuilder), kept local so bots.rs stays untouched.
+const INBOX_CAMPAIGN_SELECT: &str = "SELECT jsonb_build_object('id',c.display_id,'title',c.title,'description',c.description,'account_id',c.account_id,'inbox',to_jsonb(i) - 'account_id','sender',CASE WHEN u.id IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('id',u.id,'name',u.name,'email',u.email,'account_id',c.account_id) END,'message',c.message,'template_params',c.template_params,'campaign_status',(ARRAY['active','completed','processing'])[c.campaign_status+1],'enabled',c.enabled,'campaign_type',(ARRAY['ongoing','one_off'])[c.campaign_type+1],'trigger_rules',c.trigger_rules,'trigger_only_during_business_hours',c.trigger_only_during_business_hours,'created_at',c.created_at,'updated_at',c.updated_at) || CASE WHEN c.campaign_type=1 THEN jsonb_build_object('scheduled_at',COALESCE(EXTRACT(EPOCH FROM c.scheduled_at)::bigint,0),'started_at',EXTRACT(EPOCH FROM c.started_at)::bigint,'completed_at',EXTRACT(EPOCH FROM c.completed_at)::bigint,'audience',c.audience) ELSE '{}'::jsonb END FROM campaigns c JOIN inboxes i ON i.id=c.inbox_id AND i.account_id=c.account_id LEFT JOIN users u ON u.id=c.sender_id AND EXISTS (SELECT 1 FROM account_users au WHERE au.account_id=c.account_id AND au.user_id=u.id) WHERE c.account_id=$1";
+
+/// GET /inboxes/{id}/campaigns (inboxes_controller#campaigns + campaigns.json.jbuilder). Admin only, as in
+/// Chatwoot's InboxPolicy#campaigns. Same row shape as GET /campaigns.
+async fn inbox_campaigns(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    au.require_admin()?;
+    inbox_in_account(&st.db, account_id, id).await?;
+    let rows: Vec<Value> = sqlx::query_scalar(&format!("{INBOX_CAMPAIGN_SELECT} AND c.inbox_id=$2 ORDER BY c.id"))
+        .bind(account_id)
+        .bind(id)
+        .fetch_all(&st.db)
+        .await?;
+    Ok(Json(json!(rows)))
+}
+
 async fn inbox_create(
     State(st): State<AppState>,
     user: CurrentUser,
@@ -433,7 +461,7 @@ async fn inbox_create(
             .bind(ostr(ch, "webhook_url"))
             .bind(token())
             .bind(token())
-            .bind(token())
+            .bind(crate::ar_encryption::new_secret().1)
             .fetch_one(&mut *tx)
             .await?;
             (id, "Channel::Api")
@@ -458,6 +486,7 @@ async fn inbox_create(
             (id, "Channel::WebWidget")
         }
         Some("telegram") => crate::channels::telegram::create_channel(&mut tx, account_id, ch, &st.frontend_url).await?,
+        Some("line") => crate::channels::line::create_channel(&mut tx, account_id, ch).await?,
         _ => return Err(ApiError::bad("Invalid channel type")),
     };
 
