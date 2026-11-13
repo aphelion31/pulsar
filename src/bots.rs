@@ -22,6 +22,9 @@ pub fn routes() -> Router<AppState> {
             "/agent_bots/{id}",
             get(bot_show).patch(bot_update).put(bot_update).delete(bot_delete),
         )
+        .route("/agent_bots/{id}/avatar", axum::routing::delete(bot_avatar_delete))
+        .route("/agent_bots/{id}/reset_access_token", post(bot_reset_token))
+        .route("/agent_bots/{id}/reset_secret", post(bot_reset_secret))
         .route("/inboxes/{inbox_id}/agent_bot", get(inbox_bot))
         .route("/inboxes/{inbox_id}/set_agent_bot", post(set_inbox_bot))
         .route("/dashboard_apps", get(apps).post(app_create))
@@ -449,4 +452,57 @@ mod tests {
             validate_app(&json!({"title":"app","content":[{"type":"script","url":"x"}]})).is_err()
         );
     }
+}
+
+/// has_secure_token: 24 chars of base58 (Rails SecureRandom.base58).
+fn secure_token() -> String {
+    const B58: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut r = rand::thread_rng();
+    (0..24).map(|_| B58[r.gen_range(0..B58.len())] as char).collect()
+}
+
+/// DELETE /agent_bots/{id}/avatar (AgentBotsController#avatar)
+async fn bot_avatar_delete(State(st): State<AppState>, user: CurrentUser, Path((a, id)): Path<(i64, i64)>) -> ApiResult {
+    require_account(&st.db, &user, a).await?.require_admin()?;
+    bot_get(&st, a, id, true).await?;
+    crate::storage::remove_avatar(&st.db, "AgentBot", id).await?;
+    Ok(Json(bot_get(&st, a, id, true).await?))
+}
+
+/// POST /agent_bots/{id}/reset_access_token
+async fn bot_reset_token(State(st): State<AppState>, user: CurrentUser, Path((a, id)): Path<(i64, i64)>) -> ApiResult {
+    require_account(&st.db, &user, a).await?.require_admin()?;
+    bot_get(&st, a, id, true).await?;
+    let token = secure_token();
+    let n = sqlx::query("UPDATE access_tokens SET token=$2, updated_at=now() WHERE owner_type='AgentBot' AND owner_id=$1")
+        .bind(id)
+        .bind(&token)
+        .execute(&st.db)
+        .await?
+        .rows_affected();
+    if n == 0 {
+        sqlx::query("INSERT INTO access_tokens(owner_type,owner_id,token,created_at,updated_at) VALUES('AgentBot',$1,$2,now(),now())")
+            .bind(id)
+            .bind(&token)
+            .execute(&st.db)
+            .await?;
+    }
+    Ok(Json(bot_get(&st, a, id, true).await?))
+}
+
+/// POST /agent_bots/{id}/reset_secret (WebhookSecretable#reset_secret!)
+/// ponytail: stored plaintext like existing rows; encrypt with ar_encryption together with webhook secrets.
+async fn bot_reset_secret(State(st): State<AppState>, user: CurrentUser, Path((a, id)): Path<(i64, i64)>) -> ApiResult {
+    require_account(&st.db, &user, a).await?.require_admin()?;
+    let n = sqlx::query("UPDATE agent_bots SET secret=$3, updated_at=now() WHERE account_id=$1 AND id=$2")
+        .bind(a)
+        .bind(id)
+        .bind(secure_token())
+        .execute(&st.db)
+        .await?
+        .rows_affected();
+    if n == 0 {
+        return Err(ApiError::not_found());
+    }
+    Ok(Json(bot_get(&st, a, id, true).await?))
 }

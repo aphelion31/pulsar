@@ -23,6 +23,7 @@ pub fn routes() -> Router<AppState> {
         .route("/contacts/filter", post(filter))
         .route("/contacts/{id}", get(show).patch(update).put(update).delete(destroy))
         .route("/contacts/{id}/conversations", get(conversations))
+        .route("/contacts/{id}/attachments", get(attachments))
         .route("/contacts/{id}/labels", get(labels_index).post(labels_create))
         .route("/contacts/{id}/contact_inboxes", get(contact_inboxes_list).post(contact_inbox_create))
         .route("/contacts/{id}/contactable_inboxes", get(contactable_inboxes))
@@ -34,6 +35,36 @@ pub fn routes() -> Router<AppState> {
 }
 
 const RESULTS_PER_PAGE: i64 = 15;
+
+async fn attachments(
+    Path((account_id, id)): Path<(i64, i64)>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+    Query(params): Query<ContactsQuery>,
+) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM contacts WHERE account_id = $1 AND id = $2)")
+        .bind(account_id).bind(id).fetch_one(&st.db).await?;
+    if !exists { return Err(ApiError::not_found()); }
+    let scope = au.custom_scope_sql("$3");
+    let base = format!("FROM attachments a JOIN messages m ON m.id = a.message_id JOIN conversations c ON c.id = m.conversation_id WHERE c.account_id = $1 AND c.contact_id = $2 AND ($4 OR c.inbox_id IN (SELECT inbox_id FROM inbox_members WHERE user_id = $3)) AND ({scope})");
+    let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) {base}"))
+        .bind(account_id).bind(id).bind(user.id).bind(au.is_admin()).fetch_one(&st.db).await?;
+    let rows: Vec<(i64, i64, i32, NaiveDateTime)> = sqlx::query_as(&format!("SELECT a.id::bigint, m.id::bigint, c.display_id, m.created_at {base} ORDER BY a.created_at DESC, a.id DESC LIMIT 100 OFFSET $5"))
+        .bind(account_id).bind(id).bind(user.id).bind(au.is_admin())
+        .bind((params.page.unwrap_or(1).max(1) - 1) * 100).fetch_all(&st.db).await?;
+    let mut payload = Vec::new();
+    for (attachment_id, message_id, conversation_id, created_at) in rows {
+        for mut item in crate::storage::attachments_json(&st.db, message_id).await {
+            if item["id"].as_i64() == Some(attachment_id) {
+                item["conversation_id"] = json!(conversation_id);
+                item["created_at"] = json!(created_at.and_utc().timestamp());
+                payload.push(item);
+            }
+        }
+    }
+    Ok(Json(json!({"meta": {"total_count": count}, "payload": payload})))
+}
 
 #[derive(Debug, Deserialize, Default)]
 struct ContactsQuery {

@@ -7,6 +7,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
+use axum::http::StatusCode;
 
 use crate::{auth, cable, common::*};
 
@@ -31,6 +32,7 @@ pub fn routes() -> Router<AppState> {
         .route("/inbox_members/destroy", delete(members_remove))
         .route("/inbox_members/{inbox_id}", get(members_show))
         .route("/agents", get(agents_index).post(agent_create))
+        .route("/agents/bulk_create", post(agents_bulk_create))
         .route("/agents/{id}", patch(agent_update).delete(agent_destroy))
         .route("/teams", get(teams_index).post(team_create))
         .route("/teams/{id}", get(team_show).patch(team_update).put(team_update).delete(team_destroy))
@@ -455,6 +457,7 @@ async fn inbox_create(
             .await?;
             (id, "Channel::WebWidget")
         }
+        Some("telegram") => crate::channels::telegram::create_channel(&mut tx, account_id, ch, &st.frontend_url).await?,
         _ => return Err(ApiError::bad("Invalid channel type")),
     };
 
@@ -787,40 +790,92 @@ async fn agent_create(
     let role: i64 = if b["role"].as_str() == Some("administrator") { 1 } else { 0 };
 
     let mut tx = st.db.begin().await?;
-    let existing: Option<i64> = sqlx::query_scalar(
-        "SELECT id::bigint FROM users WHERE lower(email) = $1 AND provider = 'email'",
-    )
-    .bind(&email)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let uid = match existing {
-        Some(u) => u,
-        None => {
-            // ponytail: no invite email; account is confirmed with a random password the agent must reset.
-            let hash = hash_pw(token()).await?;
-            sqlx::query_scalar(
-                "INSERT INTO users (provider, uid, encrypted_password, name, email, confirmed_at, pubsub_token,
-                    created_at, updated_at, tokens)
-                 VALUES ('email', $1, $2, $3, $1, now(), $4, now(), now(), '{}') RETURNING id::bigint",
-            )
-            .bind(&email)
-            .bind(hash)
-            .bind(&name)
-            .bind(token())
-            .fetch_one(&mut *tx)
-            .await?
-        }
-    };
-    let already: Option<i32> = sqlx::query_scalar(
-        "SELECT 1 FROM account_users WHERE account_id::bigint = $1 AND user_id::bigint = $2",
-    )
-    .bind(account_id)
-    .bind(uid)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if already.is_some() {
+    let uid = find_or_create_user(&mut tx, &email, &name).await?;
+    if account_user_exists(&mut tx, account_id, uid).await? {
         return Err(ApiError::bad("Agent already exists in this account"));
     }
+    insert_account_user(&mut tx, account_id, uid, role).await?;
+    tx.commit().await?;
+
+    let agent = agents_for(&st.db, account_id, Some(vec![uid])).await?.pop().ok_or_else(ApiError::not_found)?;
+    Ok(Json(agent))
+}
+
+/// Mirrors AgentsController#bulk_create (onboarding): one account_user per new email, existing users
+/// reused, emails already in the account skipped, then clears the onboarding_step custom attribute.
+async fn agents_bulk_create(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Json(body): Json<Value>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    au.require_admin()?;
+    let emails: Vec<String> = body["emails"]
+        .as_array()
+        .ok_or_else(|| ApiError::bad("emails must be an array"))?
+        .iter()
+        .filter_map(|e| e.as_str())
+        .map(|e| e.trim().to_lowercase())
+        .collect();
+
+    let mut tx = st.db.begin().await?;
+    // serialise per account, like Current.account.with_lock; dropping tx on error rolls everything back
+    sqlx::query("SELECT id FROM accounts WHERE id::bigint = $1 FOR UPDATE").bind(account_id).execute(&mut *tx).await?;
+    let current: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM account_users WHERE account_id::bigint = $1")
+        .bind(account_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if emails.len() as i64 > AGENT_LIMIT - current {
+        return Err(ApiError(StatusCode::PAYMENT_REQUIRED, AGENT_LIMIT_MESSAGE.into()));
+    }
+    for email in emails.iter().filter(|e| e.contains('@')) {
+        let name = email.split('@').next().unwrap_or("agent");
+        let uid = find_or_create_user(&mut tx, email, name).await?;
+        if !account_user_exists(&mut tx, account_id, uid).await? {
+            insert_account_user(&mut tx, account_id, uid, 0).await?;
+        }
+    }
+    sqlx::query("UPDATE accounts SET custom_attributes = custom_attributes - 'onboarding_step', updated_at = now() WHERE id::bigint = $1")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Json(json!({})))
+}
+
+/// Mirrors ChatwootApp.max_limit (agents) and AgentBuilder::LimitExceededError. Self-hosted has no license gate.
+const AGENT_LIMIT: i64 = 100_000;
+const AGENT_LIMIT_MESSAGE: &str = "Account limit exceeded. Please purchase more licenses";
+
+async fn find_or_create_user(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, email: &str, name: &str) -> Result<i64, ApiError> {
+    let existing: Option<i64> = sqlx::query_scalar("SELECT id::bigint FROM users WHERE lower(email) = $1 AND provider = 'email'")
+        .bind(email)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if let Some(u) = existing {
+        return Ok(u);
+    }
+    // ponytail: no invite email; account is confirmed with a random password the agent must reset.
+    let hash = hash_pw(token()).await?;
+    Ok(sqlx::query_scalar(
+        "INSERT INTO users (provider, uid, encrypted_password, name, email, confirmed_at, pubsub_token,
+            created_at, updated_at, tokens)
+         VALUES ('email', $1, $2, $3, $1, now(), $4, now(), now(), '{}') RETURNING id::bigint",
+    )
+    .bind(email)
+    .bind(hash)
+    .bind(name)
+    .bind(token())
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+async fn account_user_exists(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, account_id: i64, uid: i64) -> Result<bool, ApiError> {
+    let found: Option<i32> = sqlx::query_scalar("SELECT 1 FROM account_users WHERE account_id::bigint = $1 AND user_id::bigint = $2")
+        .bind(account_id)
+        .bind(uid)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(found.is_some())
+}
+
+async fn insert_account_user(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, account_id: i64, uid: i64, role: i64) -> Result<(), ApiError> {
     sqlx::query(
         "INSERT INTO account_users (account_id, user_id, role, created_at, updated_at)
          VALUES ($1::bigint, $2::bigint, $3::bigint, now(), now())",
@@ -828,12 +883,9 @@ async fn agent_create(
     .bind(account_id)
     .bind(uid)
     .bind(role)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
-    tx.commit().await?;
-
-    let agent = agents_for(&st.db, account_id, Some(vec![uid])).await?.pop().ok_or_else(ApiError::not_found)?;
-    Ok(Json(agent))
+    Ok(())
 }
 
 async fn agent_update(

@@ -1,6 +1,6 @@
 use crate::common::{ApiError, ApiResult, AppState};
 use crate::conversations::{
-    contact_json, emit, emit_conv, insert_message, msg_json, Conv, Msg, CONV_COLS, MSG_COLS,
+    contact_json, emit, emit_conv, insert_message, msg_json, reload, Conv, Msg, CONV_COLS, MSG_COLS,
 };
 use axum::{
     extract::{Path, State},
@@ -22,6 +22,109 @@ pub fn routes() -> Router<AppState> {
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/update_last_seen", axum::routing::post(update_last_seen))
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/messages", get(message_index).post(message_create))
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/messages/{message_id}", axum::routing::patch(message_update))
+        .route("/public/api/v1/csat_survey/{uuid}", get(csat_show).patch(csat_update).put(csat_update))
+}
+
+// ---------- csat_survey (public/api/v1/csat_survey_controller.rb) ----------
+
+const INPUT_CSAT_TYPE: i32 = 9;
+const CSAT_LOCK_DAYS: i64 = 14;
+
+/// Survey message of a conversation addressed by its uuid. Mirrors `@conversation.messages.find_by!(content_type: 'input_csat')`.
+async fn csat_message(st: &AppState, uuid: &str) -> Result<(Msg, Conv), ApiError> {
+    let uuid = uuid::Uuid::parse_str(uuid).map_err(|_| ApiError::not_found())?;
+    let mid: i64 = sqlx::query_scalar(
+        "SELECT m.id::bigint FROM conversations c JOIN messages m ON m.conversation_id = c.id
+         WHERE c.uuid = $1 AND m.content_type = $2 ORDER BY m.id LIMIT 1",
+    )
+    .bind(uuid)
+    .bind(INPUT_CSAT_TYPE)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+    let m: Msg = sqlx::query_as(&format!("SELECT {MSG_COLS} FROM messages m WHERE m.id = $1"))
+        .bind(mid as i32)
+        .fetch_one(&st.db)
+        .await?;
+    let c = reload(&st.db, m.conversation_id).await?;
+    Ok((m, c))
+}
+
+/// Mirrors public/api/v1/models/_csat_survey.json.jbuilder.
+async fn csat_json(st: &AppState, m: &Msg, c: &Conv) -> Result<Value, ApiError> {
+    let row: Option<(Option<Value>, String, i32)> = sqlx::query_as(
+        "SELECT i.csat_config, i.name, COALESCE(a.locale, 0) FROM inboxes i JOIN accounts a ON a.id = i.account_id WHERE i.id = $1",
+    )
+    .bind(c.inbox_id as i32)
+    .fetch_optional(&st.db)
+    .await?;
+    let (config, inbox_name, locale) = row.ok_or_else(ApiError::not_found)?;
+    let response: Option<Value> = sqlx::query_scalar(
+        "SELECT row_to_json(r)::jsonb FROM (SELECT id, rating, feedback_message, contact_id, assigned_agent_id, conversation_id, message_id, account_id FROM csat_survey_responses WHERE message_id = $1) r",
+    )
+    .bind(m.id as i32)
+    .fetch_optional(&st.db)
+    .await?;
+    let config = config.unwrap_or(json!({}));
+    Ok(json!({
+        "id": m.id,
+        "csat_survey_response": response,
+        "display_type": config["display_type"].as_str().unwrap_or("emoji"),
+        "content": config["message"],
+        "inbox_avatar_url": "",
+        "inbox_name": inbox_name,
+        "locale": crate::auth::locale_code(locale),
+        "conversation_id": c.display_id,
+        "created_at": m.created_at.and_utc().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+    }))
+}
+
+async fn csat_show(State(st): State<AppState>, Path(uuid): Path<String>) -> ApiResult {
+    let (m, c) = csat_message(&st, &uuid).await?;
+    Ok(Json(csat_json(&st, &m, &c).await?))
+}
+
+/// Mirrors CsatSurveyController#update: locked after 14 days, otherwise store `submitted_values` (permitted keys
+/// only) and emit message.updated so the csat listener records the rating.
+async fn csat_update(State(st): State<AppState>, Path(uuid): Path<String>, Json(body): Json<Value>) -> ApiResult {
+    let (m, c) = csat_message(&st, &uuid).await?;
+    if (chrono::Utc::now().date_naive() - m.created_at.date()).num_days() > CSAT_LOCK_DAYS {
+        return Err(ApiError::bad("You cannot update the CSAT survey after 14 days"));
+    }
+    let sv = &body["message"]["submitted_values"];
+    if !sv.is_null() {
+        let resp = &sv["csat_survey_response"];
+        if let Some(r) = resp.get("rating").filter(|r| !r.is_null()) {
+            let ok = r.as_i64().or_else(|| r.as_str().and_then(|s| s.parse().ok())).is_some_and(|n| (1..=5).contains(&n));
+            if !ok {
+                return Err(ApiError::bad("Rating is not included in the list"));
+            }
+        }
+        let mut permitted = json!({});
+        for k in ["name", "title", "value"] {
+            if let Some(v) = sv.get(k).filter(|v| !v.is_null()) {
+                permitted[k] = v.clone();
+            }
+        }
+        if resp.is_object() {
+            let mut r = json!({});
+            for k in ["feedback_message", "rating"] {
+                if let Some(v) = resp.get(k).filter(|v| !v.is_null()) {
+                    r[k] = v.clone();
+                }
+            }
+            permitted["csat_survey_response"] = r;
+        }
+        sqlx::query("UPDATE messages SET content_attributes = jsonb_set(coalesce(content_attributes::jsonb,'{}'::jsonb), '{submitted_values}', $1::jsonb), updated_at = now() WHERE id = $2")
+            .bind(permitted)
+            .bind(m.id as i32)
+            .execute(&st.db)
+            .await?;
+        let fresh: Msg = sqlx::query_as(&format!("SELECT {MSG_COLS} FROM messages m WHERE m.id = $1")).bind(m.id as i32).fetch_one(&st.db).await?;
+        let data = msg_json(&st.db, &fresh, &c).await;
+        emit(&st, &c, "message.updated", data).await;
+    }
+    Ok(Json(csat_json(&st, &m, &c).await?))
 }
 
 async fn message_index(
