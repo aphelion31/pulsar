@@ -43,12 +43,12 @@ export default [
     route("accounts/:accountId/participating/conversations/:conversationId", "routes/inbox.tsx", { id: "cw-participating-conv" }),
 
     // Contacts sub-routes
-    ph("accounts/:accountId/contacts/segments/:segmentId", "cw-contacts-segments"),
-    ph("accounts/:accountId/contacts/labels/:label", "cw-contacts-labels"),
-    ph("accounts/:accountId/contacts/active", "cw-contacts-active"),
+    route("accounts/:accountId/contacts/segments/:segmentId", "routes/contacts.tsx", { id: "cw-contacts-segments" }),
+    route("accounts/:accountId/contacts/labels/:label", "routes/contacts.tsx", { id: "cw-contacts-labels" }),
+    route("accounts/:accountId/contacts/active", "routes/contacts.tsx", { id: "cw-contacts-active" }),
     route("accounts/:accountId/contacts/:contactId", "routes/contacts.detail.tsx"),
-    ph("accounts/:accountId/contacts/:contactId/segments/:segmentId", "cw-contact-detail-segment"),
-    ph("accounts/:accountId/contacts/:contactId/labels/:label", "cw-contact-detail-label"),
+    route("accounts/:accountId/contacts/:contactId/segments/:segmentId", "routes/contacts.detail.tsx", { id: "cw-contact-detail-segment" }),
+    route("accounts/:accountId/contacts/:contactId/labels/:label", "routes/contacts.detail.tsx", { id: "cw-contact-detail-label" }),
 
     // Companies
     route("accounts/:accountId/companies", "routes/companies.tsx"),
