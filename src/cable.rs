@@ -48,6 +48,10 @@ impl PresenceSnapshot {
     pub fn is_online(&self, account_id: i64, user_id: i64) -> bool {
         self.0.get(&(account_id, user_id)).is_some_and(|t| t.elapsed() < PRESENCE_TTL)
     }
+    /// Contacts with a live widget session (OnlineStatusTracker.get_available_contact_ids). Contacts are keyed by negative id.
+    pub fn online_contact_ids(&self, account_id: i64) -> Vec<i64> {
+        self.0.iter().filter(|((a, id), t)| *a == account_id && *id < 0 && t.elapsed() < CONTACT_PRESENCE_TTL).map(|((_, id), _)| -id).collect()
+    }
 }
 pub fn presence_snapshot() -> PresenceSnapshot {
     PresenceSnapshot(PRESENCE.lock().unwrap().clone())
