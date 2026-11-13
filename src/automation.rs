@@ -31,7 +31,7 @@ const WEBHOOK: &str = "jsonb_build_object('id', w.id, 'name', w.name, 'url', w.u
 const MACRO: &str = "jsonb_build_object('id',m.id,'name',m.name,'visibility',CASE WHEN m.visibility=1 THEN 'global' ELSE 'personal' END,'account_id',m.account_id,'actions',m.actions,'created_by',CASE WHEN u.id IS NULL THEN NULL ELSE jsonb_build_object('id',u.id,'name',u.name,'email',u.email,'account_id',m.account_id) END,'updated_by',CASE WHEN v.id IS NULL THEN NULL ELSE jsonb_build_object('id',v.id,'name',v.name,'email',v.email,'account_id',m.account_id) END)";
 const RULE: &str = "jsonb_build_object('id',r.id,'account_id',r.account_id,'name',r.name,'description',r.description,'event_name',r.event_name,'conditions',r.conditions,'actions',r.actions,'created_on',extract(epoch from r.created_at)::bigint,'active',r.active,'execution_delay',r.execution_delay)";
 async fn webhook(db: &sqlx::PgPool, account: i64, id: i64) -> Result<Value, ApiError> {
-    Ok(sqlx::query_scalar(&format!("SELECT {WEBHOOK} FROM webhooks w LEFT JOIN inboxes i ON i.id=w.inbox_id AND i.account_id=w.account_id WHERE w.account_id=$1 AND w.id=$2")).bind(account).bind(id).fetch_one(db).await?)
+    Ok(sqlx::query_scalar(&format!("SELECT {WEBHOOK} FROM webhooks w LEFT JOIN inboxes i ON i.id=w.inbox_id AND i.account_id=w.account_id WHERE w.account_id=$1 AND w.id=$2")).bind(account).bind(id).fetch_one(db).await.map(crate::ar_encryption::reveal_secret)?)
 }
 async fn macro_get(db: &sqlx::PgPool, account: i64, id: i64, user: i64) -> Result<Value, ApiError> {
     Ok(sqlx::query_scalar(&format!("SELECT {MACRO} FROM macros m LEFT JOIN users u ON u.id=m.created_by_id LEFT JOIN users v ON v.id=m.updated_by_id WHERE m.account_id=$1 AND m.id=$2 AND (m.visibility=1 OR m.created_by_id=$3)")).bind(account).bind(id).bind(user).fetch_one(db).await?)
@@ -90,6 +90,7 @@ async fn webhooks_index(
 ) -> ApiResult {
     require_account(&st.db, &u, a).await?.require_admin()?;
     let rows: Vec<Value> = sqlx::query_scalar(&format!("SELECT {WEBHOOK} FROM webhooks w LEFT JOIN inboxes i ON i.id=w.inbox_id AND i.account_id=w.account_id WHERE w.account_id=$1 ORDER BY w.id")).bind(a).fetch_all(&st.db).await?;
+    let rows: Vec<Value> = rows.into_iter().map(crate::ar_encryption::reveal_secret).collect();
     Ok(Json(json!({"payload":{"webhooks":rows}})))
 }
 async fn webhooks_create(
@@ -106,7 +107,7 @@ async fn webhooks_create(
     validate_url(url)?;
     check_inbox(&st.db, a, v).await?;
     let subs = array(v, "subscriptions")?;
-    let id: i64=sqlx::query_scalar("INSERT INTO webhooks(account_id,url,inbox_id,name,subscriptions,created_at,updated_at) VALUES($1,$2,$3,$4,$5,now(),now()) RETURNING id").bind(a as i32).bind(url).bind(v.get("inbox_id").and_then(Value::as_i64).map(|x| x as i32)).bind(v.get("name").and_then(Value::as_str)).bind(subs).fetch_one(&st.db).await?;
+    let id: i64=sqlx::query_scalar("INSERT INTO webhooks(account_id,url,inbox_id,name,subscriptions,secret,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,now(),now()) RETURNING id").bind(a as i32).bind(url).bind(v.get("inbox_id").and_then(Value::as_i64).map(|x| x as i32)).bind(v.get("name").and_then(Value::as_str)).bind(subs).bind(crate::ar_encryption::new_secret().1).fetch_one(&st.db).await?;
     Ok(Json(
         json!({"payload":{"webhook":webhook(&st.db,a,id).await?}}),
     ))

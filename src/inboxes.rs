@@ -333,7 +333,7 @@ async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admin: bool) ->
                 obj.insert("additional_attributes".into(), c.try_get::<Option<Value>, _>("additional_attributes")?.into());
                 if admin {
                     obj.insert("hmac_token".into(), c.try_get::<Option<String>, _>("hmac_token")?.into());
-                    obj.insert("secret".into(), c.try_get::<Option<String>, _>("secret")?.into());
+                    obj.insert("secret".into(), c.try_get::<Option<String>, _>("secret")?.map(|s| crate::ar_encryption::decrypt(&s)).into());
                 }
             }
         }
@@ -461,7 +461,7 @@ async fn inbox_create(
             .bind(ostr(ch, "webhook_url"))
             .bind(token())
             .bind(token())
-            .bind(token())
+            .bind(crate::ar_encryption::new_secret().1)
             .fetch_one(&mut *tx)
             .await?;
             (id, "Channel::Api")

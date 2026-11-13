@@ -48,6 +48,25 @@ fn encrypt_with_key(plain: &str, key: &[u8; 32], iv: &[u8; 12]) -> String {
     serde_json::to_string(&Message { p: STANDARD.encode(encrypted), h: Headers { iv: STANDARD.encode(iv), at: STANDARD.encode(tag), i: STANDARD.encode(&id[..4]), c: compressed.then_some(true) } }).expect("JSON serialization failed")
 }
 
+/// WebhookSecretable (`has_secure_token :secret` + `encrypts :secret`): a fresh 24-char base58 secret,
+/// returned as (plaintext, value to store). Stored encrypted when encryption keys are configured.
+/// Decrypt the `secret` field of a JSON object in place (rows built with jsonb_build_object).
+pub fn reveal_secret(mut v: serde_json::Value) -> serde_json::Value {
+    if let Some(s) = v.get("secret").and_then(|s| s.as_str()).map(decrypt) {
+        v["secret"] = serde_json::Value::String(s);
+    }
+    v
+}
+
+pub fn new_secret() -> (String, String) {
+    use rand::Rng;
+    const B58: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut r = rand::thread_rng();
+    let plain: String = (0..24).map(|_| B58[r.gen_range(0..B58.len())] as char).collect();
+    let stored = encrypt(&plain);
+    (plain, stored)
+}
+
 pub fn encrypt(plain: &str) -> String {
     match key() {
         Some(key) => {
