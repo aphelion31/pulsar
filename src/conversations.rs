@@ -203,7 +203,7 @@ pub(crate) async fn contact_json(db: &PgPool, id: Option<i64>) -> Value {
 }
 
 /// user push_event_data + _agent.json.jbuilder fields (superset).
-async fn user_json(db: &PgPool, account_id: i64, uid: i64) -> Value {
+pub(crate) async fn user_json(db: &PgPool, account_id: i64, uid: i64) -> Value {
     type Row = (i64, String, Option<String>, Option<String>, Option<i32>, Option<bool>, Option<i32>, Option<NaiveDateTime>);
     let r: Option<Row> = sqlx::query_as(
         "SELECT u.id::bigint, u.name, u.display_name, u.email, au.availability, au.auto_offline, au.role, u.confirmed_at

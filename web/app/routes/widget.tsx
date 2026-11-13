@@ -17,6 +17,22 @@ const REPLY: Record<string, string> = {
   in_a_day: "Usually replies in a day",
 };
 
+/** campaignHelper.js isPatternMatchingWithURL. Native URLPattern where available, else `*` wildcards. */
+export function urlMatches(pattern: string, url: string) {
+  let p = pattern;
+  if (p.endsWith("/")) p = p.slice(0, -1) + "*\\?*\\#*";
+  const loc = new URL(url);
+  if (loc.pathname.endsWith("/")) loc.pathname = loc.pathname.slice(0, -1);
+  const UP = (globalThis as { URLPattern?: new (p: string) => { test: (u: string) => boolean } }).URLPattern;
+  try {
+    if (UP) return new UP(p).test(loc.toString());
+  } catch {
+    return false;
+  }
+  const re = new RegExp("^" + p.replace(/\\([?#])/g, "$1").replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
+  return re.test(loc.toString());
+}
+
 export default function Widget() {
   const [params] = useSearchParams();
   const websiteToken = params.get("website_token") ?? "";
@@ -96,6 +112,34 @@ export default function Widget() {
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end" });
   }, [messages.length]);
+
+  // Live chat campaigns (widget/store/modules/campaign.js + helpers/campaignHelper.js): after time_on_page
+  // on a matching URL, trigger the campaign, which opens a conversation carrying the campaign message.
+  // ponytail: runs inside the iframe and uses document.referrer as the page URL; no unread bubble outside
+  // the iframe (sdk.js has no postMessage bridge yet). Upgrade when the SDK gets Chatwoot's event bridge.
+  useEffect(() => {
+    if (!cfg || messages.length > 0) return;
+    const token = cfg.website_channel_config.auth_token;
+    const page = document.referrer || location.href;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    let live = true;
+    call("campaigns", token)
+      .then((list: { id: number; trigger_rules?: { url?: string; time_on_page?: number } }[]) => {
+        for (const c of list) {
+          if (!live || !c.trigger_rules?.url || !urlMatches(c.trigger_rules.url, page)) continue;
+          timers.push(setTimeout(async () => {
+            await call("events", token, { method: "POST", body: JSON.stringify({ name: "campaign.triggered", event_info: { campaign_id: c.id, referer: page, initiated_at: { timestamp: new Date().toString() } } }) });
+            const m = await call("messages", token);
+            if (live) setMessages(m.payload ?? []);
+          }, (c.trigger_rules.time_on_page ?? 0) * 1000));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+      timers.forEach(clearTimeout);
+    };
+  }, [cfg, messages.length > 0]);
 
   async function send(e: React.FormEvent) {
     e.preventDefault();
