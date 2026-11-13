@@ -4,6 +4,8 @@ const ph = (path: string, id: string) => route(path, "routes/placeholder.tsx", {
 
 export default [
   route("login", "routes/login.tsx"),
+  route("auth/reset/password", "routes/auth.reset.tsx"),
+  route("auth/password/edit", "routes/auth.password-edit.tsx"),
   route("widget", "routes/widget.tsx"),
   ph("shopify/select-account", "shopify-select-account"),
   ph("no-accounts", "no-accounts"),

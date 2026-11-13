@@ -1,5 +1,6 @@
 mod account_more;
 mod auth;
+mod mailer;
 mod automation;
 mod bots;
 mod cable;
@@ -46,6 +47,7 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(web::health))
         .route("/auth/sign_in", post(auth::sign_in))
+        .route("/auth/password", post(auth::request_password_reset).put(auth::reset_password))
         .route("/auth/validate_token", get(auth::validate_token))
         .route("/auth/sign_out", axum::routing::delete(auth::sign_out))
         .route(

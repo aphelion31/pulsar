@@ -212,6 +212,48 @@ fn login_failures(email: &str, record_failure: bool) -> usize {
 }
 const LOGIN_FAILURE_LIMIT: usize = 10;
 
+fn reset_digest(token: &str) -> String {
+    use hmac::{Hmac, Mac};
+    let secret = std::env::var("SECRET_KEY_BASE").unwrap_or_else(|_| "pulsar-dev-secret-change-me".into());
+    let mut mac = Hmac::<sha2_compat::Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+    mac.update(token.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+pub async fn request_password_reset(State(db): State<PgPool>, Json(body): Json<Value>) -> ApiResult<Response> {
+    if body.get("redirect_url").is_some_and(|v| !v.is_string()) {
+        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error":"Invalid redirect_url"}))).into_response());
+    }
+    let email = body["email"].as_str().unwrap_or_default().trim().to_lowercase();
+    // Separate throttle namespace avoids affecting sign-in lockout.
+    if login_failures(&format!("reset:{email}"), true) <= LOGIN_FAILURE_LIMIT {
+        let token = random_token(24);
+        let row: Option<(String,)> = sqlx::query_as("UPDATE users SET reset_password_token=$1, reset_password_sent_at=now(), updated_at=now() WHERE lower(email)=$2 AND provider='email' RETURNING email")
+            .bind(reset_digest(&token)).bind(&email).fetch_optional(&db).await?;
+        if let Some((email,)) = row {
+            let base = std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:3000".into());
+            let link = format!("{}/app/auth/password/edit?reset_password_token={token}", base.trim_end_matches('/'));
+            if let Err(e) = crate::mailer::reset(&email, &link).await { tracing::error!("reset mail delivery failed: {e}"); }
+        }
+    }
+    Ok(Json(json!({"message":"You will receive an email with instructions on how to reset your password in a few minutes."})).into_response())
+}
+
+pub async fn reset_password(State(db): State<PgPool>, Json(body): Json<Value>) -> ApiResult<Response> {
+    let invalid = || (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"message":"Invalid token","redirect_url":"/"}))).into_response();
+    let Some(token) = body["reset_password_token"].as_str().filter(|s| !s.is_empty()) else { return Ok(invalid()) };
+    let Some(password) = body["password"].as_str().filter(|s| s.len() >= 6 && Some(*s) == body["password_confirmation"].as_str()) else { return Ok(invalid()) };
+    let password = password.to_owned();
+    let hash = tokio::task::spawn_blocking(move || bcrypt::hash(password, 10)).await.map_err(|_| ApiError::bad("hash"))?.map_err(|_| ApiError::bad("hash"))?;
+    // Atomic update prevents two concurrent requests from consuming the same token.
+    let row: Option<(i64, String, Option<Value>)> = sqlx::query_as("UPDATE users SET encrypted_password=$1, reset_password_token=NULL, reset_password_sent_at=NULL, confirmation_token=NULL, confirmed_at=COALESCE(confirmed_at,now()), updated_at=now() WHERE reset_password_token=$2 AND reset_password_sent_at >= now() - CASE WHEN confirmed_at IS NULL AND EXISTS (SELECT 1 FROM account_users WHERE user_id=users.id AND inviter_id IS NOT NULL) THEN interval '7 days' ELSE interval '6 hours' END RETURNING id::bigint, uid, tokens::jsonb")
+        .bind(hash).bind(reset_digest(token)).fetch_optional(&db).await?;
+    let Some((id, uid, tokens)) = row else { return Ok(invalid()) };
+    let (client, token, expiry) = issue_token(&db, id, tokens).await?;
+    let data = user_json(&db, id).await?;
+    Ok((auth_headers(&uid, &client, &token, expiry), Json(json!({"data": data}))).into_response())
+}
+
 /// POST /auth/sign_in {email, password}
 pub async fn sign_in(State(db): State<PgPool>, headers: HeaderMap, body: Option<Json<Value>>) -> ApiResult<Response> {
     let body = body.map(|b| b.0).unwrap_or_default();
