@@ -10,6 +10,7 @@ mod contacts;
 mod events;
 mod conversations;
 mod email_inbound;
+mod scheduler;
 mod inboxes;
 mod listeners;
 mod public_api;
@@ -154,6 +155,7 @@ async fn main() -> anyhow::Result<()> {
     );
     // Chatwoot FetchImapEmailInboxesJob: poll IMAP for Channel::Email inboxes. Errors are logged per inbox.
     email_inbound::spawn(state.clone());
+    scheduler::spawn(state.clone());
     let addr = std::env::var("BIND").unwrap_or_else(|_| "0.0.0.0:3000".into());
     tracing::info!("pulsar listening on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
