@@ -33,7 +33,10 @@ pub fn routes() -> Router<AppState> {
         .route("/notifications", get(notif_index))
         .route("/notifications/unread_count", get(notif_unread))
         .route("/notifications/read_all", post(notif_read_all))
+        .route("/notifications/destroy_all", post(notif_destroy_all))
         .route("/notifications/{id}", patch(notif_read).delete(notif_destroy))
+        .route("/notifications/{id}/snooze", post(notif_snooze))
+        .route("/notifications/{id}/unread", post(notif_unread_one))
         .route("/notification_settings", get(ns_show).patch(ns_update).put(ns_update))
         .route("/cache_keys", get(cache_keys))
         .route("/search", get(search_all))
@@ -740,6 +743,74 @@ async fn notif_destroy(State(st): State<AppState>, user: CurrentUser, Path((acco
         .execute(&st.db)
         .await?;
     Ok(Json(json!({})))
+}
+
+/// Mirrors NotificationsController#destroy_all: type=read deletes read ones, anything else deletes all.
+async fn notif_destroy_all(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+    require_account(&st.db, &user, account_id).await?;
+    let read_only = q.get("type").map(String::as_str) == Some("read");
+    sqlx::query("DELETE FROM notifications WHERE account_id = $1 AND user_id = $2 AND ($3 = false OR read_at IS NOT NULL)")
+        .bind(account_id)
+        .bind(user.id)
+        .bind(read_only)
+        .execute(&st.db)
+        .await?;
+    Ok(Json(json!({})))
+}
+
+async fn notif_one(st: &AppState, user: &CurrentUser, account_id: i64, id: i64) -> Result<Notif, ApiError> {
+    sqlx::query_as(
+        "SELECT id, notification_type, primary_actor_type, primary_actor_id, read_at, created_at, last_activity_at, snoozed_until, meta
+         FROM notifications WHERE id = $1 AND account_id = $2 AND user_id = $3",
+    )
+    .bind(id)
+    .bind(account_id)
+    .bind(user.id)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or_else(ApiError::not_found)
+}
+
+/// Mirrors NotificationsController#snooze: `snoozed_until` is a unix timestamp; clears last_snoozed_at in meta.
+async fn notif_snooze(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(body): Json<Value>) -> ApiResult {
+    require_account(&st.db, &user, account_id).await?;
+    let n = notif_one(&st, &user, account_id, id).await?;
+    let until = match &body["snoozed_until"] {
+        Value::Null => None,
+        v => {
+            let secs = v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())).ok_or_else(|| ApiError::bad("snoozed_until must be a unix timestamp"))?;
+            Some(chrono::DateTime::from_timestamp(secs, 0).ok_or_else(|| ApiError::bad("snoozed_until is out of range"))?.naive_utc())
+        }
+    };
+    if body.get("snoozed_until").is_some() {
+        let mut meta = n.meta.clone().unwrap_or(json!({}));
+        if let Some(m) = meta.as_object_mut() {
+            m.insert("last_snoozed_at".into(), Value::Null);
+        }
+        sqlx::query("UPDATE notifications SET snoozed_until = $1, meta = $2, updated_at = now() WHERE id = $3 AND account_id = $4 AND user_id = $5")
+            .bind(until)
+            .bind(meta)
+            .bind(id)
+            .bind(account_id)
+            .bind(user.id)
+            .execute(&st.db)
+            .await?;
+    }
+    let n = notif_one(&st, &user, account_id, id).await?;
+    Ok(Json(n.json(&user)))
+}
+
+/// Mirrors NotificationsController#unread: clears read_at and returns the notification.
+async fn notif_unread_one(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+    require_account(&st.db, &user, account_id).await?;
+    sqlx::query("UPDATE notifications SET read_at = NULL, updated_at = now() WHERE id = $1 AND account_id = $2 AND user_id = $3")
+        .bind(id)
+        .bind(account_id)
+        .bind(user.id)
+        .execute(&st.db)
+        .await?;
+    let n = notif_one(&st, &user, account_id, id).await?;
+    Ok(Json(n.json(&user)))
 }
 
 // ---------- notification settings (bit flags, bit i <-> NOTIFICATION_TYPES[i]) ----------
