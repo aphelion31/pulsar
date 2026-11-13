@@ -14,14 +14,14 @@ use sha2_compat::Sha256;
 pub fn routes() -> Router<AppState> {
     Router::new().route("/public/api/v1/inboxes/{inbox_identifier}", get(show))
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts", axum::routing::post(contact_create))
-        .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}", get(contact_show).patch(contact_update))
+        .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}", get(contact_show).patch(contact_update).put(contact_update))
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations", get(conv_index).post(conv_create))
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}", get(conv_show))
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/toggle_status", axum::routing::post(toggle_status))
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/toggle_typing", axum::routing::post(toggle_typing))
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/update_last_seen", axum::routing::post(update_last_seen))
         .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/messages", get(message_index).post(message_create))
-        .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/messages/{message_id}", axum::routing::patch(message_update))
+        .route("/public/api/v1/inboxes/{inbox_identifier}/contacts/{contact_identifier}/conversations/{id}/messages/{message_id}", axum::routing::patch(message_update).put(message_update))
         .route("/public/api/v1/csat_survey/{uuid}", get(csat_show).patch(csat_update).put(csat_update))
 }
 

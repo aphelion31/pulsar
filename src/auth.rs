@@ -15,6 +15,23 @@ use crate::common::*;
 const TOKEN_LIFESPAN_SECS: i64 = 60 * 24 * 3600; // devise_token_auth: 2.months
 const MAX_DEVICES: usize = 25;
 
+pub async fn notification_subscription_destroy(State(db): State<PgPool>, user: CurrentUser, req: Request) -> ApiResult<StatusCode> {
+    let query_token = req.uri().query().and_then(|q| url::form_urlencoded::parse(q.as_bytes()).find(|(k, _)| k == "push_token").map(|(_, v)| v.into_owned()));
+    let content_type = req.headers().get(axum::http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_owned();
+    let body = axum::body::to_bytes(req.into_body(), 1024 * 1024).await.map_err(|_| ApiError::bad("Invalid request body"))?;
+    let body_token = if content_type.starts_with("application/json") && !body.is_empty() {
+        let value: Value = serde_json::from_slice(&body).map_err(|_| ApiError::bad("Invalid JSON"))?;
+        value.get("push_token").and_then(Value::as_str).map(str::to_owned)
+    } else if content_type.starts_with("application/x-www-form-urlencoded") {
+        url::form_urlencoded::parse(&body).find(|(k, _)| k == "push_token").map(|(_, v)| v.into_owned())
+    } else { None };
+    if let Some(token) = body_token.or(query_token) {
+        sqlx::query("DELETE FROM notification_subscriptions WHERE id = (SELECT id FROM notification_subscriptions WHERE user_id = $1 AND subscription_attributes->>'push_token' = $2 ORDER BY id LIMIT 1)")
+            .bind(user.id).bind(token).execute(&db).await?;
+    }
+    Ok(StatusCode::OK)
+}
+
 fn random_token(bytes: usize) -> String {
     let mut b = vec![0u8; bytes];
     rand::thread_rng().fill(&mut b[..]);
