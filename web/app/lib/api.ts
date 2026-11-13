@@ -62,6 +62,10 @@ export async function signIn(email: string, password: string) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ email, password }),
   });
+  return authResponse(res);
+}
+
+export async function authResponse(res: Response) {
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new ApiError(res.status, errorMessage(data, res.status));
   const h = res.headers;

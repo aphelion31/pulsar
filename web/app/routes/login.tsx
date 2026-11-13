@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { Button, ErrorText, Input } from "~/components/ui";
 import { signIn } from "~/lib/api";
+import { t } from "~/lib/i18n";
 
 export default function Login() {
   const nav = useNavigate();
@@ -32,6 +33,7 @@ export default function Login() {
         <form onSubmit={submit} className="mt-8 grid gap-4">
           <Input label="Email" name="email" type="email" autoComplete="email" required autoFocus />
           <Input label="Password" name="password" type="password" autoComplete="current-password" required />
+          <Link className="text-sm text-ink-2 underline" to="/auth/reset/password">{t("LOGIN.FORGOT_PASSWORD")}</Link>
           <ErrorText>{error}</ErrorText>
           <Button type="submit" disabled={busy} className="mt-2 h-9 justify-center">
             {busy ? "Signing in" : "Sign in"}

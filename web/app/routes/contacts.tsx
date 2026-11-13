@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { useNavigate, useOutletContext, useSearchParams } from "react-router";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useLocation, useNavigate, useOutletContext, useParams, useSearchParams } from "react-router";
 import { acct, api } from "~/lib/api";
 import { t } from "~/lib/i18n";
 import Spinner from "~/components/next/Spinner";
@@ -17,10 +17,25 @@ type Listing = {
   payload: ContactItem[];
 };
 
+// mirrors chatwoot custom filter (segment) record: query.payload is the filter condition list
+type Segment = {
+  id: number;
+  name: string;
+  query?: { payload?: FilterCondition[] };
+};
+
 export default function Contacts() {
   const { accountId } = useOutletContext<ShellCtx>();
   const navigate = useNavigate();
+  const location = useLocation();
+  const params = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // mirrors chatwoot/app/javascript/dashboard/routes/dashboard/contacts/routes.js
+  const segmentId = params.segmentId;
+  const labelName = params.label;
+  const isActiveView = /\/contacts\/active\/?$/.test(location.pathname);
+  const [segment, setSegment] = useState<Segment | null>(null);
 
   const initialPage = Number(searchParams.get("page")) || 1;
   const initialSearch = searchParams.get("search") || "";
@@ -45,6 +60,38 @@ export default function Contacts() {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const [isUpdatingId, setIsUpdatingId] = useState<number | null>(null);
+
+  // Reset to page 1 when switching between all / active / label / segment views
+  const viewKey = `${isActiveView}|${segmentId ?? ""}|${labelName ?? ""}`;
+  const prevViewKey = useRef(viewKey);
+  useEffect(() => {
+    if (prevViewKey.current !== viewKey) {
+      prevViewKey.current = viewKey;
+      setPage(1);
+    }
+  }, [viewKey]);
+
+  // Load segment (custom filter) definition for segment view
+  useEffect(() => {
+    if (!segmentId) {
+      setSegment(null);
+      return;
+    }
+    let cancelled = false;
+    setSegment(null);
+    api<Segment>(`${acct(accountId)}/custom_filters/${segmentId}`)
+      .then((data) => {
+        if (!cancelled) setSegment(data);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Failed to load segment");
+        setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId, segmentId]);
 
   // Debounce search input
   useEffect(() => {
@@ -73,11 +120,25 @@ export default function Contacts() {
     setIsLoading(true);
     setError("");
 
+    // segment definition still loading
+    if (!debouncedSearch && segmentId && !segment) return;
+
     try {
       let data: Listing;
       if (debouncedSearch) {
         data = await api<Listing>(
           `${base}/search?q=${encodeURIComponent(debouncedSearch)}&page=${page}&sort=${fullSort}`
+        );
+      } else if (isActiveView) {
+        data = await api<Listing>(`${base}/active?page=${page}&sort=${fullSort}`);
+      } else if (segmentId && segment) {
+        data = await api<Listing>(`${base}/filter?page=${page}&sort=${fullSort}`, {
+          method: "POST",
+          json: { payload: segment.query?.payload ?? [] },
+        });
+      } else if (labelName) {
+        data = await api<Listing>(
+          `${base}?page=${page}&sort=${fullSort}&labels[]=${encodeURIComponent(labelName)}`
         );
       } else if (appliedFilters.length > 0) {
         data = await api<Listing>(`${base}/filter?page=${page}&sort=${fullSort}`, {
@@ -93,7 +154,7 @@ export default function Contacts() {
     } finally {
       setIsLoading(false);
     }
-  }, [base, debouncedSearch, appliedFilters, page, fullSort]);
+  }, [base, debouncedSearch, appliedFilters, page, fullSort, isActiveView, segmentId, segment, labelName]);
 
   useEffect(() => {
     fetchContacts();
@@ -143,8 +204,11 @@ export default function Contacts() {
 
   const headerTitle = useMemo(() => {
     if (debouncedSearch) return t("CONTACTS_LAYOUT.HEADER.SEARCH_TITLE");
+    if (isActiveView) return t("CONTACTS_LAYOUT.HEADER.ACTIVE_TITLE");
+    if (segmentId) return segment?.name ?? "";
+    if (labelName) return `#${labelName}`;
     return t("CONTACTS_LAYOUT.HEADER.TITLE");
-  }, [debouncedSearch]);
+  }, [debouncedSearch, isActiveView, segmentId, segment, labelName]);
 
   const totalItems = list?.meta.count ?? 0;
   const contacts = list?.payload ?? [];
@@ -209,7 +273,13 @@ export default function Contacts() {
                     setDeleteDialogOpen(true);
                   }}
                   onViewDetails={(id) => {
-                    navigate(`/accounts/${accountId}/contacts/${id}`);
+                    // keep view prefix: /contacts/:id/segments/:segmentId or /contacts/:id/labels/:label
+                    const sub = segmentId
+                      ? `/segments/${segmentId}`
+                      : labelName
+                        ? `/labels/${encodeURIComponent(labelName)}`
+                        : "";
+                    navigate(`/accounts/${accountId}/contacts/${id}${sub}${location.search}`);
                   }}
                   isUpdating={isUpdatingId === c.id}
                 />
