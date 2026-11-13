@@ -175,7 +175,11 @@ async fn policy_inboxes(
 ) -> ApiResult {
     admin(&st, &user, a).await?;
     policy(&st, a, id).await?;
-    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',i.id,'name',i.name,'channel_id',i.channel_id,'channel_type',i.channel_type,'greeting_enabled',i.greeting_enabled,'greeting_message',i.greeting_message,'working_hours_enabled',i.working_hours_enabled,'enable_email_collect',i.enable_email_collect,'csat_survey_enabled',i.csat_survey_enabled,'csat_config',i.csat_config,'enable_auto_assignment',i.enable_auto_assignment,'auto_assignment_config',i.auto_assignment_config,'out_of_office_message',i.out_of_office_message,'timezone',i.timezone,'callback_webhook_url',i.callback_webhook_url,'allow_messages_after_resolved',i.allow_messages_after_resolved,'lock_to_single_conversation',i.lock_to_single_conversation,'sender_name_type',i.sender_name_type,'business_name',i.business_name) FROM inboxes i JOIN inbox_assignment_policies ip ON ip.inbox_id=i.id WHERE i.account_id=$1 AND ip.assignment_policy_id=$2 ORDER BY i.id").bind(a).bind(id).fetch_all(&st.db).await?;
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT i.id::int8 FROM inboxes i JOIN inbox_assignment_policies ip ON ip.inbox_id=i.id WHERE i.account_id=$1 AND ip.assignment_policy_id=$2 ORDER BY i.id").bind(a).bind(id).fetch_all(&st.db).await?;
+    let mut rows = Vec::with_capacity(ids.len());
+    for i in ids {
+        rows.push(crate::inboxes::inbox_json(&st.db, a, i, true).await?);
+    }
     Ok(Json(json!({"inboxes":rows})))
 }
 async fn inbox_show(

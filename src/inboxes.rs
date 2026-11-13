@@ -259,7 +259,7 @@ async fn update_email_channel(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, ac
 }
 
 /// Mirrors api/v1/models/_inbox.json.jbuilder (+ channel-specific attrs).
-async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admin: bool) -> Result<Value, ApiError> {
+pub(crate) async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admin: bool) -> Result<Value, ApiError> {
     let r = sqlx::query(
         "SELECT channel_id::bigint AS channel_id, name, channel_type, greeting_enabled, greeting_message,
                 working_hours_enabled, enable_email_collect, csat_survey_enabled, csat_config,
