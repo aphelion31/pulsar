@@ -3,4 +3,5 @@ pub mod automation;
 pub mod csat;
 pub mod email_outbound;
 pub mod notifications;
+pub mod telegram_outbound;
 pub mod webhooks;

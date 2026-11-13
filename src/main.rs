@@ -5,6 +5,7 @@ mod mailer;
 mod automation;
 mod bots;
 mod cable;
+mod channels;
 mod common;
 mod companies;
 mod contacts;
@@ -78,6 +79,7 @@ pub fn app(state: AppState) -> Router {
         .nest("/api/v1/accounts/{account_id}", account_routes())
         .nest("/api/v2/accounts/{account_id}", reports::routes().fallback(web::not_implemented))
         .merge(widget::routes())
+        .merge(channels::telegram::routes())
         .merge(public_api::routes())
         .merge(storage::routes())
         .route("/api/{*rest}", any(web::not_implemented))
@@ -157,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
             ("automation", events::listener(listeners::automation::handle)),
             ("csat", events::listener(listeners::csat::handle)),
             ("email_outbound", events::listener(listeners::email_outbound::handle)),
+            ("telegram_outbound", events::listener(listeners::telegram_outbound::handle)),
         ],
     );
     // Chatwoot FetchImapEmailInboxesJob: poll IMAP for Channel::Email inboxes. Errors are logged per inbox.
