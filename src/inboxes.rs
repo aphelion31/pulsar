@@ -240,6 +240,19 @@ fn parse_inbox_ids(raw: Option<String>) -> Vec<i64> {
 
 // ---------- inboxes ----------
 
+async fn update_email_channel(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, account_id: i64, id: i64, ch: &Value) -> Result<(), ApiError> {
+    if let Some(email) = ch.get("email") {
+        if !email.as_str().is_some_and(|v| v.parse::<lettre::Address>().is_ok()) {
+            return Err(ApiError::bad("Email is invalid"));
+        }
+    }
+    let keys = ["email", "imap_enabled", "imap_address", "imap_port", "imap_login", "imap_password", "imap_enable_ssl", "imap_authentication", "smtp_enabled", "smtp_address", "smtp_port", "smtp_login", "smtp_password", "smtp_domain", "smtp_enable_starttls_auto", "smtp_authentication", "smtp_openssl_verify_mode", "smtp_enable_ssl_tls"];
+    let fields: serde_json::Map<String, Value> = keys.iter().filter_map(|key| ch.get(*key).filter(|v| !v.is_null()).map(|v| ((*key).to_owned(), v.clone()))).collect();
+    sqlx::query("UPDATE channel_email c SET (email, imap_enabled, imap_address, imap_port, imap_login, imap_password, imap_enable_ssl, imap_authentication, smtp_enabled, smtp_address, smtp_port, smtp_login, smtp_password, smtp_domain, smtp_enable_starttls_auto, smtp_authentication, smtp_openssl_verify_mode, smtp_enable_ssl_tls, updated_at) = (SELECT x.email, x.imap_enabled, x.imap_address, x.imap_port, x.imap_login, x.imap_password, x.imap_enable_ssl, x.imap_authentication, x.smtp_enabled, x.smtp_address, x.smtp_port, x.smtp_login, x.smtp_password, x.smtp_domain, x.smtp_enable_starttls_auto, x.smtp_authentication, x.smtp_openssl_verify_mode, x.smtp_enable_ssl_tls, now() FROM jsonb_populate_record(c, $3::jsonb) x) WHERE c.id = $1 AND c.account_id::bigint = $2")
+        .bind(id).bind(account_id).bind(Value::Object(fields)).execute(&mut **tx).await?;
+    Ok(())
+}
+
 /// Mirrors api/v1/models/_inbox.json.jbuilder (+ channel-specific attrs).
 async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admin: bool) -> Result<Value, ApiError> {
     let r = sqlx::query(
@@ -287,6 +300,18 @@ async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admin: bool) ->
     let obj = out.as_object_mut().expect("object");
 
     match ct.as_str() {
+        "Channel::Email" => {
+            let c: Option<Value> = sqlx::query_scalar("SELECT to_jsonb(c) - 'imap_password' - 'smtp_password' - 'provider_config' FROM channel_email c WHERE id = $1 AND account_id = $2")
+                .bind(channel_id).bind(account_id).fetch_optional(db).await?;
+            if let Some(Value::Object(fields)) = c {
+                for (key, value) in fields {
+                    if key == "email" || key == "forward_to_email" || (admin && (key.starts_with("imap_") || key.starts_with("smtp_"))) {
+                        obj.insert(key, value);
+                    }
+                }
+                obj.insert("forwarding_enabled".into(), json!(std::env::var("MAILER_INBOUND_EMAIL_DOMAIN").is_ok_and(|v| !v.is_empty())));
+            }
+        }
         "Channel::Api" => {
             let c = sqlx::query(
                 "SELECT webhook_url, identifier, hmac_token, hmac_mandatory, secret, additional_attributes
@@ -388,6 +413,14 @@ async fn inbox_create(
 
     let mut tx = st.db.begin().await?;
     let (channel_id, channel_type): (i64, &str) = match ch["type"].as_str() {
+        Some("email") => {
+            let email = ostr(ch, "email").filter(|s| s.parse::<lettre::Address>().is_ok()).ok_or_else(|| ApiError::bad("Email is invalid"))?;
+            let domain = std::env::var("MAILER_INBOUND_EMAIL_DOMAIN").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "localhost".into());
+            let id: i64 = sqlx::query_scalar("INSERT INTO channel_email (account_id, email, forward_to_email, created_at, updated_at) VALUES ($1, $2, $3, now(), now()) RETURNING id")
+                .bind(account_id as i32).bind(email).bind(format!("{}@{}", token(), domain)).fetch_one(&mut *tx).await?;
+            update_email_channel(&mut tx, account_id, id, ch).await?;
+            (id, "Channel::Email")
+        }
         Some("api") => {
             let id: i64 = sqlx::query_scalar(
                 "INSERT INTO channel_api (account_id, webhook_url, identifier, hmac_token, secret, created_at, updated_at)
@@ -506,6 +539,7 @@ async fn inbox_update(
         .await?;
         if let Some((channel_id, Some(ct))) = row {
             match ct.as_str() {
+                "Channel::Email" => update_email_channel(&mut tx, account_id, channel_id, ch).await?,
                 "Channel::Api" => {
                     sqlx::query(
                         "UPDATE channel_api SET webhook_url = COALESCE($3, webhook_url),
