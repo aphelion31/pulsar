@@ -9,6 +9,7 @@ mod channels;
 mod common;
 mod companies;
 mod contacts;
+mod data_imports;
 mod events;
 mod conversations;
 mod email_inbound;
@@ -43,6 +44,7 @@ fn account_routes() -> Router<AppState> {
         .merge(automation::routes())
         .merge(bots::routes())
         .merge(account_more::routes())
+        .merge(data_imports::routes())
         .fallback(web::not_implemented)
 }
 

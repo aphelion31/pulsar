@@ -52,7 +52,7 @@ async fn export_contacts(Path(account_id): Path<i64>, user: CurrentUser, State(s
     Ok(([(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8")], csv).into_response())
 }
 
-fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, ApiError> {
+pub(crate) fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, ApiError> {
     let mut rows = Vec::new(); let mut row = Vec::new(); let mut field = String::new();
     let mut chars = input.trim_start_matches('\u{feff}').chars().peekable(); let mut quoted = false; let mut closed = false;
     while let Some(c) = chars.next() {
