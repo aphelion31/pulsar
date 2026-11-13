@@ -338,13 +338,38 @@ async fn active(
 ) -> ApiResult {
     let _au = require_account(&st.db, &user, account_id).await?;
     let page = params.page.unwrap_or(1).max(1);
-    // ponytail: active contacts from presence tracker. Return empty list if none active
+    // mirrors ContactsController#active: contacts with a live widget presence
+    let ids = crate::cable::presence_snapshot().online_contact_ids(account_id);
+    let include_inboxes = parse_include_inboxes(params.include_contact_inboxes.as_ref());
+    let sql = format!(
+        "SELECT id, name, email, phone_number, account_id, created_at, updated_at,
+                additional_attributes, identifier, custom_attributes, last_activity_at, blocked, company_id
+         FROM contacts WHERE account_id = $1 AND id = ANY($2)
+         ORDER BY {} LIMIT $3 OFFSET $4",
+        parse_sort_clause(params.sort.as_deref())
+    );
+    let rows = sqlx::query_as::<_, ContactRow>(&sql)
+        .bind(account_id)
+        .bind(&ids)
+        .bind(RESULTS_PER_PAGE)
+        .bind((page - 1) * RESULTS_PER_PAGE)
+        .fetch_all(&st.db)
+        .await?;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM contacts WHERE account_id = $1 AND id = ANY($2)")
+        .bind(account_id)
+        .bind(&ids)
+        .fetch_one(&st.db)
+        .await?;
+    let mut payload = Vec::with_capacity(rows.len());
+    for c in &rows {
+        payload.push(build_contact_json(&st.db, c, include_inboxes).await);
+    }
     Ok(Json(json!({
         "meta": {
-            "count": 0,
+            "count": count,
             "current_page": page
         },
-        "payload": []
+        "payload": payload
     })))
 }
 
