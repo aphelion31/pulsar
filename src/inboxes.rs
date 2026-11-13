@@ -35,7 +35,7 @@ pub fn routes() -> Router<AppState> {
         .route("/inbox_members/{inbox_id}", get(members_show))
         .route("/agents", get(agents_index).post(agent_create))
         .route("/agents/bulk_create", post(agents_bulk_create))
-        .route("/agents/{id}", patch(agent_update).delete(agent_destroy))
+        .route("/agents/{id}", patch(agent_update).put(agent_update).delete(agent_destroy))
         .route("/teams", get(teams_index).post(team_create))
         .route("/teams/{id}", get(team_show).patch(team_update).put(team_update).delete(team_destroy))
         .route(

@@ -34,7 +34,7 @@ pub fn routes() -> Router<AppState> {
         .route("/notifications/unread_count", get(notif_unread))
         .route("/notifications/read_all", post(notif_read_all))
         .route("/notifications/destroy_all", post(notif_destroy_all))
-        .route("/notifications/{id}", patch(notif_read).delete(notif_destroy))
+        .route("/notifications/{id}", patch(notif_read).put(notif_read).delete(notif_destroy))
         .route("/notifications/{id}/snooze", post(notif_snooze))
         .route("/notifications/{id}/unread", post(notif_unread_one))
         .route("/notification_settings", get(ns_show).patch(ns_update).put(ns_update))

@@ -17,7 +17,7 @@ pub fn routes() -> Router<AppState> {
         .route("/integrations/hooks", post(hook_create))
         .route(
             "/integrations/hooks/{id}",
-            axum::routing::patch(hook_update).delete(hook_destroy),
+            get(hook_show).patch(hook_update).put(hook_update).delete(hook_destroy),
         )
         .route("/csat_survey_responses", get(csat_index))
         .route("/csat_survey_responses/metrics", get(csat_metrics))
@@ -34,6 +34,11 @@ async fn hook_get(st: &AppState, a: i64, id: i64) -> Result<Value, ApiError> {
         .bind(id)
         .fetch_one(&st.db)
         .await?)
+}
+
+async fn hook_show(State(st): State<AppState>, user: CurrentUser, Path((a, id)): Path<(i64, i64)>) -> ApiResult {
+    require_account(&st.db, &user, a).await?.require_admin()?;
+    Ok(Json(hook_get(&st, a, id).await?))
 }
 
 /// Chatwoot: `params.require(:hook).permit(:app_id, :inbox_id, :status, settings: {})`.

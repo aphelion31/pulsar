@@ -33,7 +33,7 @@ pub fn routes() -> Router<AppState> {
         .route("/conversations/search", get(search))
         .route("/conversations/filter", post(filter_conversations))
         .route("/conversations/unread_counts", get(unread_counts_index))
-        .route("/conversations/{id}", get(show).patch(update_conversation).delete(destroy_conversation))
+        .route("/conversations/{id}", get(show).patch(update_conversation).put(update_conversation).delete(destroy_conversation))
         .route("/conversations/{id}/draft_messages", get(draft_show).put(draft_update).patch(draft_update).delete(draft_destroy))
         .route("/conversations/{id}/direct_uploads", post(crate::storage::conversation_direct_upload))
         .route("/upload", post(crate::storage::account_upload))
@@ -52,7 +52,7 @@ pub fn routes() -> Router<AppState> {
         .route("/conversations/{id}/labels", get(labels_index).post(labels_create))
         .route("/conversations/{id}/labels/add", post(labels_add))
         .route("/conversations/{id}/labels/remove", post(labels_remove))
-        .route("/conversations/{id}/participants", get(participants_show).post(participants_create).patch(participants_update).delete(participants_destroy))
+        .route("/conversations/{id}/participants", get(participants_show).post(participants_create).patch(participants_update).put(participants_update).delete(participants_destroy))
         .route("/conversations/{id}/attachments", get(attachments_index))
         .route(
             "/conversations/{id}/messages",
@@ -60,7 +60,7 @@ pub fn routes() -> Router<AppState> {
                 .post(messages_create_any)
                 .layer(axum::extract::DefaultBodyLimit::max(crate::storage::MAX_BYTES + 1024 * 1024)),
         )
-        .route("/conversations/{id}/messages/{message_id}", delete(messages_destroy).patch(messages_update))
+        .route("/conversations/{id}/messages/{message_id}", delete(messages_destroy).patch(messages_update).put(messages_update))
         .route("/conversations/{id}/messages/{message_id}/retry", post(messages_retry))
         .route("/conversations/{id}/messages/{message_id}/translate", post(messages_translate))
         .route("/conversations/{id}/request_contact_info", post(request_contact_info))

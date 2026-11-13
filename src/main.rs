@@ -65,6 +65,7 @@ pub fn app(state: AppState) -> Router {
             "/api/v1/profile",
             get(auth::profile_show)
                 .put(auth::profile_update)
+                .patch(auth::profile_update)
                 .layer(axum::extract::DefaultBodyLimit::max(storage::MAX_BYTES + 1024 * 1024)),
         )
         .route("/api/v1/profile/avatar", axum::routing::delete(auth::profile_avatar_destroy))
@@ -75,13 +76,13 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/profile/auto_offline", post(auth::auto_offline))
         .route("/api/v1/profile/work_preferences", post(auth::auto_offline).patch(auth::auto_offline))
         .route("/api/v1/accounts/{account_id}", get(auth::account_show).patch(auth::account_update).put(auth::account_update))
-        .route("/api/v1/accounts/{account_id}/onboarding", axum::routing::put(auth::onboarding_update))
+        .route("/api/v1/accounts/{account_id}/onboarding", axum::routing::put(auth::onboarding_update).patch(auth::onboarding_update))
         .route("/api/v1/accounts/{account_id}/onboarding/help_center_generation", get(auth::help_center_generation))
         .route("/api/v1/accounts/{account_id}/", get(auth::account_show).patch(auth::account_update).put(auth::account_update))
         .route("/api/v1/accounts/{account_id}/update_active_at", post(auth::update_active_at))
         // ponytail: session list / push subscriptions / changelog not tracked yet; empty responses keep UI happy
         .route("/api/v1/profile/sessions", get(|_u: common::CurrentUser| async { axum::Json(serde_json::json!([])) }))
-        .route("/api/v1/notification_subscriptions", post(|_u: common::CurrentUser| async { axum::Json(serde_json::json!({})) }))
+        .route("/api/v1/notification_subscriptions", post(|_u: common::CurrentUser| async { axum::Json(serde_json::json!({})) }).delete(auth::notification_subscription_destroy))
         .route("/api/v1/changelog", get(|| async { axum::Json(serde_json::json!({ "posts": [] })) }))
         .nest("/api/v1/accounts/{account_id}", account_routes())
         .nest("/api/v2/accounts/{account_id}", reports::routes().fallback(web::not_implemented))

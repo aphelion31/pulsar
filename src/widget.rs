@@ -103,8 +103,8 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/widget/conversations/toggle_typing", post(toggle_typing))
         .route("/api/v1/widget/conversations/toggle_status", get(toggle_status))
         .route("/api/v1/widget/messages", get(msg_index).post(msg_create))
-        .route("/api/v1/widget/messages/{id}", patch(msg_update))
-        .route("/api/v1/widget/contact", get(contact_show).patch(contact_update))
+        .route("/api/v1/widget/messages/{id}", patch(msg_update).put(msg_update))
+        .route("/api/v1/widget/contact", get(contact_show).patch(contact_update).put(contact_update))
         .route("/api/v1/widget/contact/set_user", patch(contact_set_user))
         .route("/api/v1/widget/contact/destroy_custom_attributes", post(contact_destroy_custom_attributes))
         .route("/api/v1/widget/conversations/set_custom_attributes", post(conv_set_custom_attributes))
@@ -114,6 +114,16 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/widget/events", post(events))
         .route("/api/v1/widget/campaigns", get(campaigns))
         .route("/api/v1/widget/labels", post(label_add).delete(label_remove))
+        .route("/api/v1/widget/labels/{id}", axum::routing::delete(label_remove_by_id))
+}
+
+async fn label_remove_by_id(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, axum::extract::Path(id): axum::extract::Path<String>) -> ApiResult<StatusCode> {
+    let w = widget_of(&st.db, q.website_token.as_deref()).await?;
+    let s = required(&st, &w, &headers).await?;
+    if let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? {
+        crate::conversations::patch_labels_pub(&st.db, c.id, &[], &[id]).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// GET /api/v1/widget/campaigns: mirrors widget/campaigns_controller.rb + campaigns/index.json.jbuilder.
