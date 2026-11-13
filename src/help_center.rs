@@ -24,6 +24,15 @@ pub fn routes() -> Router<AppState> {
             axum::routing::patch(portal_archive),
         )
         .route(
+            "/portals/{portal}/logo",
+            axum::routing::delete(portal_logo_delete),
+        )
+        .route(
+            "/portals/{portal}/send_instructions",
+            post(portal_send_instructions),
+        )
+        .route("/portals/{portal}/ssl_status", get(portal_ssl_status))
+        .route(
             "/portals/{portal}/categories",
             get(categories_index).post(category_create),
         )
@@ -43,6 +52,19 @@ pub fn routes() -> Router<AppState> {
             get(articles_index).post(article_create),
         )
         .route("/portals/{portal}/articles/reorder", post(article_reorder))
+        .route(
+            "/portals/{portal}/articles/bulk_actions/update_status",
+            axum::routing::patch(articles_bulk_update_status),
+        )
+        .route(
+            "/portals/{portal}/articles/bulk_actions/update_category",
+            axum::routing::patch(articles_bulk_update_category),
+        )
+        .route(
+            "/portals/{portal}/articles/bulk_actions/delete_articles",
+            axum::routing::delete(articles_bulk_delete),
+        )
+        .route("/search/articles", get(search_articles))
         .route(
             "/portals/{portal}/articles/{id}",
             get(article_show)
@@ -474,6 +496,113 @@ async fn portal_delete(
         .await?;
     tx.commit().await?;
     Ok(Json(json!({})))
+}
+async fn portal_logo_delete(
+    State(st): State<AppState>,
+    u: CurrentUser,
+    Path((account, slug)): Path<(i64, String)>,
+    Query(q): Query<Params>,
+) -> ApiResult {
+    require_account(&st.db, &u, account)
+        .await?
+        .require_admin()?;
+    let p = portal(&st.db, account, &slug).await?;
+    let dark = matches!(
+        q.get("dark").map(String::as_str),
+        Some("true" | "1" | "t" | "yes")
+    );
+    let name = if dark { "dark_logo" } else { "logo" };
+    let old: Vec<i64> = sqlx::query_scalar(
+        "DELETE FROM active_storage_attachments WHERE record_type='Portal' AND record_id=$1 AND name=$2 RETURNING blob_id",
+    )
+    .bind(id(&p))
+    .bind(name)
+    .fetch_all(&st.db)
+    .await?;
+    if !old.is_empty() {
+        sqlx::query(
+            "DELETE FROM active_storage_blobs b WHERE b.id = ANY($1) AND NOT EXISTS (SELECT 1 FROM active_storage_attachments a WHERE a.blob_id = b.id)",
+        )
+        .bind(&old)
+        .execute(&st.db)
+        .await?;
+    }
+    Ok(Json(json!({})))
+}
+fn valid_email(s: &str) -> bool {
+    let s = s.trim();
+    let Some((local, domain)) = s.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && domain.contains('.')
+        && !s.contains(char::is_whitespace)
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+}
+async fn portal_send_instructions(
+    State(st): State<AppState>,
+    u: CurrentUser,
+    Path((account, slug)): Path<(i64, String)>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    require_account(&st.db, &u, account)
+        .await?
+        .require_admin()?;
+    let p = portal(&st.db, account, &slug).await?;
+    let email = text(&body, "email")
+        .map(str::trim)
+        .ok_or_else(|| ApiError::bad("Email is required"))?;
+    if !valid_email(email) {
+        return Err(ApiError::bad("Invalid email format"));
+    }
+    let custom_domain = text(&p, "custom_domain")
+        .map(str::trim)
+        .ok_or_else(|| ApiError::bad("Custom domain is not configured"))?;
+    let raw_target = std::env::var("HELPCENTER_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("FRONTEND_URL")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_else(|| st.frontend_url.clone());
+    let target_host = raw_target
+        .trim()
+        .strip_prefix("https://")
+        .or_else(|| raw_target.trim().strip_prefix("http://"))
+        .unwrap_or(raw_target.trim())
+        .split('/')
+        .next()
+        .unwrap_or("localhost");
+    let cname_record = format!("{custom_domain} CNAME {target_host}");
+    let subject = format!("Finish setting up {custom_domain}");
+    let html = format!(
+        "<p>Add the following CNAME record to your DNS provider to finish setting up <strong>{custom_domain}</strong>:</p><pre>{cname_record}</pre>"
+    );
+    tracing::info!(to = email, custom_domain, cname_record, "portal CNAME instructions");
+    if let Err(e) = crate::mailer::send_html(email, &subject, html).await {
+        tracing::warn!(to = email, error = %e, "failed to send portal CNAME instructions");
+    }
+    Ok(Json(json!({ "message": "Instructions sent successfully" })))
+}
+async fn portal_ssl_status(
+    State(st): State<AppState>,
+    u: CurrentUser,
+    Path((account, slug)): Path<(i64, String)>,
+) -> ApiResult {
+    require_account(&st.db, &u, account).await?;
+    let p = portal(&st.db, account, &slug).await?;
+    if text(&p, "custom_domain").is_none() {
+        return Err(ApiError::bad("Custom domain is not configured"));
+    }
+    let ssl = &p["ssl_settings"];
+    Ok(Json(json!({
+        "status": ssl.get("cf_status").cloned().unwrap_or(Value::Null),
+        "verification_errors": ssl.get("cf_verification_errors").cloned().unwrap_or(Value::Null),
+    })))
 }
 async fn categories_index(
     State(st): State<AppState>,
@@ -945,6 +1074,214 @@ async fn article_delete(
     }
     tx.commit().await?;
     Ok(Json(json!({})))
+}
+fn article_ids(body: &Value) -> Vec<i64> {
+    body.get("ids")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+async fn articles_bulk_update_status(
+    State(st): State<AppState>,
+    u: CurrentUser,
+    Path((account, slug)): Path<(i64, String)>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    require_account(&st.db, &u, account)
+        .await?
+        .require_admin()?;
+    let p = portal(&st.db, account, &slug).await?;
+    let ids = article_ids(&body);
+    let matched: Vec<(i64, Option<String>)> = if ids.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as("SELECT id, content FROM articles WHERE portal_id=$1 AND id = ANY($2)")
+            .bind(id(&p))
+            .bind(&ids)
+            .fetch_all(&st.db)
+            .await?
+    };
+    if matched.is_empty() {
+        return Err(ApiError::bad("No articles found to process"));
+    }
+    let status_str = body
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::bad("Invalid status value"))?;
+    let status_num = status_number(status_str).map_err(|_| ApiError::bad("Invalid status value"))?;
+    if status_num == 1
+        && matched
+            .iter()
+            .any(|(_, c)| c.as_deref().map(str::trim).is_none_or(str::is_empty))
+    {
+        return Err(ApiError::bad("Content can't be blank"));
+    }
+    let matched_ids: Vec<i64> = matched.into_iter().map(|(aid, _)| aid).collect();
+    sqlx::query("UPDATE articles SET status=$1, updated_at=now() WHERE portal_id=$2 AND id = ANY($3)")
+        .bind(status_num)
+        .bind(id(&p))
+        .bind(&matched_ids)
+        .execute(&st.db)
+        .await?;
+    Ok(Json(json!({})))
+}
+async fn articles_bulk_update_category(
+    State(st): State<AppState>,
+    u: CurrentUser,
+    Path((account, slug)): Path<(i64, String)>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    require_account(&st.db, &u, account)
+        .await?
+        .require_admin()?;
+    let p = portal(&st.db, account, &slug).await?;
+    let ids = article_ids(&body);
+    let matched_ids: Vec<i64> = if ids.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_scalar("SELECT id FROM articles WHERE portal_id=$1 AND id = ANY($2)")
+            .bind(id(&p))
+            .bind(&ids)
+            .fetch_all(&st.db)
+            .await?
+    };
+    if matched_ids.is_empty() {
+        return Err(ApiError::bad("No articles found to process"));
+    }
+    let cid = body
+        .get("category_id")
+        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        .ok_or_else(|| ApiError::bad("Category not found in this portal"))?;
+    let cat_ok: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM categories WHERE id=$1 AND portal_id=$2)")
+            .bind(cid)
+            .bind(id(&p))
+            .fetch_one(&st.db)
+            .await?;
+    if !cat_ok {
+        return Err(ApiError::bad("Category not found in this portal"));
+    }
+    sqlx::query(
+        "UPDATE articles SET category_id=$1, updated_at=now() WHERE portal_id=$2 AND id = ANY($3)",
+    )
+    .bind(cid)
+    .bind(id(&p))
+    .bind(&matched_ids)
+    .execute(&st.db)
+    .await?;
+    Ok(Json(json!({})))
+}
+async fn articles_bulk_delete(
+    State(st): State<AppState>,
+    u: CurrentUser,
+    Path((account, slug)): Path<(i64, String)>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    require_account(&st.db, &u, account)
+        .await?
+        .require_admin()?;
+    let p = portal(&st.db, account, &slug).await?;
+    let ids = article_ids(&body);
+    let matched_ids: Vec<i64> = if ids.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_scalar("SELECT id FROM articles WHERE portal_id=$1 AND id = ANY($2)")
+            .bind(id(&p))
+            .bind(&ids)
+            .fetch_all(&st.db)
+            .await?
+    };
+    if matched_ids.is_empty() {
+        return Err(ApiError::bad("No articles found to process"));
+    }
+    let mut tx = st.db.begin().await?;
+    sqlx::query(
+        "UPDATE articles SET associated_article_id=NULL WHERE portal_id=$1 AND associated_article_id = ANY($2)",
+    )
+    .bind(id(&p))
+    .bind(&matched_ids)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM articles WHERE portal_id=$1 AND id = ANY($2)")
+        .bind(id(&p))
+        .bind(&matched_ids)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Json(json!({})))
+}
+// mirrors chatwoot/app/controllers/api/v1/accounts/search_controller.rb#articles
+async fn search_articles(
+    State(st): State<AppState>,
+    u: CurrentUser,
+    Path(account): Path<i64>,
+    Query(q): Query<Params>,
+) -> ApiResult {
+    require_account(&st.db, &u, account).await?;
+    let Some(term) = q.get("q").map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+        return Ok(Json(json!({ "payload": { "articles": [] } })));
+    };
+    let pat = format!("%{term}%");
+    let offset = (page(&q) - 1) * 15;
+    let since = q.get("since").and_then(|s| s.parse::<i64>().ok());
+    let until = q.get("until").and_then(|s| s.parse::<i64>().ok());
+    let rows: Vec<(
+        i64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+        i32,
+        Option<String>,
+        i32,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT a.id::bigint, a.title, a.locale, a.content, a.slug, p.slug, a.account_id, c.name, a.status, extract(epoch from a.updated_at)::bigint
+         FROM articles a
+         JOIN portals p ON p.id = a.portal_id
+         LEFT JOIN categories c ON c.id = a.category_id
+         WHERE a.account_id = $1
+           AND (a.title ILIKE $2 OR a.description ILIKE $2 OR a.content ILIKE $2)
+           AND ($3::bigint IS NULL OR a.updated_at >= to_timestamp($3))
+           AND ($4::bigint IS NULL OR a.updated_at <= to_timestamp($4))
+         ORDER BY a.updated_at DESC
+         LIMIT 15 OFFSET $5",
+    )
+    .bind(account)
+    .bind(&pat)
+    .bind(since)
+    .bind(until)
+    .bind(offset)
+    .fetch_all(&st.db)
+    .await?;
+    let articles: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            let status = match r.8 {
+                1 => "published",
+                2 => "archived",
+                _ => "draft",
+            };
+            json!({
+                "id": r.0,
+                "title": r.1,
+                "locale": r.2,
+                "content": r.3,
+                "slug": r.4,
+                "portal_slug": r.5,
+                "account_id": r.6,
+                "category_name": r.7,
+                "status": status,
+                "updated_at": r.9,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "payload": { "articles": articles } })))
 }
 async fn public_redirect(
     State(st): State<AppState>,
