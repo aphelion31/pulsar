@@ -5,7 +5,19 @@ import { useSearchParams } from "react-router";
 import { Send } from "lucide-react";
 import { clock } from "~/lib/format";
 
-type WidgetMessage = { id: number; content: string | null; message_type: number; created_at: number; echo_id?: string; sender?: { name?: string } };
+type WidgetMessage = {
+  id: number; content: string | null; message_type: number; created_at: number; echo_id?: string; sender?: { name?: string };
+  content_type?: string; content_attributes?: { submitted_values?: { csat_survey_response?: { rating?: number } } };
+};
+
+// shared/constants/messages.js CSAT_RATINGS (emoji display); labels from widget CSAT.RATINGS
+const CSAT_RATINGS = [
+  { value: 1, emoji: "😞", label: "Poor" },
+  { value: 2, emoji: "😑", label: "Fair" },
+  { value: 3, emoji: "😐", label: "Average" },
+  { value: 4, emoji: "😀", label: "Good" },
+  { value: 5, emoji: "😍", label: "Excellent" },
+];
 type Config = {
   website_channel_config: { auth_token: string; website_name: string; welcome_title: string | null; welcome_tagline: string | null; widget_color: string | null; reply_time: string };
   contact: { pubsub_token: string };
@@ -16,6 +28,26 @@ const REPLY: Record<string, string> = {
   in_a_few_hours: "Usually replies in a few hours",
   in_a_day: "Usually replies in a day",
 };
+
+/** widget/components/CustomerSatisfaction.vue (emoji display): pick once, then show the thank-you text. */
+function Csat({ message, rate }: { message: WidgetMessage; rate: (id: number, rating: number) => Promise<void> }) {
+  const picked = message.content_attributes?.submitted_values?.csat_survey_response?.rating;
+  const [busy, setBusy] = useState(false);
+  if (picked) return <p className="mt-2 text-[13px] text-ink-2">Thank you for submitting the rating</p>;
+  return (
+    <div className="mt-2" role="group" aria-label="Rate your conversation">
+      <div className="flex gap-1">
+        {CSAT_RATINGS.map((r) => (
+          <button key={r.value} type="button" disabled={busy} aria-label={r.label} title={r.label}
+            className="rounded-md p-1 text-2xl leading-none transition hover:scale-110 disabled:opacity-50"
+            onClick={async () => { setBusy(true); await rate(message.id, r.value).finally(() => setBusy(false)); }}>
+            {r.emoji}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /** campaignHelper.js isPatternMatchingWithURL. Native URLPattern where available, else `*` wildcards. */
 export function urlMatches(pattern: string, url: string) {
@@ -141,6 +173,13 @@ export default function Widget() {
     };
   }, [cfg, messages.length > 0]);
 
+  async function rate(id: number, rating: number) {
+    if (!cfg) return;
+    const submitted_values = { csat_survey_response: { rating, feedback_message: "" } };
+    await call(`messages/${id}`, cfg.website_channel_config.auth_token, { method: "PATCH", body: JSON.stringify({ message: { submitted_values } }) });
+    setMessages((prev) => prev.map((x) => (x.id === id ? { ...x, content_attributes: { ...x.content_attributes, submitted_values } } : x)));
+  }
+
   async function send(e: React.FormEvent) {
     e.preventDefault();
     const content = text.trim();
@@ -180,6 +219,7 @@ export default function Widget() {
                 style={mine ? { background: color } : undefined}
               >
                 <p className="whitespace-pre-wrap break-words">{m.content}</p>
+                {m.content_type === "input_csat" && <Csat message={m} rate={rate} />}
                 <p className={`num mt-0.5 font-mono text-[10px] ${mine ? "text-white/70" : "text-ink-3"}`}>
                   {!mine && m.sender?.name ? `${m.sender.name}, ` : ""}
                   {clock(m.created_at)}
