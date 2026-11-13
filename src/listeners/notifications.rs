@@ -282,7 +282,85 @@ async fn build(
     .fetch_one(db)
     .await?;
 
+    let st2 = st.clone();
+    tokio::spawn(async move {
+        if let Err(e) = email(&st2, id).await {
+            tracing::warn!(error = %e, notification = id, "notification email failed");
+        }
+    });
     broadcast(st, account_id, user_id, id).await
+}
+
+/// Notification::EmailNotificationService + AgentNotifications::ConversationNotificationsMailer.
+/// ponytail: bodies are the templates' fixed text plus the action link; the "recent messages" list and
+/// liquid customisation are not rendered. Account email rate limit is not enforced.
+async fn email(st: &AppState, id: i64) -> anyhow::Result<()> {
+    if !crate::mailer::configured() {
+        return Ok(());
+    }
+    type Row = (i64, i64, i64, i64, String, String, Option<NaiveDateTime>, Option<NaiveDateTime>, i64, Option<String>, Option<i64>);
+    let r: Option<Row> = sqlx::query_as(
+        "SELECT n.account_id::bigint, n.user_id::bigint, n.notification_type::bigint, c.display_id::bigint,
+                u.email, COALESCE(NULLIF(u.display_name, ''), u.name), u.confirmed_at, n.read_at,
+                COALESCE(ns.email_flags, 0)::bigint, i.name, n.secondary_actor_id::bigint
+         FROM notifications n JOIN users u ON u.id = n.user_id JOIN conversations c ON c.id = n.primary_actor_id
+         LEFT JOIN inboxes i ON i.id = c.inbox_id
+         LEFT JOIN notification_settings ns ON ns.user_id = n.user_id AND ns.account_id = n.account_id
+         WHERE n.id = $1 AND n.primary_actor_type = 'Conversation'",
+    )
+    .bind(id)
+    .fetch_optional(&st.db)
+    .await?;
+    let Some((account_id, user_id, kind, display_id, to, name, confirmed, read, flags, inbox, message_id)) = r else { return Ok(()) };
+    // has_flags bit_operator: notification type N maps to bit (N - 1)
+    if read.is_some() || confirmed.is_none() || flags & (1 << (kind - 1)) == 0 {
+        return Ok(());
+    }
+    // assigned/participating new message: skip when the agent is online
+    if (kind == 3 || kind == 5) && crate::cable::presence_snapshot().is_online(account_id, user_id) {
+        return Ok(());
+    }
+    let url = format!("{}/app/accounts/{account_id}/conversations/{display_id}", st.frontend_url.trim_end_matches('/'));
+    let link = format!("<a href=\"{url}\">");
+    let subject_name = name.clone();
+    let name = html_escape(&name); // body only; subjects are plain text
+    let (subject, body) = match kind {
+        1 => (
+            format!("{subject_name}, A new conversation [ID - {display_id}] has been created in {}.", inbox.clone().unwrap_or_default()),
+            format!("<p>Hi {name}</p><p>A new conversation ({link}#{display_id}</a>) has been created in {}.</p>", html_escape(&inbox.unwrap_or_default())),
+        ),
+        2 => (
+            format!("{subject_name}, A new conversation [ID - {display_id}] has been assigned to you."),
+            format!("<p>Hi {name},</p><p>Time to save the world. A new conversation has been assigned to you</p><p>Click {link}here</a> to get cracking.</p>"),
+        ),
+        3 => (
+            format!("{subject_name}, New message in your assigned conversation [ID - {display_id}]."),
+            format!("<p>Hi {name},</p><p>You have received a new message in your assigned conversation.</p><p>Click {link}here</a> to get cracking.</p>"),
+        ),
+        4 => {
+            let text: Option<String> = match message_id {
+                Some(m) => sqlx::query_scalar("SELECT content FROM messages WHERE id = $1").bind(m).fetch_optional(&st.db).await?.flatten(),
+                None => None,
+            };
+            (
+                format!("{subject_name}, You have been mentioned in conversation [ID - {display_id}]"),
+                format!(
+                    "<p>Hi {name}, </p><p>You've been mentioned in a conversation.</p><blockquote style=\"padding:8px 16px;border-left:5px solid #eeeeee\">{}</blockquote><p>{link}View Message</a></p>",
+                    html_escape(&text.unwrap_or_default())
+                ),
+            )
+        }
+        5 => (
+            format!("{subject_name}, New message in your participating conversation [ID - {display_id}]."),
+            format!("<p>Hi {name},</p><p>You have received a new message in a conversation you are participating.</p><p>Click {link}here</a> to view.</p>"),
+        ),
+        _ => return Ok(()),
+    };
+    crate::mailer::send_html(&to, &subject, body).await
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 /// ActionCableListener#notification_created: `notification.created` to the user's pubsub token.
