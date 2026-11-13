@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 BASE=${BASE:-http://127.0.0.1:3110}
-LOG=${LOG:?Set LOG to the server log with SMTP_ADDRESS unset}
+LOG=${LOG:?Set LOG to the server log; start the server with SMTP_ADDRESS unset and PULSAR_LOG_MAIL=1}
 EMAIL=${EMAIL:-admin@example.com}
 PASSWORD=${PASSWORD:-ResetPassword123!}
 command -v jq >/dev/null
