@@ -36,6 +36,9 @@ type Inbox = {
   inbox_identifier?: string | null;
   hmac_token?: string | null;
   web_widget_script?: string | null;
+  email?: string | null;
+  forward_to_email?: string | null;
+  forwarding_enabled?: boolean | null;
 };
 
 type Agent = {
@@ -79,6 +82,7 @@ export default function InboxNewWizard() {
   const [greetingEnabled, setGreetingEnabled] = useState(false);
   const [greetingMessage, setGreetingMessage] = useState("");
   const [webhookUrl, setWebhookUrl] = useState("");
+  const [emailAddress, setEmailAddress] = useState("");
 
   // Step 3 agents state
   const [allAgents, setAllAgents] = useState<Agent[]>([]);
@@ -150,7 +154,7 @@ export default function InboxNewWizard() {
       title: t("INBOX_MGMT.ADD.AUTH.CHANNEL.EMAIL.TITLE"),
       description: t("INBOX_MGMT.ADD.AUTH.CHANNEL.EMAIL.DESCRIPTION"),
       icon: Mail,
-      active: false,
+      active: true,
     },
     {
       key: "api",
@@ -283,6 +287,18 @@ export default function InboxNewWizard() {
           channel: {
             type: "api",
             webhook_url: webhookUrl.trim() || null,
+          },
+        };
+      } else if (sub_page === "email") {
+        if (!inboxName.trim() || !emailAddress.trim()) {
+          setLoading(false);
+          return;
+        }
+        payload = {
+          name: inboxName.trim(),
+          channel: {
+            type: "email",
+            email: emailAddress.trim(),
           },
         };
       }
@@ -679,6 +695,69 @@ export default function InboxNewWizard() {
                       </div>
                     </form>
                   </>
+                ) : sub_page === "email" ? (
+                  <>
+                    <div className="mb-6">
+                      <h2 className="text-xl font-medium text-n-slate-12">
+                        {t("INBOX_MGMT.ADD.EMAIL_CHANNEL.TITLE")}
+                      </h2>
+                      <p className="mt-1 text-sm text-n-slate-11">
+                        {t("INBOX_MGMT.ADD.EMAIL_CHANNEL.DESC")}
+                      </p>
+                    </div>
+
+                    <form onSubmit={handleCreateInbox} className="flex flex-col gap-4">
+                      <label className="flex flex-col gap-1.5 text-sm">
+                        <span className="font-medium text-n-slate-12">
+                          {t("INBOX_MGMT.ADD.EMAIL_CHANNEL.CHANNEL_NAME.LABEL")}{" "}
+                          <span className="text-n-ruby-9">*</span>
+                        </span>
+                        <input
+                          required
+                          type="text"
+                          value={inboxName}
+                          onChange={(e) => setInboxName(e.target.value)}
+                          placeholder={t(
+                            "INBOX_MGMT.ADD.EMAIL_CHANNEL.CHANNEL_NAME.PLACEHOLDER"
+                          )}
+                          className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm text-n-slate-12 outline-none focus:border-n-brand"
+                        />
+                      </label>
+
+                      <label className="flex flex-col gap-1.5 text-sm">
+                        <span className="font-medium text-n-slate-12">
+                          {t("INBOX_MGMT.ADD.EMAIL_CHANNEL.EMAIL.LABEL")}{" "}
+                          <span className="text-n-ruby-9">*</span>
+                        </span>
+                        <input
+                          required
+                          type="email"
+                          value={emailAddress}
+                          onChange={(e) => setEmailAddress(e.target.value)}
+                          placeholder={t(
+                            "INBOX_MGMT.ADD.EMAIL_CHANNEL.EMAIL.PLACEHOLDER"
+                          )}
+                          className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm text-n-slate-12 outline-none focus:border-n-brand"
+                        />
+                        <span className="text-xs text-n-slate-11">
+                          {t("INBOX_MGMT.ADD.EMAIL_CHANNEL.EMAIL.SUBTITLE")}
+                        </span>
+                      </label>
+
+                      <div className="mt-4 flex justify-end gap-2">
+                        <Button
+                          solid
+                          blue
+                          type="submit"
+                          isLoading={loading}
+                          disabled={
+                            loading || !inboxName.trim() || !emailAddress.trim()
+                          }
+                          label={t("INBOX_MGMT.ADD.EMAIL_CHANNEL.SUBMIT_BUTTON")}
+                        />
+                      </div>
+                    </form>
+                  </>
                 ) : (
                   <div className="text-sm text-n-slate-11">
                     Channel configuration not supported in this wizard.
@@ -806,6 +885,10 @@ export default function InboxNewWizard() {
                 <p className="mt-2 max-w-lg text-sm text-n-slate-11">
                   {currentInbox?.channel_type === "Channel::WebWidget"
                     ? t("INBOX_MGMT.FINISH.WEBSITE_SUCCESS")
+                    : currentInbox?.channel_type === "Channel::Email"
+                    ? currentInbox.forwarding_enabled
+                      ? t("INBOX_MGMT.ADD.EMAIL_CHANNEL.FINISH_MESSAGE")
+                      : t("INBOX_MGMT.ADD.EMAIL_CHANNEL.FINISH_MESSAGE_NO_FORWARDING")
                     : t("INBOX_MGMT.FINISH.MESSAGE")}
                 </p>
 
@@ -890,6 +973,55 @@ export default function InboxNewWizard() {
                         />
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* Email channel info */}
+                {currentInbox?.channel_type === "Channel::Email" && (
+                  <div className="mt-6 flex w-full flex-col gap-4 text-left">
+                    {currentInbox.forwarding_enabled && currentInbox.forward_to_email && (
+                      <div>
+                        <div className="flex items-center justify-between pb-1 text-xs text-n-slate-11">
+                          <span className="font-medium text-n-slate-12">
+                            {t("INBOX_MGMT.ADD.EMAIL_CHANNEL.FORWARDING_ADDRESS_LABEL")}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              copyToClipboard("forward_to", currentInbox.forward_to_email || "")
+                            }
+                            className="inline-flex items-center gap-1 font-medium text-n-blue-11 hover:underline"
+                          >
+                            {copiedKey === "forward_to" ? (
+                              <>
+                                <Check className="size-3" />
+                                {t("COMPONENTS.CODE.COPY_SUCCESSFUL")}
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="size-3" />
+                                {t("COMPONENTS.CODE.BUTTON_TEXT")}
+                              </>
+                            )}
+                          </button>
+                        </div>
+                        <input
+                          readOnly
+                          value={currentInbox.forward_to_email}
+                          className="h-10 w-full rounded-lg border border-n-weak bg-n-solid-2 px-3 font-mono text-xs text-n-slate-12"
+                        />
+                      </div>
+                    )}
+
+                    <p className="text-center text-sm text-n-slate-11">
+                      <Link
+                        to={`/accounts/${accountId}/settings/inboxes/${inbox_id}/configuration`}
+                        className="text-n-blue-11 underline hover:text-n-blue-12"
+                      >
+                        {t("INBOX_MGMT.ADD.EMAIL_CHANNEL.CONFIGURE_SMTP_IMAP_LINK")}
+                      </Link>
+                      {t("INBOX_MGMT.ADD.EMAIL_CHANNEL.CONFIGURE_SMTP_IMAP_TEXT")}
+                    </p>
                   </div>
                 )}
 

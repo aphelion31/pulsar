@@ -9,6 +9,7 @@ mod companies;
 mod contacts;
 mod events;
 mod conversations;
+mod email_inbound;
 mod inboxes;
 mod listeners;
 mod public_api;
@@ -148,8 +149,11 @@ async fn main() -> anyhow::Result<()> {
             ("notifications", events::listener(listeners::notifications::handle)),
             ("webhooks", events::listener(listeners::webhooks::handle)),
             ("automation", events::listener(listeners::automation::handle)),
+            ("email_outbound", events::listener(listeners::email_outbound::handle)),
         ],
     );
+    // Chatwoot FetchImapEmailInboxesJob: poll IMAP for Channel::Email inboxes. Errors are logged per inbox.
+    email_inbound::spawn(state.clone());
     let addr = std::env::var("BIND").unwrap_or_else(|_| "0.0.0.0:3000".into());
     tracing::info!("pulsar listening on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
