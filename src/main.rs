@@ -1,4 +1,4 @@
-mod account_more;
+mod slack; mod account_more;
 mod ar_encryption;
 mod auth;
 mod mailer;
@@ -45,6 +45,7 @@ fn account_routes() -> Router<AppState> {
         .merge(inboxes::routes())
         .merge(inbox_actions::routes())
         .merge(assignment_policies::routes())
+        .merge(slack::routes())
         .merge(settings::routes())
         .merge(help_center::routes())
         .merge(companies::routes())
