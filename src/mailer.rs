@@ -4,7 +4,12 @@ pub async fn reset(email: &str, link: &str) -> anyhow::Result<()> {
     let subject = "Reset password instructions";
     let body = format!("Hello {email}!\n\nSomeone has requested a link to change your password. You can do this through the link below.\n\n{link}\n\nIf you didn't request this, please ignore this email.\nYour password won't change until you access the link above and create a new one.");
     let Some(host) = std::env::var("SMTP_ADDRESS").ok().filter(|h| !h.trim().is_empty()) else {
-        tracing::info!(to = email, subject, body, "password reset email");
+        // The body carries a live reset token: only print it when explicitly asked (local dev/tests).
+        if std::env::var("PULSAR_LOG_MAIL").as_deref() == Ok("1") {
+            tracing::info!(to = email, subject, body, "password reset email");
+        } else {
+            tracing::warn!(to = email, "SMTP_ADDRESS not set; password reset email not sent");
+        }
         return Ok(());
     };
     let sender = std::env::var("MAILER_SENDER_EMAIL").unwrap_or_else(|_| "noreply@localhost".into());
