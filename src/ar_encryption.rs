@@ -67,6 +67,11 @@ pub fn new_secret() -> (String, String) {
     (plain, stored)
 }
 
+/// True when both encryption env keys are set. MFA secrets must not be stored without this.
+pub fn configured() -> bool {
+    key().is_some()
+}
+
 pub fn encrypt(plain: &str) -> String {
     match key() {
         Some(key) => {

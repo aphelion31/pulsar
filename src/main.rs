@@ -2,6 +2,7 @@ mod account_more;
 mod ar_encryption;
 mod auth;
 mod mailer;
+mod mfa;
 mod automation;
 mod bots;
 mod cable;
@@ -19,6 +20,8 @@ mod inboxes;
 mod help_center;
 mod listeners;
 mod public_api;
+mod platform;
+mod registration;
 mod reports;
 mod seed;
 mod assignment_policies;
@@ -60,6 +63,8 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(web::health))
         .route("/auth/sign_in", post(auth::sign_in))
+        .route("/auth/confirmation", post(registration::confirm))
+        .route("/resend_confirmation", post(registration::resend_confirmation))
         .route("/auth/password", post(auth::request_password_reset).put(auth::reset_password))
         .route("/auth/validate_token", get(auth::validate_token))
         .route("/auth/sign_out", axum::routing::delete(auth::sign_out))
@@ -77,6 +82,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/profile/availability", post(auth::availability))
         .route("/api/v1/profile/auto_offline", post(auth::auto_offline))
         .route("/api/v1/profile/work_preferences", post(auth::auto_offline).patch(auth::auto_offline))
+        .route("/api/v1/accounts", post(registration::v1_create))
+        .route("/api/v2/accounts", post(registration::v2_create))
         .route("/api/v1/accounts/{account_id}", get(auth::account_show).patch(auth::account_update).put(auth::account_update))
         .route("/api/v1/accounts/{account_id}/onboarding", axum::routing::put(auth::onboarding_update).patch(auth::onboarding_update))
         .route("/api/v1/accounts/{account_id}/onboarding/help_center_generation", get(auth::help_center_generation))
@@ -84,6 +91,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/accounts/{account_id}/update_active_at", post(auth::update_active_at))
         // ponytail: session list / push subscriptions / changelog not tracked yet; empty responses keep UI happy
         .route("/api/v1/profile/sessions", get(|_u: common::CurrentUser| async { axum::Json(serde_json::json!([])) }))
+        .route("/api/v1/profile/sessions/{id}", axum::routing::delete(mfa::session_destroy))
+        .route("/api/v1/profile/mfa", get(mfa::show).post(mfa::create).delete(mfa::destroy))
+        .route("/api/v1/profile/mfa/verify", post(mfa::verify))
+        .route("/api/v1/profile/mfa/backup_codes", post(mfa::backup_codes))
         .route("/api/v1/notification_subscriptions", post(|_u: common::CurrentUser| async { axum::Json(serde_json::json!({})) }).delete(auth::notification_subscription_destroy))
         .route("/api/v1/changelog", get(|| async { axum::Json(serde_json::json!({ "posts": [] })) }))
         .nest("/api/v1/accounts/{account_id}", account_routes())
@@ -92,6 +103,7 @@ pub fn app(state: AppState) -> Router {
         .merge(channels::telegram::routes())
         .merge(channels::line::routes())
         .merge(channels::twilio::routes())
+        .nest("/platform/api/v1", platform::routes())
         .merge(public_api::routes())
         .merge(help_center::public_routes())
         .merge(storage::routes())
