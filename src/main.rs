@@ -20,6 +20,7 @@ mod help_center;
 mod listeners;
 mod public_api;
 mod platform;
+mod registration;
 mod reports;
 mod seed;
 mod assignment_policies;
@@ -61,6 +62,8 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(web::health))
         .route("/auth/sign_in", post(auth::sign_in))
+        .route("/auth/confirmation", post(registration::confirm))
+        .route("/resend_confirmation", post(registration::resend_confirmation))
         .route("/auth/password", post(auth::request_password_reset).put(auth::reset_password))
         .route("/auth/validate_token", get(auth::validate_token))
         .route("/auth/sign_out", axum::routing::delete(auth::sign_out))
@@ -78,6 +81,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/profile/availability", post(auth::availability))
         .route("/api/v1/profile/auto_offline", post(auth::auto_offline))
         .route("/api/v1/profile/work_preferences", post(auth::auto_offline).patch(auth::auto_offline))
+        .route("/api/v1/accounts", post(registration::v1_create))
+        .route("/api/v2/accounts", post(registration::v2_create))
         .route("/api/v1/accounts/{account_id}", get(auth::account_show).patch(auth::account_update).put(auth::account_update))
         .route("/api/v1/accounts/{account_id}/onboarding", axum::routing::put(auth::onboarding_update).patch(auth::onboarding_update))
         .route("/api/v1/accounts/{account_id}/onboarding/help_center_generation", get(auth::help_center_generation))
