@@ -3,7 +3,7 @@ use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, transp
 pub async fn reset(email: &str, link: &str) -> anyhow::Result<()> {
     let subject = "Reset password instructions";
     let body = format!("Hello {email}!\n\nSomeone has requested a link to change your password. You can do this through the link below.\n\n{link}\n\nIf you didn't request this, please ignore this email.\nYour password won't change until you access the link above and create a new one.");
-    let Ok(host) = std::env::var("SMTP_ADDRESS") else {
+    let Some(host) = std::env::var("SMTP_ADDRESS").ok().filter(|h| !h.trim().is_empty()) else {
         tracing::info!(to = email, subject, body, "password reset email");
         return Ok(());
     };
