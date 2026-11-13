@@ -24,6 +24,9 @@ pub fn routes() -> Router<AppState> {
                 .delete(companies_destroy),
         )
         .route("/companies/{id}/avatar", delete(companies_avatar_destroy))
+        .route("/companies/{id}/conversations", get(company_conversations))
+        .route("/companies/{id}/conversations/filter", post(company_conversations_filter))
+        .route("/companies/{id}/notes", get(company_notes))
         .route(
             "/companies/{id}/destroy_custom_attributes",
             post(companies_destroy_custom_attributes),
@@ -63,6 +66,59 @@ pub fn routes() -> Router<AppState> {
 const RESULTS_PER_PAGE: i64 = 50;
 const CONTACTS_PER_PAGE: i64 = 25;
 const AUDITS_PER_PAGE: i64 = 25;
+
+async fn company_conversations_filter(
+    path: Path<(i64, i64)>, user: CurrentUser, state: State<AppState>,
+    query: Query<CompaniesQuery>, Json(body): Json<Value>,
+) -> ApiResult {
+    require_account(&state.0.db, &user, path.0.0).await?;
+    if body.get("payload").and_then(Value::as_array).is_some_and(|v| !v.is_empty()) {
+        return Err(ApiError::bad("Conversation filters are not supported"));
+    }
+    company_conversations(path, user, state, query).await
+}
+
+async fn company_conversations(
+    Path((account_id, company_id)): Path<(i64, i64)>, user: CurrentUser,
+    State(st): State<AppState>, Query(params): Query<CompaniesQuery>,
+) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM companies WHERE account_id=$1 AND id=$2)").bind(account_id).bind(company_id).fetch_one(&st.db).await?;
+    if !exists { return Err(ApiError::not_found()); }
+    let scope = au.custom_scope_sql("$3");
+    let base = format!("FROM conversations c JOIN contacts ct ON ct.id=c.contact_id WHERE c.account_id=$1 AND ct.account_id=$1 AND ct.company_id=$2 AND ($4 OR c.inbox_id IN (SELECT inbox_id FROM inbox_members WHERE user_id=$3)) AND ({scope})");
+    let (all_count, open_count): (i64, i64) = sqlx::query_as(&format!("SELECT count(*), count(*) FILTER (WHERE c.status=0) {base}"))
+        .bind(account_id).bind(company_id).bind(user.id).bind(au.is_admin()).fetch_one(&st.db).await?;
+    let page = params.page.unwrap_or(1).max(1);
+    let rows: Vec<crate::conversations::Conv> = sqlx::query_as(&format!("SELECT {} {base} ORDER BY c.last_activity_at DESC, c.id DESC LIMIT 25 OFFSET $5", crate::conversations::CONV_COLS))
+        .bind(account_id).bind(company_id).bind(user.id).bind(au.is_admin()).bind((page-1)*25).fetch_all(&st.db).await?;
+    let mut payload = Vec::new();
+    for row in &rows { payload.push(crate::conversations::conv_json(&st.db, row).await); }
+    Ok(Json(json!({"meta":{"total_count":all_count,"all_count":all_count,"open_count":open_count,"page":page},"payload":payload})))
+}
+
+async fn company_notes(
+    Path((account_id, company_id)): Path<(i64, i64)>, user: CurrentUser,
+    State(st): State<AppState>, Query(params): Query<CompaniesQuery>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id).await?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM companies WHERE account_id=$1 AND id=$2)").bind(account_id).bind(company_id).fetch_one(&st.db).await?;
+    if !exists { return Err(ApiError::not_found()); }
+    let q = params.q.unwrap_or_default().trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let pattern = format!("%{q}%");
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM notes n JOIN contacts c ON c.id=n.contact_id WHERE n.account_id=$1 AND c.account_id=$1 AND c.company_id=$2 AND n.content ILIKE $3")
+        .bind(account_id).bind(company_id).bind(&pattern).fetch_one(&st.db).await?;
+    let page = params.page.unwrap_or(1).max(1);
+    let rows: Vec<(i64, String, i64, Option<i64>, NaiveDateTime, NaiveDateTime)> = sqlx::query_as("SELECT n.id,n.content,n.contact_id,n.user_id,n.created_at,n.updated_at FROM notes n JOIN contacts c ON c.id=n.contact_id WHERE n.account_id=$1 AND c.account_id=$1 AND c.company_id=$2 AND n.content ILIKE $3 ORDER BY n.created_at DESC LIMIT 20 OFFSET $4")
+        .bind(account_id).bind(company_id).bind(pattern).bind((page-1)*20).fetch_all(&st.db).await?;
+    let mut payload = Vec::new();
+    for (id, content, contact_id, user_id, created_at, updated_at) in rows {
+        let mut item = json!({"id":id,"content":content,"account_id":account_id,"contact_id":contact_id,"created_at":ts(Some(created_at)),"updated_at":ts(Some(updated_at)),"contact":crate::conversations::contact_json(&st.db, Some(contact_id)).await});
+        if let Some(uid) = user_id { item["user"] = crate::conversations::user_json(&st.db, account_id, uid).await; }
+        payload.push(item);
+    }
+    Ok(Json(json!({"meta":{"total_count":count,"page":page},"payload":payload})))
+}
 
 #[allow(dead_code)]
 #[derive(Debug, sqlx::FromRow)]
@@ -541,7 +597,7 @@ async fn companies_avatar_destroy(
     if existing.is_none() {
         return Err(ApiError::not_found());
     }
-    // ponytail: active storage attachment purge skipped for now
+    crate::storage::remove_avatar(&st.db, "Company", id).await?;
     Ok(Json(json!({ "message": "Avatar deleted" })))
 }
 

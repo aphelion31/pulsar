@@ -21,6 +21,9 @@ pub fn routes() -> Router<AppState> {
         .route("/contacts/search", get(search))
         .route("/contacts/active", get(active))
         .route("/contacts/filter", post(filter))
+        .route("/contacts/import", post(import_contacts))
+        .route("/contacts/export", post(export_contacts))
+        .route("/contact_inboxes/filter", post(filter_contact_inbox))
         .route("/contacts/{id}", get(show).patch(update).put(update).delete(destroy))
         .route("/contacts/{id}/conversations", get(conversations))
         .route("/contacts/{id}/attachments", get(attachments))
@@ -35,6 +38,76 @@ pub fn routes() -> Router<AppState> {
 }
 
 const RESULTS_PER_PAGE: i64 = 15;
+
+// CSV export is returned directly because the mailer cannot attach files.
+async fn export_contacts(Path(account_id): Path<i64>, user: CurrentUser, State(st): State<AppState>) -> Result<Response, ApiError> {
+    require_account(&st.db, &user, account_id).await?;
+    let rows: Vec<(Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as("SELECT name, email, phone_number, identifier FROM contacts WHERE account_id = $1 ORDER BY id")
+        .bind(account_id).fetch_all(&st.db).await?;
+    let mut csv = String::from("name,email,phone_number,identifier\r\n");
+    for (name, email, phone, identifier) in rows {
+        let fields = [name, email, phone, identifier].map(|s| format!("\"{}\"", s.unwrap_or_default().replace('"', "\"\"")));
+        csv.push_str(&fields.join(",")); csv.push_str("\r\n");
+    }
+    Ok(([(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8")], csv).into_response())
+}
+
+fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, ApiError> {
+    let mut rows = Vec::new(); let mut row = Vec::new(); let mut field = String::new();
+    let mut chars = input.trim_start_matches('\u{feff}').chars().peekable(); let mut quoted = false; let mut closed = false;
+    while let Some(c) = chars.next() {
+        if quoted {
+            if c == '"' { if chars.peek() == Some(&'"') { chars.next(); field.push('"'); } else { quoted = false; closed = true; } }
+            else { field.push(c); }
+        } else {
+            match c {
+                '"' if field.is_empty() && !closed => quoted = true,
+                ',' => { row.push(std::mem::take(&mut field)); closed = false; },
+                '\n' | '\r' => { if c == '\r' && chars.peek() == Some(&'\n') { chars.next(); } row.push(std::mem::take(&mut field)); rows.push(std::mem::take(&mut row)); closed = false; },
+                _ if closed || c == '"' => return Err(ApiError::bad("Malformed CSV")),
+                _ => field.push(c),
+            }
+        }
+    }
+    if quoted { return Err(ApiError::bad("Malformed CSV")); }
+    if !row.is_empty() || !field.is_empty() || closed { row.push(field); rows.push(row); }
+    Ok(rows)
+}
+
+async fn import_contacts(Path(account_id): Path<i64>, user: CurrentUser, State(st): State<AppState>, mut multipart: axum::extract::Multipart) -> ApiResult {
+    require_account(&st.db, &user, account_id).await?;
+    let mut input = None;
+    while let Some(field) = multipart.next_field().await.map_err(|_| ApiError::bad("Invalid multipart"))? {
+        if field.name() == Some("import_file") { input = Some(field.text().await.map_err(|_| ApiError::bad("Invalid CSV"))?); break; }
+    }
+    let rows = parse_csv(&input.ok_or_else(|| ApiError::bad("import_file required"))?)?;
+    let (headers, data) = rows.split_first().ok_or_else(|| ApiError::bad("CSV header required"))?;
+    let mut tx = st.db.begin().await?;
+    let mut count = 0;
+    for row in data {
+        if row.len() != headers.len() { return Err(ApiError::bad("CSV column count mismatch")); }
+        let mut attrs = serde_json::Map::new();
+        for (key, value) in headers.iter().zip(row) { if !value.trim().is_empty() { attrs.insert(key.clone(), json!(value.trim())); } }
+        let get = |k: &str| attrs.get(k).and_then(Value::as_str).map(str::to_string);
+        let name = get("name"); let email = get("email"); let identifier = get("identifier");
+        let phone = get("phone_number").map(|p| if p.starts_with('+') { p } else { format!("+{p}") });
+        let id: Option<i32> = sqlx::query_scalar("SELECT id FROM contacts WHERE account_id=$1 AND (($2::text IS NOT NULL AND identifier=$2) OR ($3::text IS NOT NULL AND lower(email)=lower($3)) OR ($4::text IS NOT NULL AND phone_number=$4)) ORDER BY CASE WHEN identifier=$2 THEN 0 WHEN lower(email)=lower($3) THEN 1 ELSE 2 END LIMIT 1")
+            .bind(account_id).bind(&identifier).bind(&email).bind(&phone).fetch_optional(&mut *tx).await?;
+        let mut additional = serde_json::Map::new();
+        for key in ["company_name", "city", "country", "country_code"] { if let Some(v) = attrs.get(key) { additional.insert(key.into(), v.clone()); } }
+        for key in ["name", "email", "identifier", "phone_number", "labels"] { attrs.remove(key); }
+        if let Some(id) = id {
+            sqlx::query("UPDATE contacts SET name=COALESCE($1,name),email=COALESCE($2,email),phone_number=COALESCE($3,phone_number),identifier=COALESCE($4,identifier),additional_attributes=COALESCE(additional_attributes,'{}'::jsonb)||$5,custom_attributes=COALESCE(custom_attributes,'{}'::jsonb)||$6,updated_at=$7 WHERE account_id=$8 AND id=$9")
+                .bind(name).bind(email).bind(phone).bind(identifier).bind(json!(additional)).bind(json!(attrs)).bind(now()).bind(account_id).bind(id).execute(&mut *tx).await?;
+        } else {
+            sqlx::query("INSERT INTO contacts (name,email,phone_number,identifier,account_id,additional_attributes,custom_attributes,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)")
+                .bind(name).bind(email).bind(phone).bind(identifier).bind(account_id).bind(json!(additional)).bind(json!(attrs)).bind(now()).execute(&mut *tx).await?;
+        }
+        count += 1;
+    }
+    tx.commit().await?;
+    Ok(Json(json!({"processed_records":count})))
+}
 
 async fn attachments(
     Path((account_id, id)): Path<(i64, i64)>,
@@ -419,6 +492,28 @@ struct FilterBody {
     payload: Option<Vec<FilterPayloadItem>>,
 }
 
+#[derive(Deserialize)]
+struct InboxFilter { inbox_id: i64, source_id: String }
+
+async fn filter_contact_inbox(
+    Path(account_id): Path<i64>, user: CurrentUser, State(st): State<AppState>,
+    Json(body): Json<InboxFilter>,
+) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inboxes WHERE account_id = $1 AND id = $2)")
+        .bind(account_id).bind(body.inbox_id).fetch_one(&st.db).await?;
+    if !exists { return Err(ApiError::not_found()); }
+    if !au.is_admin() {
+        let member: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inbox_members WHERE user_id = $1 AND inbox_id = $2)")
+            .bind(user.id).bind(body.inbox_id).fetch_one(&st.db).await?;
+        if !member { return Err(ApiError::forbidden()); }
+    }
+    let contact: Option<ContactRow> = sqlx::query_as("SELECT c.id, c.name, c.email, c.phone_number, c.account_id, c.created_at, c.updated_at, c.additional_attributes, c.identifier, c.custom_attributes, c.last_activity_at, c.blocked, c.company_id FROM contacts c JOIN contact_inboxes ci ON ci.contact_id = c.id WHERE c.account_id = $1 AND ci.inbox_id = $2 AND ci.source_id = $3 LIMIT 1")
+        .bind(account_id).bind(body.inbox_id).bind(body.source_id).fetch_optional(&st.db).await?;
+    let contact = contact.ok_or_else(ApiError::not_found)?;
+    Ok(Json(build_contact_json(&st.db, &contact, true).await))
+}
+
 // POST /contacts/filter
 async fn filter(
     Path(account_id): Path<i64>,
@@ -437,15 +532,31 @@ async fn filter(
     let mut conditions = Vec::new();
     let mut binds: Vec<String> = Vec::new();
 
-    // ponytail: support name, email, phone_number, identifier with equal_to, not_equal_to, contains, does_not_contain
+    let mut previous_operator = "AND";
     for f in filters {
         let col = match f.attribute_key.as_str() {
             "name" => "name",
             "email" => "email",
             "phone_number" => "phone_number",
             "identifier" => "identifier",
-            _ => continue,
+            "country_code" => "additional_attributes->>'country_code'",
+            "city" => "additional_attributes->>'city'",
+            "company" | "company_name" => "additional_attributes->>'company_name'",
+            "created_at" => "created_at::text",
+            "last_activity_at" => "last_activity_at::text",
+            "blocked" => "blocked::text",
+            "labels" => "(SELECT string_agg(t.name, ',') FROM taggings tg JOIN tags t ON t.id = tg.tag_id WHERE tg.taggable_type = 'Contact' AND tg.context = 'labels' AND tg.taggable_id = contacts.id)",
+            _ => {
+                let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM custom_attribute_definitions WHERE account_id = $1 AND attribute_model = 1 AND attribute_key = $2)")
+                    .bind(account_id).bind(&f.attribute_key).fetch_one(&st.db).await?;
+                if !exists { return Err(ApiError::bad("Invalid attribute")); }
+                binds.push(f.attribute_key.clone());
+                // Key is bound, never inserted into SQL.
+                "custom_attributes->>$CUSTOM_KEY"
+            }
         };
+        let col = col.replace("$CUSTOM_KEY", &format!("${}", binds.len() + 1));
+        let start = conditions.len();
 
         let val = f.values.as_ref().and_then(|v| v.first()).and_then(|v| {
             if let Some(s) = v.as_str() {
@@ -472,27 +583,46 @@ async fn filter(
             }
             "contains" => {
                 if let Some(v) = val {
-                    binds.push(format!("%{v}%"));
+                    binds.push(format!("%{}%", v.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
                     conditions.push(format!("{col} ILIKE ${}", binds.len() + 1));
                 }
             }
             "does_not_contain" => {
                 if let Some(v) = val {
-                    binds.push(format!("%{v}%"));
+                    binds.push(format!("%{}%", v.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
                     conditions.push(format!("{col} NOT ILIKE ${}", binds.len() + 1));
                 }
             }
             // chatwoot#15926: no value needed. `col` is from the whitelist above, never user input.
             "is_present" => conditions.push(format!("({col} IS NOT NULL AND {col} <> '')")),
             "is_not_present" => conditions.push(format!("({col} IS NULL OR {col} = '')")),
-            _ => {}
+            "is_greater_than" | "is_less_than" | "days_before" => {
+                let mut value = val.ok_or_else(|| ApiError::bad("Filter value required"))?;
+                if f.filter_operator == "days_before" {
+                    let days: i64 = value.parse().map_err(|_| ApiError::bad("Invalid days"))?;
+                    let date = chrono::Utc::now().date_naive().checked_sub_signed(chrono::Duration::try_days(days).ok_or_else(|| ApiError::bad("Invalid days"))?).ok_or_else(|| ApiError::bad("Invalid days"))?;
+                    value = date.to_string();
+                }
+                binds.push(value);
+                let op = if f.filter_operator == "is_greater_than" { ">" } else if f.filter_operator == "is_less_than" { "<" } else { "=" };
+                let expr = if f.filter_operator == "days_before" { format!("left({col}, 10)") } else { col.clone() };
+                conditions.push(format!("{expr} {op} ${}", binds.len() + 1));
+            }
+            _ => return Err(ApiError::bad("Invalid operator")),
         }
+        if conditions.len() == start { return Err(ApiError::bad("Filter value required")); }
+        if start > 0 { conditions.insert(start, previous_operator.to_string()); }
+        previous_operator = match f.query_operator.as_deref() {
+            None | Some("") | Some("AND") | Some("and") => "AND",
+            Some("OR") | Some("or") => "OR",
+            _ => return Err(ApiError::bad("Invalid query operator")),
+        };
     }
 
     let where_clause = if conditions.is_empty() {
         "".to_string()
     } else {
-        format!("AND ({})", conditions.join(" AND "))
+        format!("AND ({})", conditions.join(" "))
     };
 
     let count_sql = format!("SELECT COUNT(*) FROM contacts WHERE account_id = $1 {where_clause}");
