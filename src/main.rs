@@ -1,4 +1,5 @@
 mod account_more;
+mod ar_encryption;
 mod auth;
 mod mailer;
 mod automation;

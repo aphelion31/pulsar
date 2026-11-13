@@ -47,9 +47,13 @@ AUTH=(-H "access-token: $(hdr access-token)" -H "client: $(hdr client)" -H "uid:
 A="$B/api/v1/accounts/1"
 j() { curl -fsS "${AUTH[@]}" "$@"; }
 N="$(date +%s)-$$"
-R=$(j -X POST "$A/inboxes" -d "{\"name\":\"Mail test $N\",\"channel\":{\"type\":\"email\",\"email\":\"test-$N@example.com\",\"smtp_enabled\":true,\"smtp_address\":\"127.0.0.1\",\"smtp_port\":2525,\"smtp_enable_ssl_tls\":false,\"smtp_enable_starttls_auto\":false}}")
+R=$(j -X POST "$A/inboxes" -d "{\"name\":\"Mail test $N\",\"channel\":{\"type\":\"email\",\"email\":\"test-$N@example.com\",\"smtp_enabled\":true,\"smtp_address\":\"127.0.0.1\",\"smtp_port\":2525,\"smtp_enable_ssl_tls\":false,\"smtp_enable_starttls_auto\":false,\"smtp_password\":\"sink-pass\"}}")
 INBOX=$(echo "$R" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 CHANNEL=$(echo "$R" | python3 -c 'import json,sys; x=json.load(sys.stdin); assert "smtp_password" not in x and "imap_password" not in x; print(x["channel_id"])')
+# With encryption keys set (ENCRYPTED=1), the stored password must be an encrypted payload, never plaintext.
+if [[ ${ENCRYPTED:-0} == 1 ]]; then
+  psql postgres://localhost/pulsar -tAc "SELECT smtp_password FROM channel_email WHERE id = $CHANNEL" | grep -q '^{"p":' || { echo "smtp_password stored in plaintext" >&2; exit 1; }
+fi
 CONTACT=$(j -X POST "$A/contacts" -d "{\"name\":\"Mail test\",\"email\":\"recipient-$N@example.com\"}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["payload"]["contact"]["id"])')
 CONV=$(j -X POST "$A/conversations" -d "{\"inbox_id\":$INBOX,\"contact_id\":$CONTACT}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 j -X POST "$A/conversations/$CONV/messages" -d '{"content":"incoming","message_type":"incoming","content_attributes":{"email":{"message_id":"incoming@example.com"}}}' >/dev/null
