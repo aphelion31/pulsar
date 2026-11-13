@@ -332,6 +332,28 @@ fn extension_of(filename: &str) -> Option<String> {
     if e.is_empty() || e.len() > 16 { None } else { Some(e.to_ascii_lowercase()) }
 }
 
+/// Store `bytes` as an attachment of an existing message (channel inbound media). `file_type` overrides the
+/// content-type guess when the channel knows better (e.g. Telegram voice notes).
+pub(crate) async fn attach_to_message(
+    db: &PgPool, account_id: i64, message_id: i64, fname: &str, content_type: &str, bytes: &[u8], file_type: Option<i32>,
+) -> Result<(), ApiError> {
+    if bytes.len() > MAX_BYTES {
+        return Err(ApiError::bad("Attachment too large"));
+    }
+    let (blob_id, _) = save_blob(db, bytes, fname, content_type).await?;
+    let att_id: i64 = sqlx::query_scalar(
+        "INSERT INTO attachments (file_type, message_id, account_id, extension, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, now(), now()) RETURNING id::bigint",
+    )
+    .bind(file_type.unwrap_or_else(|| file_type_of(content_type)))
+    .bind(message_id as i32)
+    .bind(account_id as i32)
+    .bind(extension_of(fname))
+    .fetch_one(db)
+    .await?;
+    attach(db, "Attachment", att_id, "file", blob_id).await
+}
+
 /// Attachment JSON in the shape of `_attachment.json.jbuilder`. Empty when the message has none.
 pub(crate) async fn attachments_json(db: &PgPool, message_id: i64) -> Vec<Value> {
     let rows: Vec<(i64, i32, Option<String>, i64, i64, NaiveDateTime, i64, String, Option<String>, i64)> = sqlx::query_as(

@@ -186,7 +186,20 @@ async fn process_update(
         return Ok(());
     };
 
-    if msg_id_str.is_empty() || text.is_empty() {
+    // incoming_message_service.rb#file: photo (largest size), sticker thumb, video, video_note, voice, audio, document
+    let media = if is_callback {
+        None
+    } else {
+        let m = base_obj;
+        m["photo"].as_array().and_then(|a| a.last()).map(|f| (f, 0))
+            .or_else(|| m["sticker"]["thumb"].as_object().map(|_| (&m["sticker"]["thumb"], 0)))
+            .or_else(|| m["video"].as_object().map(|_| (&m["video"], 2)))
+            .or_else(|| m["video_note"].as_object().map(|_| (&m["video_note"], 2)))
+            .or_else(|| m["voice"].as_object().map(|_| (&m["voice"], 1)))
+            .or_else(|| m["audio"].as_object().map(|_| (&m["audio"], 1)))
+            .or_else(|| m["document"].as_object().map(|_| (&m["document"], -1)))
+    };
+    if msg_id_str.is_empty() || (text.is_empty() && media.is_none()) {
         return Ok(());
     }
 
@@ -258,7 +271,7 @@ async fn process_update(
         content_attrs["in_reply_to_external_id"] = json!(reply_to);
     }
 
-    insert_message(
+    let created = insert_message(
         st,
         &conv,
         Some(("Contact", contact_id)),
@@ -271,6 +284,57 @@ async fn process_update(
     )
     .await?;
 
+    if let Some((file, kind)) = media {
+        if let Err(e) = attach_media(st, account_id, inbox_id, &conv, &created, file, kind).await {
+            tracing::warn!(inbox_id, error = ?e, "telegram media download failed");
+        }
+    }
+
+    Ok(())
+}
+
+/// Channel::Telegram#get_telegram_file_path + Down.download, then attach and re-broadcast message.updated.
+async fn attach_media(
+    st: &AppState, account_id: i64, inbox_id: i64, conv: &crate::conversations::Conv, created: &Value, file: &Value, kind: i32,
+) -> anyhow::Result<()> {
+    let Some(file_id) = file["file_id"].as_str() else { return Ok(()) };
+    let token: String = sqlx::query_scalar(
+        "SELECT ct.bot_token FROM inboxes i JOIN channel_telegram ct ON ct.id = i.channel_id WHERE i.id = $1 AND i.channel_type = 'Channel::Telegram'",
+    )
+    .bind(inbox_id)
+    .fetch_one(&st.db)
+    .await?;
+    let base = api_base();
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build()?;
+    let info: Value = serde_json::from_slice(&client.get(format!("{base}/bot{token}/getFile")).query(&[("file_id", file_id)]).send().await?.error_for_status()?.bytes().await?)?;
+    let Some(path) = info["result"]["file_path"].as_str() else { return Ok(()) };
+    if path.contains("..") {
+        anyhow::bail!("unexpected file path");
+    }
+    let mut resp = client.get(format!("{base}/file/bot{token}/{path}")).send().await?.error_for_status()?;
+    if resp.content_length().is_some_and(|n| n as usize > crate::storage::MAX_BYTES) {
+        anyhow::bail!("file too large");
+    }
+    let header_ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
+    // Read in chunks so a missing or false Content-Length cannot exhaust memory.
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if bytes.len() + chunk.len() > crate::storage::MAX_BYTES {
+            anyhow::bail!("file too large");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let fname = file["file_name"].as_str().map(str::to_string).unwrap_or_else(|| path.rsplit('/').next().unwrap_or("file").to_string());
+    let ct = file["mime_type"].as_str().map(str::to_string).or(header_ct).unwrap_or_else(|| "application/octet-stream".into());
+    let Some(mid) = created["id"].as_i64() else { return Ok(()) };
+    crate::storage::attach_to_message(&st.db, account_id, mid, &fname, &ct, &bytes, (kind >= 0).then_some(kind)).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let m: crate::conversations::Msg = sqlx::query_as(&format!("SELECT {} FROM messages m WHERE m.id = $1", crate::conversations::MSG_COLS))
+        .bind(mid)
+        .fetch_one(&st.db)
+        .await?;
+    let mut data = crate::conversations::msg_json(&st.db, &m, conv).await;
+    data["attachments"] = serde_json::json!(crate::storage::attachments_json(&st.db, mid).await);
+    crate::conversations::emit(st, conv, "message.updated", data).await;
     Ok(())
 }
 
