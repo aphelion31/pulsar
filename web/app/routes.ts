@@ -8,7 +8,7 @@ export default [
   route("auth/password/edit", "routes/auth.password-edit.tsx"),
   route("widget", "routes/widget.tsx"),
   ph("shopify/select-account", "shopify-select-account"),
-  ph("no-accounts", "no-accounts"),
+  route("no-accounts", "routes/settings/r1/no-accounts.tsx", { id: "no-accounts" }),
   route("dev/components", "routes/dev.components.tsx"),
 
   layout("routes/shell.tsx", [
@@ -93,7 +93,7 @@ export default [
     // Profile
     route("accounts/:accountId/profile", "routes/settings/profile.tsx", { id: "cw-profile" }),
     route("accounts/:accountId/profile/settings", "routes/settings/profile.tsx", { id: "cw-profile-settings" }),
-    ph("accounts/:accountId/profile/mfa", "cw-profile-mfa"),
+    route("accounts/:accountId/profile/mfa", "routes/settings/r1/profile-mfa.tsx", { id: "cw-profile-mfa" }),
 
     // Settings sub-routes
     route("accounts/:accountId/settings/general", "routes/settings/account.tsx"),
@@ -107,7 +107,7 @@ export default [
     ph("accounts/:accountId/settings/assignment-policy/capacity/create", "cw-settings-assignment-policy-capacity-create"),
     ph("accounts/:accountId/settings/assignment-policy/capacity/edit/:id", "cw-settings-assignment-policy-capacity-edit"),
     route("accounts/:accountId/settings/agent-bots", "routes/settings/agent-bots.tsx", { id: "cw-settings-agent-bots" }),
-    ph("accounts/:accountId/settings/custom-attributes", "cw-settings-custom-attributes"),
+    route("accounts/:accountId/settings/custom-attributes", "routes/settings/attributes.tsx", { id: "cw-settings-custom-attributes" }),
     route("accounts/:accountId/settings/custom-attributes/list", "routes/settings/attributes.tsx"),
     route("accounts/:accountId/settings/automation", "routes/settings/automation.tsx", { id: "cw-settings-automation" }),
     route("accounts/:accountId/settings/automation/list", "routes/settings/automation.tsx", { id: "cw-settings-automation-list" }),
@@ -122,8 +122,8 @@ export default [
     route("accounts/:accountId/settings/inboxes/new/:inbox_id/agents", "routes/settings/inbox-new.tsx", { id: "cw-settings-inboxes-add-agents" }),
     route("accounts/:accountId/settings/inboxes/:inboxId/:tab?", "routes/settings/inboxes.tsx", { id: "cw-settings-inboxes-show" }),
     ph("accounts/:accountId/settings/templates", "cw-settings-templates"),
-    ph("accounts/:accountId/settings/integrations", "cw-settings-integrations"),
-    ph("accounts/:accountId/settings/integrations/dashboard_apps", "cw-settings-integrations-dashboard-apps"),
+    route("accounts/:accountId/settings/integrations", "routes/settings/r1/integrations.tsx", { id: "cw-settings-integrations" }),
+    route("accounts/:accountId/settings/integrations/dashboard_apps", "routes/settings/r1/dashboard-apps.tsx", { id: "cw-settings-integrations-dashboard-apps" }),
     route("accounts/:accountId/settings/integrations/webhook", "routes/settings/webhooks.tsx"),
     ph("accounts/:accountId/settings/integrations/slack", "cw-settings-integrations-slack"),
     ph("accounts/:accountId/settings/integrations/linear", "cw-settings-integrations-linear"),
@@ -149,13 +149,13 @@ export default [
     route("accounts/:accountId/settings/teams/:teamId/edit/finish", "routes/settings/team-editor.tsx", { id: "cw-settings-teams-edit-finish" }),
     route("accounts/:accountId/settings/custom-roles", "routes/settings/custom-roles.tsx", { id: "cw-settings-custom-roles" }),
     route("accounts/:accountId/settings/custom-roles/list", "routes/settings/custom-roles.tsx", { id: "cw-settings-custom-roles-list" }),
-    ph("accounts/:accountId/settings/security", "cw-settings-security"),
-    ph("accounts/:accountId/settings/conversation-workflow", "cw-settings-conversation-workflow"),
+    route("accounts/:accountId/settings/security", "routes/settings/r1/security-page.tsx", { id: "cw-settings-security" }),
+    route("accounts/:accountId/settings/conversation-workflow", "routes/settings/r1/conversation-workflow.tsx", { id: "cw-settings-conversation-workflow" }),
 
     // Onboarding & Suspended
     ph("accounts/:accountId/onboarding", "cw-onboarding"),
     ph("accounts/:accountId/onboarding/inbox-setup", "cw-onboarding-inbox-setup"),
-    ph("accounts/:accountId/suspended", "cw-suspended"),
+    route("accounts/:accountId/suspended", "routes/settings/r1/suspended.tsx", { id: "cw-suspended" }),
   ]),
 
   route("*", "routes/not-found.tsx"),
