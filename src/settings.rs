@@ -48,7 +48,6 @@ pub fn routes() -> Router<AppState> {
         .route("/working_hours", empty_arr())
         .route("/sla_policies", empty_payload())
         .route("/integrations/apps", empty_payload())
-        .route("/portals", get(|| async { Json(json!({ "payload": [], "meta": { "all_articles_count": 0 } })) }))
         .route("/captain/assistants", get(|| async { Json(json!({ "payload": [], "meta": {} })) }))
 }
 
