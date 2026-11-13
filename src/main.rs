@@ -20,6 +20,7 @@ mod listeners;
 mod public_api;
 mod reports;
 mod seed;
+mod assignment_policies;
 mod settings;
 mod storage;
 mod web;
@@ -38,6 +39,7 @@ fn account_routes() -> Router<AppState> {
         .merge(conversations::routes())
         .merge(contacts::routes())
         .merge(inboxes::routes())
+        .merge(assignment_policies::routes())
         .merge(settings::routes())
         .merge(help_center::routes())
         .merge(companies::routes())
