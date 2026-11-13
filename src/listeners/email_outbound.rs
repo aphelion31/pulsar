@@ -34,7 +34,7 @@ async fn send(st: &AppState, ev: &Event) -> anyhow::Result<()> {
     let starttls = if enabled { r.try_get::<Option<bool>,_>("smtp_enable_starttls_auto")?.unwrap_or(true) } else { true };
     let port = if enabled { u16::try_from(r.try_get::<Option<i32>,_>("smtp_port")?.unwrap_or(0))? } else { std::env::var("SMTP_PORT").unwrap_or_else(|_| "587".into()).parse()? };
     let login = if enabled { r.try_get::<Option<String>,_>("smtp_login")?.unwrap_or_default() } else { std::env::var("SMTP_USERNAME").unwrap_or_default() };
-    let password = if enabled { r.try_get::<Option<String>,_>("smtp_password")?.unwrap_or_default() } else { std::env::var("SMTP_PASSWORD").unwrap_or_default() };
+    let password = if enabled { crate::ar_encryption::decrypt(&r.try_get::<Option<String>,_>("smtp_password")?.unwrap_or_default()) } else { std::env::var("SMTP_PASSWORD").unwrap_or_default() };
     let uuid: String = r.try_get("uuid")?;
     let domain = std::env::var("MAILER_INBOUND_EMAIL_DOMAIN").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| channel.rsplit('@').next().unwrap_or("localhost").to_owned());
     let incoming: Option<Value> = r.try_get("incoming")?;

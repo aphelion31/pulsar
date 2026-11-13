@@ -111,7 +111,7 @@ where
     // Plain LOGIN only. Chatwoot also allows cram-md5; add when an inbox needs it.
     // ponytail: cram-md5 not wired, add when a provider requires it.
     let mut session = client
-        .login(&ch.imap_login, &ch.imap_password)
+        .login(&ch.imap_login, &crate::ar_encryption::decrypt(&ch.imap_password))
         .await
         .map_err(|(e, _)| anyhow!("imap login failed: {e}"))?;
     session.select("INBOX").await.context("select INBOX")?;
