@@ -486,6 +486,7 @@ async fn inbox_create(
             (id, "Channel::WebWidget")
         }
         Some("telegram") => crate::channels::telegram::create_channel(&mut tx, account_id, ch, &st.frontend_url).await?,
+        Some("line") => crate::channels::line::create_channel(&mut tx, account_id, ch).await?,
         _ => return Err(ApiError::bad("Invalid channel type")),
     };
 
