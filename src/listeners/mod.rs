@@ -5,4 +5,5 @@ pub mod email_outbound;
 pub mod line_outbound;
 pub mod notifications;
 pub mod telegram_outbound;
+pub mod twilio_outbound;
 pub mod webhooks;

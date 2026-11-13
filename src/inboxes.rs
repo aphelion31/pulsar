@@ -487,6 +487,7 @@ async fn inbox_create(
         }
         Some("telegram") => crate::channels::telegram::create_channel(&mut tx, account_id, ch, &st.frontend_url).await?,
         Some("line") => crate::channels::line::create_channel(&mut tx, account_id, ch).await?,
+        Some("twilio") | Some("twilio_sms") => crate::channels::twilio::create_channel(&mut tx, account_id, ch).await?,
         _ => return Err(ApiError::bad("Invalid channel type")),
     };
 
