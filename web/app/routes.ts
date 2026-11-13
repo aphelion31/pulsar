@@ -18,26 +18,27 @@ export default [
     route("accounts/:accountId/settings/:section?", "routes/settings.tsx"),
 
     // Chatwoot dashboard routes (placeholder)
-    ph("accounts/:accountId/dashboard", "cw-dashboard"),
+    // conversation.routes.js: `dashboard` (name: home) renders ConversationView
+    route("accounts/:accountId/dashboard", "routes/inbox.tsx", { id: "cw-dashboard" }),
     ph("accounts/:accountId/inbox-view", "cw-inbox-view"),
     ph("accounts/:accountId/inbox-view/:type/:id", "cw-inbox-view-item"),
     ph("accounts/:accountId/calls", "cw-calls"),
 
     // Conversation sub-routes
-    ph("accounts/:accountId/inbox/:inbox_id", "cw-inbox-item"),
-    ph("accounts/:accountId/inbox/:inbox_id/conversations/:conversation_id", "cw-inbox-item-conv"),
-    ph("accounts/:accountId/label/:label", "cw-label-convs"),
-    ph("accounts/:accountId/label/:label/conversations/:conversation_id", "cw-label-conv"),
-    ph("accounts/:accountId/team/:teamId", "cw-team-convs"),
-    ph("accounts/:accountId/team/:teamId/conversations/:conversationId", "cw-team-conv"),
+    route("accounts/:accountId/inbox/:inbox_id", "routes/inbox.tsx", { id: "cw-inbox-item" }),
+    route("accounts/:accountId/inbox/:inbox_id/conversations/:conversation_id", "routes/inbox.tsx", { id: "cw-inbox-item-conv" }),
+    route("accounts/:accountId/label/:label", "routes/inbox.tsx", { id: "cw-label-convs" }),
+    route("accounts/:accountId/label/:label/conversations/:conversation_id", "routes/inbox.tsx", { id: "cw-label-conv" }),
+    route("accounts/:accountId/team/:teamId", "routes/inbox.tsx", { id: "cw-team-convs" }),
+    route("accounts/:accountId/team/:teamId/conversations/:conversationId", "routes/inbox.tsx", { id: "cw-team-conv" }),
     ph("accounts/:accountId/custom_view/:id", "cw-custom-view-convs"),
     ph("accounts/:accountId/custom_view/:id/conversations/:conversation_id", "cw-custom-view-conv"),
-    ph("accounts/:accountId/mentions/conversations", "cw-mentions"),
-    ph("accounts/:accountId/mentions/conversations/:conversationId", "cw-mentions-conv"),
-    ph("accounts/:accountId/unattended/conversations", "cw-unattended"),
-    ph("accounts/:accountId/unattended/conversations/:conversationId", "cw-unattended-conv"),
-    ph("accounts/:accountId/participating/conversations", "cw-participating"),
-    ph("accounts/:accountId/participating/conversations/:conversationId", "cw-participating-conv"),
+    route("accounts/:accountId/mentions/conversations", "routes/inbox.tsx", { id: "cw-mentions" }),
+    route("accounts/:accountId/mentions/conversations/:conversationId", "routes/inbox.tsx", { id: "cw-mentions-conv" }),
+    route("accounts/:accountId/unattended/conversations", "routes/inbox.tsx", { id: "cw-unattended" }),
+    route("accounts/:accountId/unattended/conversations/:conversationId", "routes/inbox.tsx", { id: "cw-unattended-conv" }),
+    route("accounts/:accountId/participating/conversations", "routes/inbox.tsx", { id: "cw-participating" }),
+    route("accounts/:accountId/participating/conversations/:conversationId", "routes/inbox.tsx", { id: "cw-participating-conv" }),
 
     // Contacts sub-routes
     ph("accounts/:accountId/contacts/segments/:segmentId", "cw-contacts-segments"),

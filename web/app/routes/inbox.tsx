@@ -1,6 +1,6 @@
 // Inbox: conversation list (left), thread + composer (right). Realtime via shell cable.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useOutletContext, useParams } from "react-router";
+import { Link, useLocation, useNavigate, useOutletContext, useParams } from "react-router";
 import { CheckCircle2, Lock, Paperclip, RotateCcw, Send } from "lucide-react";
 import { Avatar, Button, Empty } from "~/components/ui";
 import { acct, api, type Conversation, type Message } from "~/lib/api";
@@ -18,7 +18,21 @@ type Meta = { mine_count: number; unassigned_count: number; all_count: number };
 
 export default function InboxRoute() {
   const { me, accountId, subscribe } = useOutletContext<ShellCtx>();
-  const { conversationId } = useParams();
+  const params = useParams();
+  const conversationId = params.conversationId ?? params.conversation_id;
+  // Chatwoot conversation sub-routes: /inbox/:inbox_id, /label/:label, /team/:teamId, /{mentions,unattended,participating}/conversations
+  const kind = useLocation().pathname.split("/")[3];
+  const scope = params.inbox_id ? `&inbox_id=${params.inbox_id}`
+    : params.label ? `&labels[]=${encodeURIComponent(params.label)}`
+    : params.teamId ? `&team_id=${params.teamId}`
+    : kind === "mentions" ? "&conversation_type=mention"
+    : kind === "unattended" || kind === "participating" ? `&conversation_type=${kind}`
+    : "";
+  const base = params.inbox_id ? `/accounts/${accountId}/inbox/${params.inbox_id}`
+    : params.label ? `/accounts/${accountId}/label/${params.label}`
+    : params.teamId ? `/accounts/${accountId}/team/${params.teamId}`
+    : kind === "mentions" || kind === "unattended" || kind === "participating" ? `/accounts/${accountId}/${kind}`
+    : `/accounts/${accountId}`;
   const nav = useNavigate();
   const [tab, setTab] = useState<Tab>("all");
   const [status, setStatus] = useState("open");
@@ -35,14 +49,14 @@ export default function InboxRoute() {
     () => async () => {
       const seq = ++latest.current;
       const r = await api<{ data: { meta: Meta; payload: Conversation[] } }>(
-        `${acct(accountId)}/conversations?status=${status}&assignee_type=${tab}&sort_by=${sort}`,
+        `${acct(accountId)}/conversations?status=${status}&assignee_type=${tab}&sort_by=${sort}${scope}`,
       );
       if (seq !== latest.current) return;
       setList(r.data.payload);
       setMeta(r.data.meta);
       setLoading(false);
     },
-    [accountId, status, tab, sort],
+    [accountId, status, tab, sort, scope],
   );
 
   useEffect(() => {
@@ -127,7 +141,7 @@ export default function InboxRoute() {
             return (
               <li key={c.id}>
                 <Link
-                  to={`/accounts/${accountId}/conversations/${c.id}`}
+                  to={`${base}/conversations/${c.id}`}
                   className={`flex gap-3 border-b border-line px-4 py-3 transition-colors duration-150 ${active ? "bg-accent-soft" : "hover:bg-bg"}`}
                 >
                   <Avatar name={c.meta.sender.name} size={32} />
@@ -165,7 +179,7 @@ export default function InboxRoute() {
       </section>
       <section className="flex min-w-0 flex-1 flex-col">
         {conversationId ? (
-          <Thread key={conversationId} id={Number(conversationId)} epoch={epoch} accountId={accountId} meId={me.id} subscribe={subscribe} onGone={() => nav(`/accounts/${accountId}/conversations`)} />
+          <Thread key={conversationId} id={Number(conversationId)} epoch={epoch} accountId={accountId} meId={me.id} subscribe={subscribe} onGone={() => nav(`${base}/conversations`)} />
         ) : (
           <Empty title="Pick a conversation">Replies, private notes and files appear here as they arrive</Empty>
         )}
