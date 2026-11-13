@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use axum::{
     extract::{Path, Query, State},
+    http::StatusCode,
     routing::{delete, get, post},
     Json, Router,
 };
@@ -59,7 +60,10 @@ pub fn routes() -> Router<AppState> {
                 .post(messages_create_any)
                 .layer(axum::extract::DefaultBodyLimit::max(crate::storage::MAX_BYTES + 1024 * 1024)),
         )
-        .route("/conversations/{id}/messages/{message_id}", delete(messages_destroy))
+        .route("/conversations/{id}/messages/{message_id}", delete(messages_destroy).patch(messages_update))
+        .route("/conversations/{id}/messages/{message_id}/retry", post(messages_retry))
+        .route("/conversations/{id}/messages/{message_id}/translate", post(messages_translate))
+        .route("/conversations/{id}/request_contact_info", post(request_contact_info))
 }
 
 fn idx(list: &[&str], s: &str) -> Option<i32> {
@@ -1340,6 +1344,111 @@ async fn messages_destroy(State(st): State<AppState>, user: CurrentUser, Path((a
     Ok(Json(data))
 }
 
+/// PATCH /conversations/{id}/messages/{message_id} {status, external_error}. Chatwoot
+/// messages_controller#update: only API inboxes, transitions go through StatusUpdateService.
+async fn messages_update(State(st): State<AppState>, user: CurrentUser, Path((account_id, id, message_id)): Path<(i64, i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    if !is_api_inbox(&st.db, c.inbox_id).await? {
+        return Err(ApiError(StatusCode::FORBIDDEN, "Message status update is only allowed for API inboxes".into()));
+    }
+    let m = load_msg(&st.db, &c, message_id).await?;
+    let status = b["status"].as_str().unwrap_or_default();
+    // Chatwoot stores external_error on the message. The messages table here has no such column, so
+    // the error text is accepted and dropped. ponytail: add pulsar_message_errors when a channel needs it.
+    let Some(next) = status_transition(m.status.unwrap_or(0), status) else {
+        // StatusUpdateService returns false for a backward transition; the record is returned unchanged.
+        return Ok(Json(msg_json(&st.db, &m, &c).await));
+    };
+    let m: Msg = sqlx::query_as(&format!(
+        "UPDATE messages AS m SET status = $2, updated_at = now() WHERE m.id = $1 RETURNING {MSG_COLS}"
+    ))
+    .bind(m.id)
+    .bind(next)
+    .fetch_one(&st.db)
+    .await?;
+    let data = msg_json(&st.db, &m, &c).await;
+    emit(&st, &c, "message.updated", data.clone()).await;
+    Ok(Json(data))
+}
+
+/// POST /conversations/{id}/messages/{message_id}/retry (messages_controller#retry). A failed outgoing
+/// message is reset to sent and re-emitted as message.created so the channel listeners send it again.
+async fn messages_retry(State(st): State<AppState>, user: CurrentUser, Path((account_id, id, message_id)): Path<(i64, i64, i64)>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    let m = load_msg(&st.db, &c, message_id).await?;
+    // Chatwoot clears source_id on retry for channels other than API and web widget. Those two keep it.
+    let keep_source = is_api_or_widget(&st.db, c.inbox_id).await?;
+    let claimed: Option<Msg> = sqlx::query_as(&format!(
+        "UPDATE messages AS m SET status = 0, source_id = CASE WHEN $2 THEN m.source_id ELSE NULL END, updated_at = now()
+         WHERE m.id = $1 AND m.status = 3 AND m.message_type = 1 RETURNING {MSG_COLS}"
+    ))
+    .bind(m.id)
+    .bind(keep_source)
+    .fetch_optional(&st.db)
+    .await?;
+    let Some(m) = claimed else {
+        return Ok(Json(msg_json(&st.db, &m, &c).await));
+    };
+    let data = msg_json(&st.db, &m, &c).await;
+    emit(&st, &c, "message.created", data.clone()).await;
+    Ok(Json(data))
+}
+
+/// POST /conversations/{id}/messages/{message_id}/translate. Needs a Google Translate hook that Pulsar
+/// does not ship, so it always answers with a clear 422 instead of a stub success.
+async fn messages_translate(State(st): State<AppState>, user: CurrentUser, Path((account_id, id, message_id)): Path<(i64, i64, i64)>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    load_msg(&st.db, &c, message_id).await?;
+    Err(ApiError::bad("translation not configured"))
+}
+
+/// POST /conversations/{id}/request_contact_info (contact_info_requests_controller#create). WhatsApp
+/// Cloud only; any other channel is refused with the eligibility reason Chatwoot reports.
+async fn request_contact_info(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    let channel: Option<String> = sqlx::query_scalar("SELECT channel_type FROM inboxes WHERE id = $1")
+        .bind(c.inbox_id)
+        .fetch_optional(&st.db)
+        .await?
+        .flatten();
+    if channel.as_deref() != Some("Channel::Whatsapp") {
+        return Err(ApiError::bad("unsupported_provider"));
+    }
+    Err(ApiError::bad("outside_messaging_window"))
+}
+
+async fn is_api_inbox(db: &PgPool, inbox_id: i64) -> Result<bool, ApiError> {
+    let ch: Option<String> = sqlx::query_scalar("SELECT channel_type FROM inboxes WHERE id = $1").bind(inbox_id).fetch_optional(db).await?.flatten();
+    Ok(ch.as_deref() == Some("Channel::Api"))
+}
+
+async fn is_api_or_widget(db: &PgPool, inbox_id: i64) -> Result<bool, ApiError> {
+    let ch: Option<String> = sqlx::query_scalar("SELECT channel_type FROM inboxes WHERE id = $1").bind(inbox_id).fetch_optional(db).await?.flatten();
+    Ok(matches!(ch.as_deref(), Some("Channel::Api" | "Channel::WebWidget")))
+}
+
+async fn load_msg(db: &PgPool, c: &Conv, message_id: i64) -> Result<Msg, ApiError> {
+    sqlx::query_as(&format!("SELECT {MSG_COLS} FROM messages m WHERE m.id = $1 AND m.conversation_id = $2 AND m.account_id = $3"))
+        .bind(message_id)
+        .bind(c.id)
+        .bind(c.account_id)
+        .fetch_optional(db)
+        .await?
+        .ok_or_else(ApiError::not_found)
+}
+
+/// Message::statuses priority: sent=0 < delivered=1 < read=2 < failed=3. `failed` may move anywhere and
+/// anything may leave `failed`; otherwise only forward moves. Returns the new status code when allowed.
+fn status_transition(current: i32, next: &str) -> Option<i32> {
+    let to = MSG_STATUSES.iter().position(|s| *s == next)? as i32;
+    let ok = next == "failed" || current == 3 || to >= current;
+    ok.then_some(to)
+}
+
 // ---------- draft_messages ----------
 
 /// GET /api/v1/accounts/{account_id}/conversations/{id}/draft_messages
@@ -1814,4 +1923,9 @@ mod tests {
         assert_eq!(f.sort, "c.last_activity_at DESC, c.id DESC");
         assert_eq!(f.conv_type, None);
     }
+}
+
+/// Label patch for widget labels (widget/labels_controller). Same write path as the agent label routes.
+pub(crate) async fn patch_labels_pub(db: &PgPool, conv_id: i64, add: &[String], remove: &[String]) -> Result<(), ApiError> {
+    patch_labels(db, conv_id, add, remove).await.map(|_| ())
 }
