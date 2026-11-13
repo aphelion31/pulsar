@@ -122,6 +122,18 @@ if [[ -n "${ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY:-}" ]]; then
   echo "Verified auth_token encrypted in DB"
 fi
 
+# Credentials are visible to admins only (_inbox.json.jbuilder)
+ADMIN_SEES=$(curl -sf -H "api_access_token: ${TOKEN}" "${BASE}/api/v1/accounts/1/inboxes/${INBOX_ID}" | jq -r '.auth_token')
+[[ "${ADMIN_SEES}" == "${AUTH_TOKEN}" ]] || { echo "FAIL: admin should see auth_token, got ${ADMIN_SEES}"; exit 1; }
+AGENT_ID=$(psql -qtAX "${DB_URL}" -c "select user_id from account_users where account_id=1 and role=0 order by user_id limit 1")
+AGENT_TOKEN="twtest$(date +%s)$RANDOM"
+psql -qtAX "${DB_URL}" -c "insert into access_tokens (owner_type,owner_id,token,created_at,updated_at) values ('User',${AGENT_ID},'${AGENT_TOKEN}',now(),now())" >/dev/null
+psql -qtAX "${DB_URL}" -c "insert into inbox_members (inbox_id,user_id,created_at,updated_at) values (${INBOX_ID},${AGENT_ID},now(),now())" >/dev/null
+AGENT_SEES=$(curl -sf -H "api_access_token: ${AGENT_TOKEN}" "${BASE}/api/v1/accounts/1/inboxes" | jq -r ".payload[] | select(.id==${INBOX_ID}) | (.auth_token // \"absent\") + \"|\" + (.account_sid // \"absent\") + \"|\" + .medium")
+psql -qtAX "${DB_URL}" -c "delete from access_tokens where token='${AGENT_TOKEN}'" >/dev/null
+[[ "${AGENT_SEES}" == "absent|absent|sms" ]] || { echo "FAIL: agent sees credentials: ${AGENT_SEES}"; exit 1; }
+echo "Verified credentials hidden from agents"
+
 # 2. Bad signature -> 401
 BAD_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${BASE}/twilio/callback" \
   -H "X-Twilio-Signature: invalid_sig" \
