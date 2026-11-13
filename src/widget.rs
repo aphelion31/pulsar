@@ -19,7 +19,7 @@ use std::sync::OnceLock;
 use crate::{
     auth::{availability_name, locale_code},
     common::*,
-    conversations::{contact_json, conv_json, insert_message, reload, Conv, Msg, CONV_COLS, MSG_COLS},
+    conversations::{contact_json, conv_json, insert_message, msg_json, reload, Conv, Msg, CONV_COLS, MSG_COLS},
 };
 
 const STATUSES: [&str; 4] = ["open", "resolved", "pending", "snoozed"];
@@ -947,6 +947,11 @@ async fn msg_update(State(st): State<AppState>, headers: HeaderMap, Path(id): Pa
         .bind(json!({ "submitted_values": v }))
         .execute(&st.db)
         .await?;
+        // message_updated drives the CSAT response builder (csat_survey_listener.rb) and webhooks
+        let fresh: Msg = sqlx::query_as(&format!("SELECT {MSG_COLS} FROM messages m WHERE m.id = $1")).bind(m.id as i32).fetch_one(&st.db).await?;
+        let c = reload(&st.db, fresh.conversation_id).await?;
+        let data = msg_json(&st.db, &fresh, &c).await;
+        crate::conversations::emit(&st, &c, "message.updated", data).await;
     }
     if b["contact"].is_null() {
         let fresh = find_contact(&st.db, &w, &s.c.source_id).await?.unwrap_or(s.c);

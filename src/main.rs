@@ -154,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
             ("notifications", events::listener(listeners::notifications::handle)),
             ("webhooks", events::listener(listeners::webhooks::handle)),
             ("automation", events::listener(listeners::automation::handle)),
+            ("csat", events::listener(listeners::csat::handle)),
             ("email_outbound", events::listener(listeners::email_outbound::handle)),
         ],
     );
