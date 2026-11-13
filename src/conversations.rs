@@ -29,8 +29,10 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/conversations", get(index).post(create))
         .route("/conversations/meta", get(meta))
+        .route("/conversations/search", get(search))
+        .route("/conversations/filter", post(filter_conversations))
         .route("/conversations/unread_counts", get(unread_counts_index))
-        .route("/conversations/{id}", get(show))
+        .route("/conversations/{id}", get(show).patch(update_conversation).delete(destroy_conversation))
         .route("/conversations/{id}/draft_messages", get(draft_show).put(draft_update).patch(draft_update).delete(draft_destroy))
         .route("/conversations/{id}/direct_uploads", post(crate::storage::conversation_direct_upload))
         .route("/upload", post(crate::storage::account_upload))
@@ -42,11 +44,15 @@ pub fn routes() -> Router<AppState> {
         .route("/conversations/{id}/update_last_seen", post(update_last_seen))
         .route("/conversations/{id}/unread", post(unread))
         .route("/conversations/{id}/custom_attributes", post(custom_attributes))
+        .route("/conversations/{id}/destroy_custom_attributes", post(destroy_custom_attributes))
+        .route("/conversations/{id}/mute", post(mute))
+        .route("/conversations/{id}/unmute", post(unmute))
+        .route("/conversations/{id}/transcript", post(transcript))
         .route("/conversations/{id}/labels", get(labels_index).post(labels_create))
         .route("/conversations/{id}/labels/add", post(labels_add))
         .route("/conversations/{id}/labels/remove", post(labels_remove))
-        .route("/conversations/{id}/participants", get(empty_list))
-        .route("/conversations/{id}/attachments", get(|| async { Json(json!({ "payload": [] })) }))
+        .route("/conversations/{id}/participants", get(participants_show).post(participants_create).patch(participants_update).delete(participants_destroy))
+        .route("/conversations/{id}/attachments", get(attachments_index))
         .route(
             "/conversations/{id}/messages",
             get(messages_index)
@@ -578,9 +584,176 @@ async fn show(State(st): State<AppState>, user: CurrentUser, Path((account_id, i
     Ok(Json(conv_json(&st.db, &c).await))
 }
 
-async fn empty_list() -> Json<Value> {
-    Json(json!([]))
+async fn search(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Query(mut q): Query<Vec<(String, String)>>) -> ApiResult {
+    if !q.iter().any(|(k, _)| k == "status") { q.push(("status".into(), "all".into())); }
+    let Json(result) = index(State(st), user, Path(account_id), Query(q)).await?;
+    Ok(Json(result["data"].clone()))
 }
+
+async fn filter_conversations(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Query(q): Query<HashMap<String,String>>, Json(body): Json<Value>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let filters = body.get("payload").and_then(Value::as_array).ok_or_else(|| ApiError::bad("payload required"))?;
+    let mut sql = sqlx::QueryBuilder::<sqlx::Postgres>::new(format!("SELECT {CONV_COLS} FROM conversations c WHERE c.account_id = "));
+    sql.push_bind(account_id).push(" AND (").push_bind(au.is_admin()).push(" OR c.inbox_id IN (SELECT inbox_id FROM inbox_members WHERE user_id = ").push_bind(au.user_id).push(")) AND ").push(au.custom_scope_sql(&au.user_id.to_string()));
+    sql.push(" AND (");
+    if filters.is_empty() { sql.push("TRUE"); }
+    for (i, f) in filters.iter().enumerate() {
+        if i > 0 {
+            let op = filters[i-1].get("query_operator").and_then(Value::as_str).unwrap_or("and");
+            sql.push(match op.to_ascii_lowercase().as_str() { "and" => " AND ", "or" => " OR ", _ => return Err(ApiError::bad("Invalid query operator")) });
+        }
+        let key = f["attribute_key"].as_str().unwrap_or("");
+        let column = match key { "status" => "c.status", "assignee_id" => "c.assignee_id", "inbox_id" => "c.inbox_id", "team_id" => "c.team_id", "priority" => "c.priority", "display_id" => "c.display_id", "created_at" => "c.created_at", "last_activity_at" => "c.last_activity_at", "labels" => "c.cached_label_list", _ => return Err(ApiError::bad("Invalid attribute")) };
+        let op = f["filter_operator"].as_str().unwrap_or("");
+        let values = f["values"].as_array().cloned().unwrap_or_default();
+        if op == "is_present" || op == "is_not_present" { sql.push(column).push(if op == "is_present" { " IS NOT NULL" } else { " IS NULL" }); continue; }
+        if values.is_empty() { return Err(ApiError::bad("Invalid value")); }
+        let negative = matches!(op, "not_equal_to" | "does_not_contain");
+        if !matches!(op, "equal_to" | "not_equal_to" | "contains" | "does_not_contain" | "is_greater_than" | "is_less_than" | "days_before") { return Err(ApiError::bad("Invalid operator")); }
+        sql.push("(");
+        for (n, v) in values.iter().enumerate() {
+            if n > 0 { sql.push(if negative { " AND " } else { " OR " }); }
+            if key == "created_at" || key == "last_activity_at" {
+                if op == "days_before" { let days = num(v).filter(|d| *d >= 0 && *d < 100000).ok_or_else(|| ApiError::bad("Invalid value"))?; sql.push(column).push(" < now() - ").push_bind(days).push(" * interval '1 day'"); }
+                else { let s = v.as_str().ok_or_else(|| ApiError::bad("Invalid value"))?; let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| ApiError::bad("Invalid date"))?; sql.push(column).push(match op { "equal_to" => "::date = ", "not_equal_to" => "::date <> ", "is_greater_than" => "::date > ", "is_less_than" => "::date < ", _ => return Err(ApiError::bad("Invalid operator")) }).push_bind(date); }
+            } else if key == "labels" {
+                let s = v.as_str().ok_or_else(|| ApiError::bad("Invalid value"))?;
+                sql.push("COALESCE(").push(column).push(", '')").push(if negative { " NOT ILIKE " } else { " ILIKE " }).push_bind(format!("%{s}%"));
+            } else {
+                let value = match key { "status" => v.as_str().and_then(|s| idx(&STATUSES,s)).map(i64::from), "priority" => v.as_str().and_then(|s| idx(&PRIORITIES,s)).map(i64::from), _ => num(v) }.ok_or_else(|| ApiError::bad("Invalid value"))?;
+                sql.push(column).push(match op { "equal_to" => " = ", "not_equal_to" => " <> ", "is_greater_than" => " > ", "is_less_than" => " < ", _ => return Err(ApiError::bad("Invalid operator")) }).push_bind(value);
+            }
+        }
+        sql.push(")");
+    }
+    sql.push(") ORDER BY c.last_activity_at DESC, c.id DESC");
+    let rows: Vec<Conv> = sql.build_query_as().fetch_all(&st.db).await?;
+    let mine = rows.iter().filter(|c| c.assignee_id == Some(au.user_id)).count();
+    let unassigned = rows.iter().filter(|c| c.assignee_id.is_none()).count();
+    let count = rows.len();
+    let page = q.get("page").and_then(|s| s.parse::<usize>().ok()).unwrap_or(1).max(1);
+    let mut payload = Vec::new();
+    for c in rows.iter().skip(page.saturating_sub(1).saturating_mul(PER_PAGE as usize)).take(PER_PAGE as usize) { payload.push(conv_json(&st.db,c).await); }
+    Ok(Json(json!({"meta":{"mine_count":mine,"unassigned_count":unassigned,"all_count":count},"payload":payload})))
+}
+
+async fn set_mute(st: AppState, user: CurrentUser, account_id: i64, id: i64, blocked: bool) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    if let Some(contact_id) = c.contact_id {
+        let mut tx = st.db.begin().await?;
+        sqlx::query("UPDATE contacts SET blocked = $1, updated_at = now() WHERE id = $2 AND account_id = $3").bind(blocked).bind(contact_id).bind(account_id).execute(&mut *tx).await?;
+        if blocked { sqlx::query("UPDATE conversations SET status = 1, updated_at = now() WHERE id = $1").bind(c.id).execute(&mut *tx).await?; }
+        tx.commit().await?;
+        activity(&st, &c, format!("{} has {} the conversation", user.name, if blocked { "muted" } else { "unmuted" })).await?;
+        emit_conv(&st, c.id, "conversation.updated").await?;
+    }
+    Ok(Json(json!({})))
+}
+async fn mute(State(st): State<AppState>, user: CurrentUser, Path((a,id)): Path<(i64,i64)>) -> ApiResult { set_mute(st,user,a,id,true).await }
+async fn unmute(State(st): State<AppState>, user: CurrentUser, Path((a,id)): Path<(i64,i64)>) -> ApiResult { set_mute(st,user,a,id,false).await }
+
+async fn transcript(State(st): State<AppState>, user: CurrentUser, Path((account_id,id)): Path<(i64,i64)>, Json(b): Json<Value>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    let email = b["email"].as_str().filter(|s| !s.trim().is_empty()).ok_or_else(|| ApiError::bad("email param missing"))?;
+    let messages: Vec<Option<String>> = sqlx::query_scalar("SELECT content FROM messages WHERE conversation_id = $1 AND account_id = $2 AND private = false AND message_type IN (0, 1) AND content_attributes::jsonb ->> 'forwarded_message_id' IS NULL ORDER BY created_at, id").bind(c.id).bind(account_id).fetch_all(&st.db).await?;
+    let mut html = String::from("<html><body><ul>");
+    for m in messages.into_iter().flatten() { html.push_str("<li>"); html.push_str(&m.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")); html.push_str("</li>"); }
+    html.push_str("</ul></body></html>");
+    crate::mailer::send_html(email, "Conversation transcript", html).await.map_err(|e| { tracing::error!("transcript email: {e}"); ApiError::bad("Unable to send transcript") })?;
+    Ok(Json(json!({})))
+}
+
+async fn destroy_custom_attributes(State(st): State<AppState>, user: CurrentUser, Path((account_id,id)): Path<(i64,i64)>, Json(b): Json<Value>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    let mut attrs = c.custom_attributes.unwrap_or(json!({}));
+    if let (Some(map), Some(keys)) = (attrs.as_object_mut(), b["custom_attributes"].as_array()) { for key in keys.iter().filter_map(Value::as_str) { map.remove(key); } }
+    sqlx::query("UPDATE conversations SET custom_attributes = $1, updated_at = now() WHERE id = $2").bind(&attrs).bind(c.id).execute(&st.db).await?;
+    emit_conv(&st, c.id, "conversation.updated").await?;
+    Ok(Json(json!({"custom_attributes":attrs})))
+}
+
+async fn update_conversation(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    if let Some(priority) = b.get("priority") {
+        let p = if priority.is_null() { None } else { Some(idx(&PRIORITIES, priority.as_str().unwrap_or("")).ok_or_else(|| ApiError::bad("Invalid priority"))?) };
+        sqlx::query("UPDATE conversations SET priority = $1, updated_at = now() WHERE id = $2").bind(p).bind(c.id).execute(&st.db).await?;
+    }
+    let c = emit_conv(&st, c.id, "conversation.updated").await?;
+    Ok(Json(conv_json(&st.db, &c).await))
+}
+
+async fn destroy_conversation(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    if !au.is_admin() { return Err(ApiError::forbidden()); }
+    let mut tx = st.db.begin().await?;
+    for statement in [
+        "DELETE FROM active_storage_attachments WHERE record_type = 'Attachment' AND record_id IN (SELECT a.id FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.conversation_id = $1)",
+        "DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = $1)",
+        "DELETE FROM mentions WHERE conversation_id = $1",
+        "DELETE FROM conversation_participants WHERE conversation_id = $1",
+        "DELETE FROM csat_survey_responses WHERE conversation_id = $1",
+        "DELETE FROM reporting_events WHERE conversation_id = $1",
+        "DELETE FROM automation_rule_pending_executions WHERE conversation_id = $1",
+        "DELETE FROM notifications WHERE primary_actor_type = 'Conversation' AND primary_actor_id = $1",
+        "DELETE FROM taggings WHERE taggable_type = 'Conversation' AND taggable_id = $1",
+        "DELETE FROM messages WHERE conversation_id = $1",
+        "DELETE FROM conversations WHERE id = $1",
+    ] { sqlx::query(statement).bind(c.id).execute(&mut *tx).await?; }
+    tx.commit().await?;
+    Ok(Json(json!({})))
+}
+
+async fn participant_values(db: &PgPool, c: &Conv, ids: Option<&[i64]>) -> Result<Value, ApiError> {
+    let users: Vec<i64> = sqlx::query_scalar("SELECT user_id FROM conversation_participants WHERE conversation_id = $1 AND account_id = $2 ORDER BY id")
+        .bind(c.id).bind(c.account_id).fetch_all(db).await?;
+    let mut result = Vec::new();
+    for uid in users { if ids.is_none_or(|ids| ids.contains(&uid)) { result.push(user_json(db, c.account_id, uid).await); } }
+    Ok(json!(result))
+}
+
+async fn participants_show(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    Ok(Json(participant_values(&st.db, &c, None).await?))
+}
+
+async fn participants_change(st: AppState, user: CurrentUser, account_id: i64, id: i64, b: Value, mode: &str) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    let ids: Vec<i64> = b.get("user_ids").and_then(Value::as_array).ok_or_else(|| ApiError::bad("user_ids required"))?.iter().map(|v| num(v).ok_or_else(|| ApiError::bad("Invalid participant IDs"))).collect::<Result<_, _>>()?;
+    if mode != "delete" {
+        let valid: i64 = sqlx::query_scalar("SELECT count(DISTINCT user_id) FROM inbox_members WHERE inbox_id = $1 AND user_id = ANY($2)").bind(c.inbox_id).bind(&ids).fetch_one(&st.db).await?;
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        if valid as usize != unique.len() { return Err(ApiError::bad("Invalid participant IDs")); }
+    }
+    let mut tx = st.db.begin().await?;
+    if mode == "update" { sqlx::query("DELETE FROM conversation_participants WHERE conversation_id = $1 AND account_id = $2 AND NOT (user_id = ANY($3))").bind(c.id).bind(account_id).bind(&ids).execute(&mut *tx).await?; }
+    if mode == "delete" { sqlx::query("DELETE FROM conversation_participants WHERE conversation_id = $1 AND account_id = $2 AND user_id = ANY($3)").bind(c.id).bind(account_id).bind(&ids).execute(&mut *tx).await?; }
+    else { for uid in &ids { sqlx::query("INSERT INTO conversation_participants (account_id, conversation_id, user_id, created_at, updated_at) VALUES ($1,$2,$3,now(),now()) ON CONFLICT (user_id, conversation_id) DO NOTHING").bind(account_id).bind(c.id).bind(uid).execute(&mut *tx).await?; } }
+    tx.commit().await?;
+    if mode == "delete" { return Ok(Json(json!({}))); }
+    Ok(Json(participant_values(&st.db, &c, if mode == "create" { Some(&ids) } else { None }).await?))
+}
+async fn participants_create(State(st): State<AppState>, user: CurrentUser, Path((a,id)): Path<(i64,i64)>, Json(b): Json<Value>) -> ApiResult { participants_change(st,user,a,id,b,"create").await }
+async fn participants_update(State(st): State<AppState>, user: CurrentUser, Path((a,id)): Path<(i64,i64)>, Json(b): Json<Value>) -> ApiResult { participants_change(st,user,a,id,b,"update").await }
+async fn participants_destroy(State(st): State<AppState>, user: CurrentUser, Path((a,id)): Path<(i64,i64)>, Json(b): Json<Value>) -> ApiResult { participants_change(st,user,a,id,b,"delete").await }
+
+async fn attachments_index(State(st): State<AppState>, user: CurrentUser, Path((account_id,id)): Path<(i64,i64)>, Query(q): Query<HashMap<String,String>>) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.conversation_id = $1 AND a.account_id = $2").bind(c.id).bind(account_id).fetch_one(&st.db).await?;
+    let page = q.get("page").and_then(|p| p.parse::<i64>().ok()).unwrap_or(1).max(1);
+    let rows: Vec<(i64,i64)> = sqlx::query_as("SELECT a.id::bigint, a.message_id::bigint FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.conversation_id = $1 AND a.account_id = $2 ORDER BY a.created_at DESC, a.id DESC LIMIT 100 OFFSET $3").bind(c.id).bind(account_id).bind(page.saturating_sub(1).saturating_mul(100)).fetch_all(&st.db).await?;
+    let mut payload = Vec::new();
+    for (id, message_id) in rows { if let Some(a) = crate::storage::attachments_json(&st.db, message_id).await.into_iter().find(|a| a["id"].as_i64() == Some(id)) { payload.push(a); } }
+    Ok(Json(json!({"meta":{"total_count":total},"payload":payload})))
+}
+
 
 /// POST /conversations {inbox_id, contact_id, source_id?, status?, assignee_id?, team_id?, message:{content}}
 async fn create(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Json(b): Json<Value>) -> ApiResult {
@@ -828,7 +1001,12 @@ async fn unread(State(st): State<AppState>, user: CurrentUser, Path((account_id,
 async fn custom_attributes(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
-    let attrs = b.get("custom_attributes").filter(|v| v.is_object()).cloned().unwrap_or(json!({}));
+    let mut attrs = b.get("custom_attributes").filter(|v| v.is_object()).cloned().unwrap_or(json!({}));
+    if b.get("merge").and_then(Value::as_bool).unwrap_or(false) {
+        let mut merged = c.custom_attributes.clone().filter(Value::is_object).unwrap_or(json!({}));
+        if let (Some(dst), Some(src)) = (merged.as_object_mut(), attrs.as_object()) { dst.extend(src.clone()); }
+        attrs = merged;
+    }
     sqlx::query("UPDATE conversations SET custom_attributes = $1, updated_at = now() WHERE id = $2").bind(&attrs).bind(c.id).execute(&st.db).await?;
     emit_conv(&st, c.id, "conversation.updated").await?;
     Ok(Json(json!({ "custom_attributes": attrs })))
