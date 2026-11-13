@@ -274,6 +274,10 @@ pub async fn reset_password(State(db): State<PgPool>, Json(body): Json<Value>) -
 /// POST /auth/sign_in {email, password}
 pub async fn sign_in(State(db): State<PgPool>, headers: HeaderMap, body: Option<Json<Value>>) -> ApiResult<Response> {
     let body = body.map(|b| b.0).unwrap_or_default();
+    // CE devise_overrides/sessions_controller: second factor step, mfa_token + otp_code|backup_code.
+    if let Some(mfa_token) = body["mfa_token"].as_str() {
+        return sign_in_mfa(&db, mfa_token, &body).await;
+    }
     let hdr = |k: &str| headers.get(k).and_then(|v| v.to_str().ok()).map(str::to_string);
     let email = body["email"].as_str().map(str::to_string).or_else(|| hdr("email")).unwrap_or_default();
     let password = body["password"].as_str().map(str::to_string).or_else(|| hdr("password")).unwrap_or_default();
@@ -310,6 +314,12 @@ pub async fn sign_in(State(db): State<PgPool>, headers: HeaderMap, body: Option<
             format!("A confirmation email was sent to your account at '{email}'. You must follow the instructions in the email before your account can be activated"),
         ));
     }
+    // CE handle_mfa_required: password ok but OTP enrolled -> 206 + short-lived mfa_token, no session yet.
+    let otp_on: Option<bool> = sqlx::query_scalar("SELECT otp_required_for_login FROM users WHERE id = $1").bind(id).fetch_one(&db).await?;
+    if otp_on.unwrap_or(false) {
+        let mfa_token = crate::mfa::issue_mfa_token(id);
+        return Ok((StatusCode::PARTIAL_CONTENT, Json(json!({ "mfa_required": true, "mfa_token": mfa_token }))).into_response());
+    }
     let (client, token, expiry) = issue_token(&db, id, tokens).await?;
     sqlx::query(
         "UPDATE users SET sign_in_count = sign_in_count + 1, last_sign_in_at = current_sign_in_at, current_sign_in_at = now() WHERE id = $1",
@@ -318,6 +328,30 @@ pub async fn sign_in(State(db): State<PgPool>, headers: HeaderMap, body: Option<
     .execute(&db)
     .await?;
     let data = user_json(&db, id).await?;
+    Ok((auth_headers(&uid, &client, &token, expiry), Json(json!({ "data": data }))).into_response())
+}
+
+/// Second sign-in step. Failures share the login_failures counter (CE rack_attack mfa_verification/ip: 5/min).
+async fn sign_in_mfa(db: &PgPool, mfa_token: &str, body: &Value) -> ApiResult<Response> {
+    let bad = || ApiError(StatusCode::UNAUTHORIZED, "Invalid or expired MFA token".into());
+    let id = crate::mfa::verify_mfa_token(mfa_token).ok_or_else(bad)?;
+    let key = format!("mfa:{id}");
+    if login_failures(&key, false) >= LOGIN_FAILURE_LIMIT {
+        return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "Too many login attempts. Please try again later.".into()));
+    }
+    let otp = body["otp_code"].as_str();
+    let backup = body["backup_code"].as_str();
+    if !crate::mfa::consume_for_sign_in(db, id, otp, backup).await? {
+        login_failures(&key, true);
+        return Err(ApiError(StatusCode::UNPROCESSABLE_ENTITY, "Invalid verification code".into()));
+    }
+    let (uid, tokens): (String, Option<Value>) = sqlx::query_as("SELECT uid, tokens::jsonb FROM users WHERE id = $1").bind(id).fetch_one(db).await?;
+    let (client, token, expiry) = issue_token(db, id, tokens).await?;
+    sqlx::query("UPDATE users SET sign_in_count = sign_in_count + 1, last_sign_in_at = current_sign_in_at, current_sign_in_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(db)
+        .await?;
+    let data = user_json(db, id).await?;
     Ok((auth_headers(&uid, &client, &token, expiry), Json(json!({ "data": data }))).into_response())
 }
 

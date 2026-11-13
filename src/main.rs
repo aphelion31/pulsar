@@ -2,6 +2,7 @@ mod account_more;
 mod ar_encryption;
 mod auth;
 mod mailer;
+mod mfa;
 mod automation;
 mod bots;
 mod cable;
@@ -90,6 +91,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/accounts/{account_id}/update_active_at", post(auth::update_active_at))
         // ponytail: session list / push subscriptions / changelog not tracked yet; empty responses keep UI happy
         .route("/api/v1/profile/sessions", get(|_u: common::CurrentUser| async { axum::Json(serde_json::json!([])) }))
+        .route("/api/v1/profile/sessions/{id}", axum::routing::delete(mfa::session_destroy))
+        .route("/api/v1/profile/mfa", get(mfa::show).post(mfa::create).delete(mfa::destroy))
+        .route("/api/v1/profile/mfa/verify", post(mfa::verify))
+        .route("/api/v1/profile/mfa/backup_codes", post(mfa::backup_codes))
         .route("/api/v1/notification_subscriptions", post(|_u: common::CurrentUser| async { axum::Json(serde_json::json!({})) }).delete(auth::notification_subscription_destroy))
         .route("/api/v1/changelog", get(|| async { axum::Json(serde_json::json!({ "posts": [] })) }))
         .nest("/api/v1/accounts/{account_id}", account_routes())
