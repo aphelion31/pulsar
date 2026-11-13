@@ -19,6 +19,7 @@ mod inboxes;
 mod help_center;
 mod listeners;
 mod public_api;
+mod platform;
 mod reports;
 mod seed;
 mod assignment_policies;
@@ -92,6 +93,7 @@ pub fn app(state: AppState) -> Router {
         .merge(channels::telegram::routes())
         .merge(channels::line::routes())
         .merge(channels::twilio::routes())
+        .nest("/platform/api/v1", platform::routes())
         .merge(public_api::routes())
         .merge(help_center::public_routes())
         .merge(storage::routes())
