@@ -30,15 +30,13 @@ async fn config(db: &PgPool, name: &str, default: &str) -> Result<String, ApiErr
     Ok(stored.or_else(|| std::env::var(name).ok().filter(|s| !s.is_empty())).unwrap_or_else(|| default.to_owned()))
 }
 
-// Rails encrypts this attribute deterministically with its separate deterministic key.
+// Rails encrypts this attribute deterministically, but only when Chatwoot.encryption_configured?
+// (primary + deterministic + salt all present, config/application.rb). Otherwise it stores plaintext.
 fn token_key() -> Result<Option<[u8; 32]>, ApiError> {
     let primary = std::env::var("ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY").unwrap_or_default();
     let salt = std::env::var("ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT").unwrap_or_default();
     let deterministic = std::env::var("ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY").unwrap_or_default();
-    if primary.is_empty() && salt.is_empty() && deterministic.is_empty() { return Ok(None); }
-    if primary.is_empty() || salt.is_empty() || deterministic.is_empty() {
-        return Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR, "Incomplete encryption configuration".into()));
-    }
+    if primary.is_empty() || salt.is_empty() || deterministic.is_empty() { return Ok(None); }
     let mut key = [0; 32];
     pbkdf2::pbkdf2_hmac::<Sha1>(deterministic.as_bytes(), salt.as_bytes(), 65_536, &mut key);
     Ok(Some(key))

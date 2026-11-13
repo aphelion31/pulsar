@@ -53,7 +53,7 @@ class Handler(BaseHTTPRequestHandler):
 HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
 PY
 mock_pid=$!
-BIND="127.0.0.1:$PORT" DATABASE_URL="$DB" SLACK_API_URL="http://127.0.0.1:$MOCK_PORT" SLACK_CLIENT_ID=test-id SLACK_CLIENT_SECRET=test-secret ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=testprimary ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=testdeterministic ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=testsalt WEB_DIR="${WEB_DIR:-/Users/beyondb/.jcode/scratch/wt-int5/web/build/client}" "${CARGO_TARGET_DIR:-/Users/beyondb/.jcode/scratch/wt-r6-sl-target}/debug/pulsar" >"${JCODE_SCRATCH_DIR:-$ROOT}/slack-server.log" 2>&1 &
+BIND="127.0.0.1:$PORT" DATABASE_URL="$DB" SLACK_API_URL="http://127.0.0.1:$MOCK_PORT" SLACK_CLIENT_ID=test-id SLACK_CLIENT_SECRET=test-secret ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=testprimary ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=${DET_KEY-testdeterministic} ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=testsalt WEB_DIR="${WEB_DIR:-/Users/beyondb/.jcode/scratch/wt-int5/web/build/client}" "${CARGO_TARGET_DIR:-/Users/beyondb/.jcode/scratch/wt-r6-sl-target}/debug/pulsar" >"${JCODE_SCRATCH_DIR:-$ROOT}/slack-server.log" 2>&1 &
 app_pid=$!
 for _ in {1..100}; do curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break; kill -0 "$app_pid" 2>/dev/null || { echo 'Server failed to start' >&2; exit 1; }; sleep .1; done
 api() { curl -fsS -H "api_access_token: $TOKEN" -H 'Content-Type: application/json' "$@"; }
@@ -62,7 +62,8 @@ code() { curl -sS -o /dev/null -w '%{http_code}' -H "api_access_token: $TOKEN" -
 api "$BASE/integrations/apps/slack" | jq -e '.id == "slack" and .enabled == false and .hooks == []' >/dev/null
 created=$(api -X POST "$BASE/integrations/slack" -d '{"code":"test-code"}')
 hook_id=$(jq -er '.hooks[0].id | select(type=="number")' <<<"$created")
-[[ $(psql -qtAX "$DB" -c "SELECT access_token <> 'mock-token' FROM integrations_hooks WHERE id=$hook_id") == t ]]
+expect_enc=t; [[ -z ${DET_KEY-x} ]] && expect_enc=f  # CE stores plaintext unless all 3 keys are set
+[[ $(psql -qtAX "$DB" -c "SELECT access_token <> 'mock-token' FROM integrations_hooks WHERE id=$hook_id") == "$expect_enc" ]]
 jq -e '.enabled and (.hooks[0].status == false) and (.hooks[0].settings == {})' <<<"$created" >/dev/null
 api "$BASE/integrations/slack/list_all_channels" | jq -e 'length == 3 and .[0].id == "P1" and .[2].id == "C2"' >/dev/null
 [[ $(code -X PATCH "$BASE/integrations/slack" -d '{"reference_id":"missing"}') == 422 ]]
