@@ -247,7 +247,8 @@ async fn update_email_channel(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, ac
         }
     }
     let keys = ["email", "imap_enabled", "imap_address", "imap_port", "imap_login", "imap_password", "imap_enable_ssl", "imap_authentication", "smtp_enabled", "smtp_address", "smtp_port", "smtp_login", "smtp_password", "smtp_domain", "smtp_enable_starttls_auto", "smtp_authentication", "smtp_openssl_verify_mode", "smtp_enable_ssl_tls"];
-    let fields: serde_json::Map<String, Value> = keys.iter().filter_map(|key| ch.get(*key).filter(|v| !v.is_null()).map(|v| ((*key).to_owned(), v.clone()))).collect();
+    // Passwords are never sent back to the client, so a blank password field means "keep the stored one".
+    let fields: serde_json::Map<String, Value> = keys.iter().filter_map(|key| ch.get(*key).filter(|v| !v.is_null() && !(key.ends_with("_password") && v.as_str() == Some(""))).map(|v| ((*key).to_owned(), v.clone()))).collect();
     sqlx::query("UPDATE channel_email c SET (email, imap_enabled, imap_address, imap_port, imap_login, imap_password, imap_enable_ssl, imap_authentication, smtp_enabled, smtp_address, smtp_port, smtp_login, smtp_password, smtp_domain, smtp_enable_starttls_auto, smtp_authentication, smtp_openssl_verify_mode, smtp_enable_ssl_tls, updated_at) = (SELECT x.email, x.imap_enabled, x.imap_address, x.imap_port, x.imap_login, x.imap_password, x.imap_enable_ssl, x.imap_authentication, x.smtp_enabled, x.smtp_address, x.smtp_port, x.smtp_login, x.smtp_password, x.smtp_domain, x.smtp_enable_starttls_auto, x.smtp_authentication, x.smtp_openssl_verify_mode, x.smtp_enable_ssl_tls, now() FROM jsonb_populate_record(c, $3::jsonb) x) WHERE c.id = $1 AND c.account_id::bigint = $2")
         .bind(id).bind(account_id).bind(Value::Object(fields)).execute(&mut **tx).await?;
     Ok(())
