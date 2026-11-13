@@ -9,6 +9,7 @@ mod channels;
 mod common;
 mod companies;
 mod contacts;
+mod data_imports;
 mod events;
 mod conversations;
 mod email_inbound;
@@ -43,6 +44,8 @@ fn account_routes() -> Router<AppState> {
         .merge(automation::routes())
         .merge(bots::routes())
         .merge(account_more::routes())
+        .merge(data_imports::routes())
+        .merge(channels::twilio::account_routes())
         .fallback(web::not_implemented)
 }
 
@@ -83,6 +86,7 @@ pub fn app(state: AppState) -> Router {
         .merge(widget::routes())
         .merge(channels::telegram::routes())
         .merge(channels::line::routes())
+        .merge(channels::twilio::routes())
         .merge(public_api::routes())
         .merge(help_center::public_routes())
         .merge(storage::routes())
@@ -165,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
             ("email_outbound", events::listener(listeners::email_outbound::handle)),
             ("telegram_outbound", events::listener(listeners::telegram_outbound::handle)),
             ("line_outbound", events::listener(listeners::line_outbound::handle)),
+            ("twilio_outbound", events::listener(listeners::twilio_outbound::handle)),
         ],
     );
     // Chatwoot FetchImapEmailInboxesJob: poll IMAP for Channel::Email inboxes. Errors are logged per inbox.

@@ -4,8 +4,9 @@ set -euo pipefail
 PORT="${PORT:-3134}"
 MOCK_PORT="${MOCK_PORT:-3998}"
 DB="${DATABASE_URL:-postgres://localhost/pulsar}"
-CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/Users/beyondb/.jcode/scratch/wt-r1-tg-target}"
-WEB_DIR="${WEB_DIR:-/Users/beyondb/.jcode/scratch/wt-int2/web/build/client}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+WEB_DIR="${WEB_DIR:-$ROOT/web/build/client}"
 BIN="${CARGO_TARGET_DIR}/debug/pulsar"
 BOT_TOKEN="test_tg_token_$$"
 
@@ -21,6 +22,7 @@ cleanup() {
   [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null && wait "$MOCK_PID" 2>/dev/null
   if [ -n "$INBOX_ID" ]; then
     psql -qtAX "$DB" -c "
+      DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE inbox_id = $INBOX_ID);
       DELETE FROM messages WHERE inbox_id = $INBOX_ID;
       DELETE FROM conversations WHERE inbox_id = $INBOX_ID;
       DELETE FROM contact_inboxes WHERE inbox_id = $INBOX_ID;
@@ -63,6 +65,12 @@ class Handler(BaseHTTPRequestHandler):
         REQUESTS.append({"method": "GET", "path": self.path, "body": None})
         if self.path.endswith("/getMe"):
             return self._send(200, {"ok": True, "result": {"id": 12345, "is_bot": True, "username": "pulsar_test_bot"}})
+        if "/getFile" in self.path:
+            return self._send(200, {"ok": True, "result": {"file_id": "PHOTO1", "file_path": "photos/file_1.jpg"}})
+        if "/file/bot" in self.path and self.path.endswith("photos/file_1.jpg"):
+            body = b"\xff\xd8\xff\xe0fakejpeg"
+            self.send_response(200); self.send_header("Content-Type", "image/jpeg"); self.send_header("Content-Length", str(len(body))); self.end_headers()
+            return self.wfile.write(body)
         self._send(404, {"ok": False})
 
     def do_POST(self):
@@ -173,5 +181,18 @@ for _ in $(seq 1 20); do
   sleep 0.1
 done
 [ "$OUT_SRC" = "888" ]
+
+# 7. Inbound photo (no text) is stored as an image attachment downloaded via getFile
+curl -sf -X POST "http://127.0.0.1:${PORT}/webhooks/telegram/${BOT_TOKEN}" -H "Content-Type: application/json" -d '{
+  "update_id": 10002,
+  "message": { "message_id": 779, "from": { "id": 987654321, "first_name": "Alice" }, "chat": { "id": 987654321, "type": "private" },
+    "date": 1700000001, "photo": [ { "file_id": "SMALL", "width": 90 }, { "file_id": "PHOTO1", "width": 800 } ] } }' >/dev/null
+ATT=""
+for _ in $(seq 1 30); do
+  ATT=$(psql -qtAX "$DB" -c "SELECT a.file_type || ':' || COALESCE(a.extension,'') FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.inbox_id = $INBOX_ID AND m.source_id = '779'")
+  [ -n "$ATT" ] && break
+  sleep 0.2
+done
+[ "$ATT" = "0:jpg" ] || { echo "photo attachment missing: '$ATT'"; exit 1; }
 
 echo "telegram.sh: ALL CHECKS PASSED (inbox=$INBOX_ID conv=$DISPLAY_ID in_src=$IN_SRC out_src=$OUT_SRC)"

@@ -317,6 +317,29 @@ async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admin: bool) ->
                 obj.insert("forwarding_enabled".into(), json!(std::env::var("MAILER_INBOUND_EMAIL_DOMAIN").is_ok_and(|v| !v.is_empty())));
             }
         }
+        "Channel::TwilioSms" => {
+            // _inbox.json.jbuilder: medium/phone/content_templates for everyone, credentials for admins only
+            let c = sqlx::query(
+                "SELECT medium, phone_number, messaging_service_sid, content_templates, account_sid, auth_token, api_key_sid
+                 FROM channel_twilio_sms WHERE id::bigint = $1 AND account_id::bigint = $2",
+            )
+            .bind(channel_id)
+            .bind(account_id)
+            .fetch_optional(db)
+            .await?;
+            if let Some(c) = c {
+                let medium = if c.try_get::<Option<i32>, _>("medium")?.unwrap_or(0) == 1 { "whatsapp" } else { "sms" };
+                obj.insert("medium".into(), json!(medium));
+                obj.insert("phone_number".into(), c.try_get::<Option<String>, _>("phone_number")?.into());
+                obj.insert("messaging_service_sid".into(), c.try_get::<Option<String>, _>("messaging_service_sid")?.into());
+                obj.insert("content_templates".into(), c.try_get::<Option<Value>, _>("content_templates")?.into());
+                if admin {
+                    obj.insert("account_sid".into(), c.try_get::<Option<String>, _>("account_sid")?.into());
+                    obj.insert("auth_token".into(), c.try_get::<Option<String>, _>("auth_token")?.map(|s| crate::ar_encryption::decrypt(&s)).into());
+                    obj.insert("api_key_sid".into(), c.try_get::<Option<String>, _>("api_key_sid")?.into());
+                }
+            }
+        }
         "Channel::Api" => {
             let c = sqlx::query(
                 "SELECT webhook_url, identifier, hmac_token, hmac_mandatory, secret, additional_attributes
@@ -487,6 +510,7 @@ async fn inbox_create(
         }
         Some("telegram") => crate::channels::telegram::create_channel(&mut tx, account_id, ch, &st.frontend_url).await?,
         Some("line") => crate::channels::line::create_channel(&mut tx, account_id, ch).await?,
+        Some("twilio") | Some("twilio_sms") => crate::channels::twilio::create_channel(&mut tx, account_id, ch).await?,
         _ => return Err(ApiError::bad("Invalid channel type")),
     };
 
