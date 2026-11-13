@@ -5,6 +5,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
 use rand::RngCore;
 use sha1::{Digest, Sha1};
+use serde_json::{json, Value};
 use std::{io::{Read, Write}, sync::OnceLock};
 
 fn key() -> Option<&'static [u8; 32]> {
@@ -139,3 +140,54 @@ mod rails_compat {
         assert_eq!(super::decrypt_with_key(RAILS_CT, &key).as_deref(), Some("s3cret-from-rails"));
     }
 }
+
+// Integrations::Hook `encrypts :access_token, deterministic: true` (moved from slack.rs).
+// Rails encrypts this attribute deterministically, but only when Chatwoot.encryption_configured?
+// (primary + deterministic + salt all present, config/application.rb). Otherwise it stores plaintext.
+fn det_key() -> Result<Option<[u8; 32]>, crate::common::ApiError> {
+    let primary = std::env::var("ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY").unwrap_or_default();
+    let salt = std::env::var("ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT").unwrap_or_default();
+    let deterministic = std::env::var("ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY").unwrap_or_default();
+    if primary.is_empty() || salt.is_empty() || deterministic.is_empty() { return Ok(None); }
+    let mut key = [0; 32];
+    pbkdf2::pbkdf2_hmac::<Sha1>(deterministic.as_bytes(), salt.as_bytes(), 65_536, &mut key);
+    Ok(Some(key))
+}
+pub fn encrypt_deterministic(token: &str) -> Result<String, crate::common::ApiError> {
+    let Some(key) = det_key()? else { return Ok(token.into()) };
+    let compressed = token.len() > 140;
+    let data = if compressed {
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(token.as_bytes()).map_err(|_| crate::common::ApiError::bad("Token encryption failed"))?;
+        encoder.finish().map_err(|_| crate::common::ApiError::bad("Token encryption failed"))?
+    } else { token.as_bytes().to_vec() };
+    let mut mac = <hmac::Hmac<sha2_compat::Sha256> as hmac::Mac>::new_from_slice(&key).expect("HMAC key");
+    hmac::Mac::update(&mut mac, &data);
+    let hash = hmac::Mac::finalize(mac).into_bytes();
+    let iv = &hash[..12];
+    let cipher = Aes256Gcm::new_from_slice(&key).expect("AES key");
+    let mut encrypted = cipher.encrypt(Nonce::from_slice(iv), data.as_ref()).map_err(|_| crate::common::ApiError::bad("Token encryption failed"))?;
+    let tag = encrypted.split_off(encrypted.len() - 16);
+    let mut headers = json!({"iv": STANDARD.encode(iv), "at": STANDARD.encode(tag)});
+    if compressed { headers["c"] = json!(true); }
+    Ok(json!({"p": STANDARD.encode(encrypted), "h": headers}).to_string())
+}
+pub fn decrypt_deterministic(token: &str) -> Result<String, crate::common::ApiError> {
+    let Some(key) = det_key()? else { return Ok(token.into()) };
+    let Ok(v) = serde_json::from_str::<Value>(token) else { return Ok(token.into()) };
+    let fail = || crate::common::ApiError(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Cannot decrypt token".into());
+    let decode = |v: &Value| STANDARD.decode(v.as_str().ok_or_else(fail)?).map_err(|_| fail());
+    let iv = decode(&v["h"]["iv"])?;
+    let tag = decode(&v["h"]["at"])?;
+    if iv.len() != 12 || tag.len() != 16 { return Err(fail()); }
+    let mut payload = decode(&v["p"])?;
+    payload.extend(tag);
+    let mut plain = Aes256Gcm::new_from_slice(&key).expect("AES key").decrypt(Nonce::from_slice(&iv), payload.as_ref()).map_err(|_| fail())?;
+    if v["h"]["c"] == true {
+        let mut out = Vec::new();
+        flate2::read::ZlibDecoder::new(plain.as_slice()).read_to_end(&mut out).map_err(|_| fail())?;
+        plain = out;
+    }
+    String::from_utf8(plain).map_err(|_| fail())
+}
+

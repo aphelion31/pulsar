@@ -1,4 +1,4 @@
-mod account_more;
+mod slack; mod account_more;
 mod ar_encryption;
 mod auth;
 mod mailer;
@@ -11,6 +11,7 @@ mod common;
 mod companies;
 mod contacts;
 mod data_imports;
+mod dyte;
 mod events;
 mod conversations;
 mod email_inbound;
@@ -26,6 +27,7 @@ mod reports;
 mod seed;
 mod assignment_policies;
 mod settings;
+mod shopify;
 mod storage;
 mod web;
 mod widget;
@@ -45,6 +47,7 @@ fn account_routes() -> Router<AppState> {
         .merge(inboxes::routes())
         .merge(inbox_actions::routes())
         .merge(assignment_policies::routes())
+        .merge(slack::routes())
         .merge(settings::routes())
         .merge(help_center::routes())
         .merge(companies::routes())
@@ -53,6 +56,8 @@ fn account_routes() -> Router<AppState> {
         .merge(account_more::routes())
         .merge(data_imports::routes())
         .merge(channels::twilio::account_routes())
+        .merge(dyte::account_routes())
+        .merge(shopify::account_routes())
         .fallback(web::not_implemented)
 }
 
@@ -100,6 +105,8 @@ pub fn app(state: AppState) -> Router {
         .nest("/api/v1/accounts/{account_id}", account_routes())
         .nest("/api/v2/accounts/{account_id}", reports::routes().fallback(web::not_implemented))
         .merge(widget::routes())
+        .merge(dyte::widget_routes())
+        .merge(shopify::public_routes())
         .merge(channels::telegram::routes())
         .merge(channels::line::routes())
         .merge(channels::twilio::routes())
