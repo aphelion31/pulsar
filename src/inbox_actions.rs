@@ -130,7 +130,10 @@ async fn health(State(st): State<AppState>, user: CurrentUser, Path((account_id,
     let au = require_account(&st.db, &user, account_id).await?;
     authorize_show(&st.db, &au, id).await?;
     let inbox = load_inbox(&st.db, account_id, id).await?;
-    if is_wa_cloud(&st.db, &inbox).await? || inbox.channel_type == "Channel::TwilioSms" {
+    if is_wa_cloud(&st.db, &inbox).await? {
+        return Ok(Json(crate::channels::whatsapp::health(&st.db, inbox.channel_id).await?));
+    }
+    if inbox.channel_type == "Channel::TwilioSms" {
         return Err(bad_status(StatusCode::NOT_IMPLEMENTED, "Inbox health check is not implemented in Pulsar yet"));
     }
     Err(bad_status(
@@ -151,6 +154,9 @@ async fn sync_templates(State(st): State<AppState>, user: CurrentUser, Path((acc
             StatusCode::UNPROCESSABLE_ENTITY,
             "Template sync is only available for WhatsApp channels",
         ));
+    }
+    if is_wa_cloud(&st.db, &inbox).await? {
+        crate::channels::whatsapp::sync_templates(&st.db, inbox.channel_id).await?;
     }
     Ok(Json(json!({ "message": "Template sync initiated successfully" })))
 }
