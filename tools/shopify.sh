@@ -63,6 +63,9 @@ export SHOPIFY_CLIENT_ID="test-shopify-client-id"
 export SHOPIFY_CLIENT_SECRET="test-shopify-client-secret"
 export SHOPIFY_API_URL="http://127.0.0.1:$MOCK_PORT"
 export FRONTEND_URL="http://127.0.0.1:$PORT"
+# DET_KEY='' simulates prod (no deterministic key): CE stores the hook token as plaintext then.
+export ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=testprimary ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=testsalt
+export ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=${DET_KEY-testdeterministic}
 
 BIND="127.0.0.1:$PORT" WEB_DIR="$WEB_DIR" "$BIN" >/tmp/pulsar-shopify-test.log 2>&1 &
 SRV_PID=$!
@@ -102,6 +105,12 @@ CB_CODE=$(curl -s -o /dev/null -D "$CB_HDR" -w '%{http_code}' "$B/shopify/callba
 [ "$CB_CODE" = "303" ] || [ "$CB_CODE" = "302" ]
 tr -d '\r' < "$CB_HDR" | grep -qi "location: .*settings/integrations/shopify$"
 rm -f "$CB_HDR"
+STORED=$(psql -qtAX "$DB" -c "SELECT access_token FROM integrations_hooks WHERE account_id=1 AND app_id='shopify'")
+if [ -n "$ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY" ]; then
+  [ "$STORED" != "shpat_test_123" ] && echo "$STORED" | jq -e '.p and .h.iv' >/dev/null || { echo "FAIL: token not encrypted"; exit 1; }
+else
+  [ "$STORED" = "shpat_test_123" ] || { echo "FAIL: expected plaintext without deterministic key"; exit 1; }
+fi
 echo "shopify/callback OK"
 
 # 3. GET integrations/shopify/orders?contact_id=

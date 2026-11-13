@@ -267,8 +267,11 @@ async fn orders(
     .ok_or_else(ApiError::not_found)?;
 
     let shop = reference_id.filter(|s| !s.is_empty()).ok_or_else(ApiError::not_found)?;
-    let access_token = stored_token
-        .map(|t| ar_encryption::decrypt(&t))
+    let access_token = match stored_token {
+        Some(t) => ar_encryption::decrypt_deterministic(&t)?,
+        None => String::new(),
+    };
+    let access_token = Some(access_token)
         .filter(|t| !t.is_empty())
         .ok_or_else(ApiError::not_found)?;
 
@@ -503,7 +506,11 @@ async fn callback(
         return Redirect::to(&error_redirect());
     };
     let scope = token_json.get("scope").and_then(|v| v.as_str()).unwrap_or("");
-    let encrypted_token = ar_encryption::encrypt(access_token);
+    // Integrations::Hook encrypts access_token deterministically (only when all 3 keys are set).
+    let Ok(encrypted_token) = ar_encryption::encrypt_deterministic(access_token) else {
+        tracing::error!("Shopify callback error: token encryption failed");
+        return Redirect::to(&error_redirect());
+    };
     let settings = json!({
         "scope": scope,
         "connected_at": chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true),
