@@ -107,10 +107,94 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/widget/contact", get(contact_show).patch(contact_update))
         .route("/api/v1/widget/contact/set_user", patch(contact_update))
         .route("/api/v1/widget/inbox_members", get(inbox_members))
-        // ponytail: widget analytics events, campaigns and labels not ported yet
-        .route("/api/v1/widget/events", post(|| async { Json(json!({})) }))
-        .route("/api/v1/widget/campaigns", get(|| async { Json(json!([])) }))
+        .route("/api/v1/widget/events", post(events))
+        .route("/api/v1/widget/campaigns", get(campaigns))
+        // ponytail: widget labels not ported yet
         .route("/api/v1/widget/labels", post(|| async { Json(json!({})) }))
+}
+
+/// GET /api/v1/widget/campaigns: mirrors widget/campaigns_controller.rb + campaigns/index.json.jbuilder.
+async fn campaigns(State(st): State<AppState>, Query(q): Query<Q>) -> ApiResult {
+    let w = widget_of(&st.db, q.website_token.as_deref()).await?;
+    let rows: Vec<(i64, Value, Option<bool>, String, Option<i64>)> = sqlx::query_as(
+        "SELECT display_id::bigint, COALESCE(trigger_rules,'{}'::jsonb), trigger_only_during_business_hours, message, sender_id::bigint
+         FROM campaigns WHERE inbox_id = $1 AND account_id = $2 AND enabled ORDER BY id",
+    )
+    .bind(w.inbox_id)
+    .bind(w.account_id)
+    .fetch_all(&st.db)
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, rules, bh, message, sender) in rows {
+        let sender = match sender { Some(u) => crate::conversations::user_json(&st.db, w.account_id, u).await, None => Value::Null };
+        out.push(json!({ "id": id, "trigger_rules": rules, "trigger_only_during_business_hours": bh.unwrap_or(false), "message": message, "sender": sender }));
+    }
+    Ok(Json(json!(out)))
+}
+
+/// POST /api/v1/widget/events: only `campaign.triggered` has an effect (campaign_listener.rb +
+/// campaigns/campaign_conversation_builder.rb); other events are analytics and are accepted silently.
+async fn events(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
+    let w = widget_of(&st.db, q.website_token.as_deref()).await?;
+    let s = required(&st, &w, &headers).await?;
+    if b["name"] != "campaign.triggered" {
+        return Ok(Json(json!({})));
+    }
+    let info = &b["event_info"];
+    let Some(display_id) = info["campaign_id"].as_i64().or_else(|| info["campaign_id"].as_str().and_then(|v| v.parse().ok())) else {
+        return Ok(Json(json!({})));
+    };
+    let campaign: Option<(i64, String, Option<i64>)> = sqlx::query_as(
+        "SELECT id::bigint, message, sender_id::bigint FROM campaigns WHERE inbox_id = $1 AND account_id = $2 AND display_id = $3 AND enabled",
+    )
+    .bind(w.inbox_id)
+    .bind(w.account_id)
+    .bind(display_id)
+    .fetch_optional(&st.db)
+    .await?;
+    let Some((campaign_id, message, sender)) = campaign else { return Ok(Json(json!({}))) };
+    // Builder rule: no campaign when the contact already has a conversation. Lock the contact_inbox row
+    // so two triggers racing cannot both create one.
+    let mut tx = st.db.begin().await?;
+    sqlx::query("SELECT 1 FROM contact_inboxes WHERE id = $1 FOR UPDATE").bind(s.c.ci_id).execute(&mut *tx).await?;
+    let existing: Option<i32> = sqlx::query_scalar("SELECT 1 FROM conversations WHERE contact_inbox_id = $1 LIMIT 1")
+        .bind(s.c.ci_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if existing.is_some() {
+        return Ok(Json(json!({})));
+    }
+    let mut extra = info.clone();
+    if let Some(o) = extra.as_object_mut() {
+        o.remove("campaign_id");
+        o.remove("custom_attributes");
+    }
+    let custom = if info["custom_attributes"].is_object() { info["custom_attributes"].clone() } else { json!({}) };
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO conversations (account_id, inbox_id, status, contact_id, contact_inbox_id, campaign_id,
+            additional_attributes, custom_attributes, last_activity_at, created_at, updated_at)
+         VALUES ($1, $2, 0, $3, $4, $5, $6::jsonb, $7::jsonb, now(), now(), now()) RETURNING id::bigint",
+    )
+    .bind(w.account_id as i32)
+    .bind(w.inbox_id as i32)
+    .bind(s.c.contact_id)
+    .bind(s.c.ci_id)
+    .bind(campaign_id)
+    .bind(extra)
+    .bind(custom)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let c = reload(&st.db, id).await?;
+    notify_conv(&st, &c, "conversation.created").await?;
+    let m = insert_message(&st, &c, sender.map(|u| ("User", u)), &message, 1, false, 0, json!({}), None).await?;
+    // MessageBuilder#campaign_id stores it in message additional_attributes
+    sqlx::query("UPDATE messages SET additional_attributes = COALESCE(additional_attributes,'{}'::jsonb) || jsonb_build_object('campaign_id', $2::bigint) WHERE id = $1")
+        .bind(m["id"].as_i64().unwrap_or_default())
+        .bind(campaign_id)
+        .execute(&st.db)
+        .await?;
+    Ok(Json(json!({})))
 }
 
 #[derive(Deserialize, Default)]
