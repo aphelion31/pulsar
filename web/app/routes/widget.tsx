@@ -352,7 +352,7 @@ export default function Widget() {
           }}
         >
           <div className="mb-4 flex items-center gap-2">
-            <img src="/app/brand-assets/logo_thumbnail.svg" alt="" className="size-7 rounded-full bg-white p-0.5" />
+            <img src="/app/brand-assets/logo_thumbnail.svg" alt="Pulsar" className="size-7 rounded-lg bg-white p-0.5 shadow-sm" />
             <span className="text-sm font-medium text-white/90">{ch?.website_name || "Support"}</span>
           </div>
           <h1 className="font-inter-display text-2xl font-semibold leading-snug">
@@ -631,7 +631,7 @@ export default function Widget() {
           </div>
           {!ch?.disable_branding && (
             <div className="pb-2 text-center text-[10px] text-n-slate-10">
-              Powered by Chatwoot · Pulsar
+              Powered by Pulsar
             </div>
           )}
         </footer>

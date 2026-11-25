@@ -1,4 +1,4 @@
-// Shared centered card + Chatwoot brand header matching v3/views/login/Index.vue.
+// Shared centered card + Pulsar brand header.
 import type { ReactNode } from "react";
 
 export function AuthShell({
@@ -15,16 +15,16 @@ export function AuthShell({
   return (
     <main className="flex min-h-dvh w-full flex-col justify-center bg-n-brand/5 px-4 py-12 dark:bg-n-background sm:px-6 lg:px-8">
       <section className="mx-auto w-full max-w-lg text-center">
-        <img
-          src="/app/brand-assets/logo.svg"
-          alt="Chatwoot"
-          className="mx-auto block h-8 w-auto dark:hidden"
-        />
-        <img
-          src="/app/brand-assets/logo_dark.svg"
-          alt="Chatwoot"
-          className="mx-auto hidden h-8 w-auto dark:block"
-        />
+        <div className="mx-auto inline-flex items-center justify-center gap-2.5">
+          <img
+            src="/app/brand-assets/logo_thumbnail.svg"
+            alt="Pulsar"
+            className="size-8 shrink-0"
+          />
+          <span className="font-inter-display text-2xl font-bold tracking-tight text-n-slate-12">
+            pulsar
+          </span>
+        </div>
         <h1 className="mt-6 font-inter-display text-3xl font-medium tracking-tight text-n-slate-12">
           {title}
         </h1>

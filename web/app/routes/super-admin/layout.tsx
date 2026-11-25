@@ -79,7 +79,7 @@ export default function SuperAdminLayout() {
         <div className="mb-5 flex items-center gap-2.5 px-2 pt-1">
           <img
             src="/app/brand-assets/logo_thumbnail.svg"
-            alt="Chatwoot"
+            alt="Pulsar"
             className="size-6 shrink-0"
           />
           <div className="min-w-0">
