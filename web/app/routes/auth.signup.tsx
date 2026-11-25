@@ -1,7 +1,10 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { Button, ErrorText, Input } from "~/components/ui";
+import { AuthShell } from "~/components/next/AuthShell";
 import { authResponse } from "~/lib/api";
+
+const inputCls =
+  "block h-10 w-full rounded-lg border-0 bg-n-alpha-black2 px-3 py-2 text-sm text-n-slate-12 outline outline-1 outline-n-weak transition-colors placeholder:text-n-slate-10 hover:outline-n-slate-6 focus:outline-n-brand";
 
 export default function SignupRoute() {
   const navigate = useNavigate();
@@ -48,30 +51,48 @@ export default function SignupRoute() {
   }
 
   return (
-    <main className="grid min-h-dvh place-items-center px-6">
-      <div className="w-full max-w-sm">
-        <p className="text-[15px] font-semibold tracking-tight">Pulsar</p>
-        <h1 className="mt-8 text-2xl font-medium">Create your account</h1>
-        <p className="mt-2 text-ink-2">Start managing customer conversations</p>
-        <form onSubmit={submit} className="mt-8 grid gap-4">
-          <Input label="Full name" name="user_full_name" required autoFocus />
-          <Input label="Company / Account name" name="account_name" required />
-          <Input label="Work email" name="email" type="email" autoComplete="email" required />
-          <Input label="Password" name="password" type="password" minLength={6} required />
-          <Input label="Confirm password" name="password_confirmation" type="password" minLength={6} required />
-          <ErrorText>{error}</ErrorText>
-          {message && <p role="status" className="text-sm text-ink-2">{message}</p>}
-          <Button type="submit" disabled={busy} className="mt-2 h-9 justify-center">
-            {busy ? "Creating account..." : "Create account"}
-          </Button>
-        </form>
-        <p className="mt-4 text-sm text-ink-2">
+    <AuthShell
+      title="Create your account"
+      subtitle={
+        <>
           Already have an account?{" "}
-          <Link className="underline" to="/login">
+          <Link className="text-n-brand hover:underline" to="/login">
             Sign in
           </Link>
-        </p>
-      </div>
-    </main>
+        </>
+      }
+    >
+      <form onSubmit={submit} className="space-y-4">
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-n-slate-12">Full name</span>
+          <input name="user_full_name" required autoFocus placeholder="Jane Doe" className={inputCls} />
+        </label>
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-n-slate-12">Company / Account name</span>
+          <input name="account_name" required placeholder="Acme Inc" className={inputCls} />
+        </label>
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-n-slate-12">Work email</span>
+          <input name="email" type="email" autoComplete="email" required placeholder="you@company.com" className={inputCls} />
+        </label>
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-n-slate-12">Password</span>
+          <input name="password" type="password" minLength={6} required placeholder="At least 6 characters" className={inputCls} />
+        </label>
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-n-slate-12">Confirm password</span>
+          <input name="password_confirmation" type="password" minLength={6} required placeholder="Repeat password" className={inputCls} />
+        </label>
+        {error && <p role="alert" className="text-sm text-n-ruby-11">{error}</p>}
+        {message && <p role="status" className="text-sm text-n-teal-11">{message}</p>}
+        <button
+          type="submit"
+          disabled={busy}
+          className="mt-2 flex h-10 w-full items-center justify-center rounded-lg bg-n-brand px-4 text-sm font-medium text-white transition hover:bg-n-blue-10 disabled:opacity-50"
+        >
+          {busy ? "Creating account..." : "Create account"}
+        </button>
+      </form>
+    </AuthShell>
   );
 }

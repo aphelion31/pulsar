@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { Button } from "~/components/ui";
+import { AuthShell } from "~/components/next/AuthShell";
+
+const inputCls =
+  "block h-10 w-full rounded-lg border-0 bg-n-alpha-black2 px-3 py-2 text-sm text-n-slate-12 outline outline-1 outline-n-weak transition-colors placeholder:text-n-slate-10 hover:outline-n-slate-6 focus:outline-n-brand";
 
 export default function SuperAdminSignInRoute() {
   const nav = useNavigate();
@@ -36,25 +39,47 @@ export default function SuperAdminSignInRoute() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-bg p-6">
-      <form onSubmit={submit} className="w-full max-w-md space-y-4 rounded-2xl border border-line bg-surface p-6">
-        <div>
-          <h1 className="text-xl font-semibold text-ink">Super Admin Sign In</h1>
-          <p className="mt-1 text-sm text-ink-3">Instance-wide administration for Pulsar.</p>
-        </div>
-        {error && <p role="alert" className="rounded-lg bg-bad/10 px-3 py-2 text-sm text-bad">{error}</p>}
-        <label className="flex flex-col gap-1 text-sm font-medium text-ink">
-          Email
-          <input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="h-10 rounded-lg border border-line bg-bg px-3 text-sm" />
+    <AuthShell
+      title="Super Admin Console"
+      subtitle="Instance-wide administration for this installation."
+    >
+      <form onSubmit={submit} className="space-y-5">
+        {error && (
+          <p role="alert" className="rounded-lg bg-n-ruby-3 px-3 py-2 text-sm text-n-ruby-11">
+            {error}
+          </p>
+        )}
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-n-slate-12">Email</span>
+          <input
+            required
+            autoFocus
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="super@company.com"
+            className={inputCls}
+          />
         </label>
-        <label className="flex flex-col gap-1 text-sm font-medium text-ink">
-          Password
-          <input required type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="h-10 rounded-lg border border-line bg-bg px-3 text-sm" />
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-n-slate-12">Password</span>
+          <input
+            required
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Password"
+            className={inputCls}
+          />
         </label>
-        <Button type="submit" disabled={busy} className="w-full">
+        <button
+          type="submit"
+          disabled={busy}
+          className="flex h-10 w-full items-center justify-center rounded-lg bg-n-brand px-4 text-sm font-medium text-white transition hover:bg-n-blue-10 disabled:opacity-50"
+        >
           {busy ? "Signing in..." : "Sign in"}
-        </Button>
+        </button>
       </form>
-    </div>
+    </AuthShell>
   );
 }

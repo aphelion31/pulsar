@@ -12,9 +12,11 @@ export function CaptainNav({ accountId, active }: { accountId: number; active: s
   return (
     <div className="border-b border-line bg-surface px-6">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 py-3">
-        <div className="flex items-center gap-2">
-          <Bot size={20} className="text-accent" />
-          <h1 className="text-lg font-semibold text-ink">Captain AI</h1>
+        <div className="flex items-center gap-2.5">
+          <span className="grid size-7 place-items-center rounded-lg bg-n-blue-3 text-n-blue-11">
+            <Bot size={16} />
+          </span>
+          <h1 className="font-inter-display text-lg font-semibold text-n-slate-12">Captain</h1>
         </div>
         <nav className="flex flex-wrap gap-1">
           {tabs.map((tab) => {
@@ -24,10 +26,10 @@ export function CaptainNav({ accountId, active }: { accountId: number; active: s
               <Link
                 key={tab.key}
                 to={tab.to}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
                   isActive
-                    ? "bg-accent text-accent-ink font-medium"
-                    : "text-ink-2 hover:bg-raised hover:text-ink"
+                    ? "bg-n-brand text-white"
+                    : "text-n-slate-11 hover:bg-n-alpha-2 hover:text-n-slate-12"
                 }`}
               >
                 <Icon size={14} />

@@ -124,29 +124,38 @@ export default function CaptainAssistantsRoute() {
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {assistants.map((a) => (
-              <div key={a.id} className="flex flex-col justify-between rounded-xl border border-line bg-surface p-5">
+              <div
+                key={a.id}
+                className="flex flex-col justify-between rounded-xl border border-n-weak bg-n-solid-1 p-5 shadow-2xs transition hover:border-n-strong hover:shadow-sm"
+              >
                 <div className="space-y-2">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <Bot size={18} className="text-accent" />
+                    <div className="flex items-center gap-2.5">
+                      <span className="grid size-7 place-items-center rounded-lg bg-n-blue-3 text-n-blue-11">
+                        <Bot size={15} />
+                      </span>
                       <Link
                         to={`/accounts/${accountId}/captain/${a.id}/overview`}
-                        className="font-semibold text-ink hover:text-accent hover:underline"
+                        className="font-semibold text-n-slate-12 hover:text-n-brand hover:underline"
                       >
                         {a.name}
                       </Link>
                     </div>
-                    <button onClick={() => void deleteAssistant(a.id)} className="text-ink-3 hover:text-bad" aria-label={`Delete ${a.name}`}>
+                    <button
+                      onClick={() => void deleteAssistant(a.id)}
+                      className="text-n-slate-10 hover:text-n-ruby-11"
+                      aria-label={`Delete ${a.name}`}
+                    >
                       <Trash2 size={14} />
                     </button>
                   </div>
-                  <p className="text-sm text-ink-2 line-clamp-3">{a.description || "No description provided."}</p>
+                  <p className="text-sm text-n-slate-11 line-clamp-3">{a.description || "No description provided."}</p>
                 </div>
-                <div className="mt-4 flex items-center justify-between border-t border-line pt-3 text-xs text-ink-3">
+                <div className="mt-4 flex items-center justify-between border-t border-n-weak pt-3 text-xs text-n-slate-10">
                   <span>{a.connected_inboxes_count} inboxes · {a.scenarios_count} scenarios</span>
                   <Link
                     to={`/accounts/${accountId}/captain/${a.id}/playground`}
-                    className="inline-flex items-center gap-1 font-medium text-accent hover:underline"
+                    className="inline-flex items-center gap-1 font-medium text-n-brand hover:underline"
                   >
                     Open <ArrowRight size={13} />
                   </Link>

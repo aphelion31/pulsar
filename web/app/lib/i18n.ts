@@ -114,7 +114,7 @@ function lookup(key: string): string | undefined {
 }
 
 export function t(key: string, vars?: Vars): string {
-  const raw = pickPlural(lookup(key) ?? key, vars);
+  const raw = pickPlural(lookup(key) ?? key, vars).replace(/\{'([^']+)'\}/g, "$1");
   if (!vars) return raw;
   return raw.replace(/\{(\w+)\}/g, (match, name: string) =>
     Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match,
