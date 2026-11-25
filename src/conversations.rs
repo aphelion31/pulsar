@@ -123,6 +123,10 @@ pub fn routes() -> Router<AppState> {
             post(messages_translate),
         )
         .route(
+            "/conversations/{id}/messages/auto_translate",
+            post(messages_auto_translate),
+        )
+        .route(
             "/conversations/{id}/request_contact_info",
             post(request_contact_info),
         )
@@ -2132,16 +2136,132 @@ async fn messages_retry(
 }
 
 /// POST /conversations/{id}/messages/{message_id}/translate. Needs a Google Translate hook that Pulsar
-/// does not ship, so it always answers with a clear 422 instead of a stub success.
+async fn translate_one_message(
+    db: &PgPool,
+    account_id: i64,
+    msg_id: i64,
+    content: &str,
+    content_attrs: &Value,
+    target_language: &str,
+) -> Result<String, ApiError> {
+    if let Some(existing) = content_attrs
+        .get("translations")
+        .and_then(|t| t.get(target_language))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(existing.to_string());
+    }
+    let settings: Option<Value> = sqlx::query_scalar(
+        "SELECT COALESCE(settings, '{}'::jsonb) FROM integrations_hooks
+         WHERE account_id = $1 AND app_id = 'google_translate' AND status = 1
+         ORDER BY id LIMIT 1",
+    )
+    .bind(account_id as i32)
+    .fetch_optional(db)
+    .await?;
+    let Some(settings) = settings else {
+        return Err(ApiError::bad("translation not configured"));
+    };
+    let api_url = std::env::var("GOOGLE_TRANSLATE_API_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://translation.googleapis.com/language/translate/v2".into());
+    let body = serde_json::to_vec(&json!({
+        "q": content,
+        "target": target_language,
+        "format": "text",
+        "project_id": settings["project_id"],
+    }))
+    .map_err(|e| ApiError::bad(e.to_string()))?;
+    let mut req = reqwest::Client::new()
+        .post(&api_url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body);
+    if let Some(key) = settings["api_key"].as_str().filter(|s| !s.is_empty()) {
+        req = req.query(&[("key", key)]);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| ApiError::bad(format!("Translation failed: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(ApiError::bad("Translation provider failed"));
+    }
+    let res_val: Value =
+        serde_json::from_slice(&resp.bytes().await.unwrap_or_default()).unwrap_or(Value::Null);
+    let translated = res_val["data"]["translations"][0]["translatedText"]
+        .as_str()
+        .or_else(|| res_val["translatedText"].as_str())
+        .unwrap_or(content)
+        .to_string();
+
+    sqlx::query(
+        "UPDATE messages
+         SET content_attributes = (COALESCE(content_attributes, '{}'::json)::jsonb || jsonb_build_object('translation_provider', 'google_translate', 'translations', COALESCE(content_attributes::jsonb->'translations', '{}'::jsonb) || jsonb_build_object($2::text, $3::text)))::json,
+             updated_at = now()
+         WHERE id = $1",
+    )
+    .bind(msg_id)
+    .bind(target_language)
+    .bind(&translated)
+    .execute(db)
+    .await?;
+    Ok(translated)
+}
+
+/// POST /conversations/{id}/messages/{message_id}/translate (google_translate).
 async fn messages_translate(
     State(st): State<AppState>,
     user: CurrentUser,
     Path((account_id, id, message_id)): Path<(i64, i64, i64)>,
+    body: Option<Json<Value>>,
 ) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
-    load_msg(&st.db, &c, message_id).await?;
-    Err(ApiError::bad("translation not configured"))
+    let m = load_msg(&st.db, &c, message_id).await?;
+    let target = body
+        .as_ref()
+        .and_then(|Json(v)| v["target_language"].as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("en");
+    let attrs = m.content_attributes.clone().unwrap_or(json!({}));
+    let text = m.content.as_deref().unwrap_or("");
+    let content = translate_one_message(&st.db, account_id, m.id, text, &attrs, target).await?;
+    Ok(Json(json!({ "content": content })))
+}
+
+/// POST /conversations/{id}/messages/auto_translate
+async fn messages_auto_translate(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    let target = body["target_language"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("en");
+    let ids: Vec<i64> = body["message_ids"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_i64()).collect())
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return Err(ApiError::bad("message_ids is required"));
+    }
+    let mut out = serde_json::Map::new();
+    for mid in ids {
+        let m = load_msg(&st.db, &c, mid).await?;
+        let attrs = m.content_attributes.clone().unwrap_or(json!({}));
+        let text = m.content.as_deref().unwrap_or("");
+        let tr = translate_one_message(&st.db, account_id, m.id, text, &attrs, target).await?;
+        out.insert(mid.to_string(), json!(tr));
+    }
+    Ok((StatusCode::ACCEPTED, Json(json!({ "translations": out }))))
 }
 
 /// GET /conversations/{id}/contact_info_request (contact_info_requests_controller#show).

@@ -18,6 +18,7 @@ mod events;
 mod help_center;
 mod inbox_actions;
 mod inboxes;
+mod integrations;
 mod listeners;
 mod mailer;
 mod mfa;
@@ -69,6 +70,9 @@ fn account_routes() -> Router<AppState> {
         .merge(channels::social_oauth::account_routes())
         .merge(dyte::account_routes())
         .merge(shopify::account_routes())
+        .merge(integrations::linear::account_routes())
+        .merge(integrations::notion::account_routes())
+        .merge(integrations::stripe::account_routes())
         .fallback(web::not_implemented)
 }
 
@@ -214,6 +218,10 @@ pub fn app(state: AppState) -> Router {
         .merge(widget::routes())
         .merge(dyte::widget_routes())
         .merge(shopify::public_routes())
+        .merge(slack::public_routes())
+        .merge(integrations::linear::public_routes())
+        .merge(integrations::notion::public_routes())
+        .merge(integrations::stripe::public_routes())
         .merge(channels::telegram::routes())
         .merge(channels::line::routes())
         .merge(channels::twilio::routes())
@@ -368,6 +376,10 @@ async fn main() -> anyhow::Result<()> {
             (
                 "twitter_outbound",
                 events::listener(channels::social_oauth::twitter_outbound),
+            ),
+            (
+                "dialogflow",
+                events::listener(listeners::dialogflow::handle),
             ),
         ],
     );

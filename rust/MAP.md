@@ -26,8 +26,11 @@ ADRs: [DECISIONS.md](DECISIONS.md) | Terms: [GLOSSARY.md](GLOSSARY.md)
 - Gate: `cargo test` 48/48 passed, `pnpm typecheck && pnpm build` passed, `tools/wave2-channels-hc.sh` passed against PostgreSQL 18 + mock social/Meta Graph APIs.
 
 ## Wave 3 — All Remaining Integrations
-- `open` | Backend `src/integrations/linear.rs`, `notion.rs`, `stripe.rs`, `shopify.rs` custom app & callbacks, `conversations` Google Translate + `dialogflow` listener + Slack webhook intake
-- `open` | UI `shopify.select-account.tsx`, `settings/integrations/{slack,linear,stripe,notion,shopify,hook-detail}.tsx`, ConversationSidebar cards
+- `done` | Backend `src/integrations/{mod,linear,notion,stripe}.rs` (OAuth/callbacks/webhooks + GraphQL Linear/Stripe customer lookup)
+- `done` | Backend `src/shopify.rs` (`shopify_custom_app` CRUD, custom callback/webhook, `complete_install`), `src/slack.rs` (`/api/v1/integrations/webhooks`)
+- `done` | Backend `src/conversations.rs` (Google Translate + `auto_translate`) + `src/listeners/dialogflow.rs`
+- `done` | UI `shopify.select-account.tsx`, `settings/integrations/{slack,linear,stripe,notion,shopify,google-translate,hook-detail}.tsx`, `ConversationSidebar.tsx` cards
+- Gate: `cargo test` 48/48 passed, `pnpm typecheck && pnpm build` passed, `tools/wave3-integrations.sh` passed against PostgreSQL 18 + mock integration APIs.
 
 ## Wave 4 — Captain AI, Conversation Monitors, Voice/Calls
 - `open` | Backend `src/captain.rs`, `src/monitors.rs`, `src/voice.rs`, enterprise helpers

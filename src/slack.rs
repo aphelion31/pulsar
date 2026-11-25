@@ -3,10 +3,15 @@ use crate::common::*;
 use axum::http::StatusCode;
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{Path, State},
+    http::HeaderMap,
+    response::IntoResponse,
     routing::{get, post},
 };
+use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
+use sha2_compat::Sha256;
 use sqlx::PgPool;
 
 pub fn routes() -> Router<AppState> {
@@ -20,6 +25,10 @@ pub fn routes() -> Router<AppState> {
             "/integrations/hooks/{id}/process_event",
             post(process_event),
         )
+}
+
+pub fn public_routes() -> Router<AppState> {
+    Router::new().route("/api/v1/integrations/webhooks", post(slack_webhook))
 }
 
 async fn config(db: &PgPool, name: &str, default: &str) -> Result<String, ApiError> {
@@ -353,4 +362,85 @@ async fn process_event(
         return Err(ApiError::not_found());
     }
     Err(ApiError::bad("No processor found"))
+}
+
+fn verify_slack_sig(secret: &str, headers: &HeaderMap, body: &[u8]) -> bool {
+    let Some(ts) = headers
+        .get("x-slack-request-timestamp")
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let Some(sig) = headers
+        .get("x-slack-signature")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("v0="))
+        .and_then(|h| hex::decode(h).ok())
+    else {
+        return false;
+    };
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret.as_bytes()) else {
+        return false;
+    };
+    mac.update(b"v0:");
+    mac.update(ts.as_bytes());
+    mac.update(b":");
+    mac.update(body);
+    mac.verify_slice(&sig).is_ok()
+}
+
+/// POST /api/v1/integrations/webhooks (Slack Events API intake & url_verification)
+async fn slack_webhook(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    let signing_secret = config(&st.db, "SLACK_SIGNING_SECRET", "")
+        .await
+        .unwrap_or_default();
+    if !signing_secret.is_empty() && !verify_slack_sig(&signing_secret, &headers, &body) {
+        return Err(ApiError::unauthorized());
+    }
+    let payload: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    if payload["type"].as_str() == Some("url_verification") {
+        return Ok(Json(json!({ "challenge": payload["challenge"] })));
+    }
+    if payload["type"].as_str() == Some("event_callback") {
+        let ev = &payload["event"];
+        let is_bot = ev["bot_id"].is_string() || ev["subtype"].as_str() == Some("bot_message");
+        if ev["type"].as_str() == Some("message") && !is_bot {
+            let text = ev["text"].as_str().unwrap_or("").trim();
+            let thread_ts = ev["thread_ts"]
+                .as_str()
+                .or_else(|| ev["ts"].as_str())
+                .unwrap_or("");
+            if !text.is_empty() && !thread_ts.is_empty() {
+                let conv_id: Option<i64> = sqlx::query_scalar(
+                    "SELECT id::bigint FROM conversations
+                     WHERE identifier = $1 OR additional_attributes->>'slack_thread_ts' = $1
+                     ORDER BY id DESC LIMIT 1",
+                )
+                .bind(thread_ts)
+                .fetch_optional(&st.db)
+                .await?;
+                if let Some(cid) = conv_id
+                    && let Ok(conv) = crate::conversations::reload(&st.db, cid).await
+                {
+                    let _ = crate::conversations::insert_message(
+                        &st,
+                        &conv,
+                        None,
+                        text,
+                        1,
+                        false,
+                        0,
+                        json!({}),
+                        ev["client_msg_id"].as_str(),
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+    Ok(Json(json!({ "ok": true })))
 }

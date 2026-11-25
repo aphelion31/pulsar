@@ -36,11 +36,15 @@ export default function Integrations() {
               <p className="mt-1 text-ink-3">{t("INTEGRATION_SETTINGS.DASHBOARD_APPS.DESCRIPTION")}</p>
             </Link>
             {apps.map(app => (
-              <div key={app.id} className={card}>
+              <Link
+                key={app.id}
+                to={`/accounts/${accountId}/settings/integrations/${app.id}`}
+                className={`${card} hover:border-n-blue-8 transition-colors`}
+              >
                 <p className="font-medium">{app.name}</p>
                 {app.description && <p className="mt-1 text-ink-3">{app.description}</p>}
                 <p className="mt-2 text-ink-2">{app.enabled ? t("INTEGRATION_APPS.STATUS.ENABLED") : t("INTEGRATION_APPS.STATUS.DISABLED")}</p>
-              </div>
+              </Link>
             ))}
           </div>
         )}
