@@ -9,8 +9,9 @@ use axum::{
     routing::{delete, get, post},
 };
 use chrono::NaiveDateTime;
+use serde::Deserialize;
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 
 use crate::auth::{availability_name, role_name};
 use crate::common::*;
@@ -137,6 +138,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/conversations/{id}/reporting_events",
             get(conversation_reporting_events),
+        )
+        .route(
+            "/conversations/{id}/campaign_history",
+            get(conversation_campaign_history),
         )
 }
 
@@ -2919,4 +2924,94 @@ pub(crate) async fn patch_labels_pub(
     remove: &[String],
 ) -> Result<(), ApiError> {
     patch_labels(db, conv_id, add, remove).await.map(|_| ())
+}
+
+#[derive(Deserialize, Default)]
+struct CampaignHistoryQuery {
+    before: Option<i64>,
+}
+
+async fn conversation_campaign_history(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, display_id)): Path<(i64, i64)>,
+    Query(q): Query<CampaignHistoryQuery>,
+) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, display_id).await?;
+
+    let rows = sqlx::query(
+        "SELECT cr.id, cr.message_content, cr.source_id, cr.status,
+                EXTRACT(EPOCH FROM cr.sent_at)::bigint AS sent_at,
+                EXTRACT(EPOCH FROM cr.delivered_at)::bigint AS delivered_at,
+                EXTRACT(EPOCH FROM cr.read_at)::bigint AS read_at,
+                EXTRACT(EPOCH FROM cr.failed_at)::bigint AS failed_at,
+                cp.display_id::bigint AS campaign_display_id, cp.title AS campaign_title
+         FROM campaign_recipients cr
+         JOIN campaigns cp ON cp.id = cr.campaign_id
+         WHERE cr.account_id = $1 AND cr.contact_id = $2 AND cr.inbox_id = $3 AND cr.sent_at IS NOT NULL
+           AND ($4::bigint IS NULL OR cr.id < $4)
+         ORDER BY cr.sent_at DESC, cr.id DESC
+         LIMIT 26",
+    )
+    .bind(account_id)
+    .bind(c.contact_id)
+    .bind(c.inbox_id)
+    .bind(q.before)
+    .fetch_all(&st.db)
+    .await?;
+
+    let has_more = rows.len() > 25;
+    let payload: Vec<Value> = rows
+        .into_iter()
+        .take(25)
+        .filter_map(|r| {
+            let status_int: i32 = r.try_get("status").ok()?;
+            let status = match status_int {
+                1 => "sent",
+                2 => "delivered",
+                3 => "read",
+                4 => "failed",
+                _ => "pending",
+            };
+            Some(json!({
+                "id": r.try_get::<i64, _>("id").ok()?,
+                "campaign": {
+                    "id": r.try_get::<i64, _>("campaign_display_id").ok()?,
+                    "title": r.try_get::<String, _>("campaign_title").ok()?,
+                },
+                "message_content": r.try_get::<Option<String>, _>("message_content").ok()?,
+                "source_id": r.try_get::<Option<String>, _>("source_id").ok()?,
+                "status": status,
+                "sent_at": r.try_get::<Option<i64>, _>("sent_at").ok()?,
+                "delivered_at": r.try_get::<Option<i64>, _>("delivered_at").ok()?,
+                "read_at": r.try_get::<Option<i64>, _>("read_at").ok()?,
+                "failed_at": r.try_get::<Option<i64>, _>("failed_at").ok()?,
+            }))
+        })
+        .collect();
+
+    let next_before = if has_more {
+        payload.last().and_then(|v| v["id"].as_i64())
+    } else {
+        None
+    };
+
+    let first_message_id: Option<i64> = sqlx::query_scalar(
+        "SELECT MIN(id)::bigint FROM messages WHERE conversation_id = $1 AND account_id = $2",
+    )
+    .bind(c.id)
+    .bind(account_id)
+    .fetch_optional(&st.db)
+    .await
+    .ok()
+    .flatten();
+
+    Ok(Json(json!({
+        "payload": payload,
+        "meta": {
+            "next_before": next_before,
+            "first_message_id": first_message_id,
+        }
+    })))
 }

@@ -84,7 +84,15 @@ pub(crate) async fn create_channel(
     let auth_token =
         trim_opt(&ch["auth_token"]).ok_or_else(|| ApiError::bad("Auth token can't be blank"))?;
     let api_key_sid = trim_opt(&ch["api_key_sid"]);
-    let medium = parse_medium(&ch["medium"])?;
+    let api_key_secret = trim_opt(&ch["api_key_secret"]).map(|s| ar_encryption::encrypt(&s));
+    let twiml_app_sid = trim_opt(&ch["twiml_app_sid"]);
+    let voice_enabled =
+        ch["voice_enabled"].as_bool().unwrap_or(false) || ch["type"].as_str() == Some("voice");
+    let medium = if voice_enabled {
+        0
+    } else {
+        parse_medium(&ch["medium"])?
+    };
     let messaging_service_sid = trim_opt(&ch["messaging_service_sid"]);
     let raw_phone = trim_opt(&ch["phone_number"]);
 
@@ -137,14 +145,17 @@ pub(crate) async fn create_channel(
 
     let channel_id: i64 = sqlx::query_scalar(
         "INSERT INTO channel_twilio_sms
-            (account_id, account_sid, auth_token, api_key_sid, messaging_service_sid, phone_number, medium, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())
+            (account_id, account_sid, auth_token, api_key_sid, api_key_secret, twiml_app_sid, voice_enabled, messaging_service_sid, phone_number, medium, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), now())
          RETURNING id::bigint",
     )
     .bind(account_id as i32)
     .bind(&account_sid)
     .bind(&encrypted_token)
     .bind(&api_key_sid)
+    .bind(&api_key_secret)
+    .bind(&twiml_app_sid)
+    .bind(voice_enabled)
     .bind(&messaging_service_sid)
     .bind(&phone_number)
     .bind(medium)

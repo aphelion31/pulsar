@@ -106,6 +106,11 @@ export default function InboxNewWizard() {
   const [fbUserToken, setFbUserToken] = useState("");
   const [fbPages, setFbPages] = useState<Array<{ id: string; name: string; access_token: string }>>([]);
   const [fbPageId, setFbPageId] = useState("");
+  const [voiceTwimlAppSid, setVoiceTwimlAppSid] = useState("");
+  const [voiceApiKeySid, setVoiceApiKeySid] = useState("");
+  const [voiceApiKeySecret, setVoiceApiKeySecret] = useState("");
+  const [waInboxId, setWaInboxId] = useState("");
+  const [waInboxes, setWaInboxes] = useState<Inbox[]>([]);
 
   // Step 3 agents state
   const [allAgents, setAllAgents] = useState<Agent[]>([]);
@@ -143,7 +148,14 @@ export default function InboxNewWizard() {
     },
   ];
 
-  const channelCards = [
+  const channelCards: Array<{
+    key: string;
+    title: string;
+    description: string;
+    icon: typeof Globe;
+    active: boolean;
+    beta?: boolean;
+  }> = [
     {
       key: "website",
       title: t("INBOX_MGMT.ADD.AUTH.CHANNEL.WEBSITE.TITLE"),
@@ -226,16 +238,14 @@ export default function InboxNewWizard() {
       title: t("INBOX_MGMT.ADD.AUTH.CHANNEL.VOICE.TITLE"),
       description: t("INBOX_MGMT.ADD.AUTH.CHANNEL.VOICE.DESCRIPTION"),
       icon: PhoneCall,
-      active: false,
-      beta: true,
+      active: true,
     },
     {
       key: "whatsapp_call",
       title: t("INBOX_MGMT.ADD.AUTH.CHANNEL.WHATSAPP_CALL.TITLE"),
       description: t("INBOX_MGMT.ADD.AUTH.CHANNEL.WHATSAPP_CALL.DESCRIPTION"),
       icon: PhoneForwarded,
-      active: false,
-      beta: true,
+      active: true,
     },
   ];
 
@@ -423,6 +433,27 @@ export default function InboxNewWizard() {
           },
         });
         navigate(`/accounts/${accountId}/settings/inboxes/new/${res.id}/agents`, { replace: true });
+        return;
+      } else if (sub_page === "voice") {
+        payload = {
+          name: inboxName.trim(),
+          channel: {
+            type: "voice",
+            phone_number: phoneNumber.trim(),
+            account_sid: accountSid.trim(),
+            auth_token: authToken.trim(),
+            twiml_app_sid: voiceTwimlAppSid.trim() || undefined,
+            api_key_sid: voiceApiKeySid.trim() || undefined,
+            api_key_secret: voiceApiKeySecret.trim() || undefined,
+            voice_enabled: true,
+          },
+        };
+      } else if (sub_page === "whatsapp_call") {
+        if (!waInboxId) throw new Error("Select a WhatsApp inbox");
+        await api(`${acct(accountId)}/inboxes/${waInboxId}/enable_whatsapp_calling`, {
+          method: "POST",
+        });
+        navigate(`/accounts/${accountId}/calls`, { replace: true });
         return;
       }
 
@@ -1102,6 +1133,57 @@ export default function InboxNewWizard() {
                       />
                     </div>
                   </div>
+                ) : sub_page === "voice" ? (
+                  <>
+                    <div className="mb-6">
+                      <h2 className="text-xl font-medium text-n-slate-12">Twilio Voice</h2>
+                      <p className="mt-1 text-sm text-n-slate-11">Connect a Twilio Voice number for inbound and outbound browser calls.</p>
+                    </div>
+                    <form onSubmit={handleCreateInbox} className="flex flex-col gap-4">
+                      <input required value={inboxName} onChange={(e) => setInboxName(e.target.value)} placeholder="Inbox name (e.g. Support Voice)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                      <input required value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} placeholder="Twilio phone number (+14155550100)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                      <input required value={accountSid} onChange={(e) => setAccountSid(e.target.value)} placeholder="Twilio Account SID (AC...)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                      <input required type="password" value={authToken} onChange={(e) => setAuthToken(e.target.value)} placeholder="Twilio Auth Token" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                      <input value={voiceTwimlAppSid} onChange={(e) => setVoiceTwimlAppSid(e.target.value)} placeholder="TwiML App SID (optional)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                      <div className="grid grid-cols-2 gap-3">
+                        <input value={voiceApiKeySid} onChange={(e) => setVoiceApiKeySid(e.target.value)} placeholder="API Key SID (optional)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                        <input type="password" value={voiceApiKeySecret} onChange={(e) => setVoiceApiKeySecret(e.target.value)} placeholder="API Key Secret (optional)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                      </div>
+                      <div className="mt-4 flex justify-end">
+                        <Button solid blue type="submit" isLoading={loading} label="Create Voice Inbox" />
+                      </div>
+                    </form>
+                  </>
+                ) : sub_page === "whatsapp_call" ? (
+                  <form onSubmit={handleCreateInbox} className="flex flex-col gap-4">
+                    <h2 className="text-xl font-medium text-n-slate-12">Enable WhatsApp Calling</h2>
+                    <p className="text-sm text-n-slate-11">Load an existing WhatsApp Cloud inbox in this account and enable voice calling on it.</p>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        onClick={async () => {
+                          setError("");
+                          try {
+                            const res = await api<{ payload: Inbox[] }>(`${acct(accountId)}/inboxes`);
+                            const list = (res.payload || []).filter((i) => i.channel_type === "Channel::Whatsapp");
+                            setWaInboxes(list);
+                            if (list[0]) setWaInboxId(String(list[0].id));
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : "Failed to load WhatsApp inboxes");
+                          }
+                        }}
+                        label="Load WhatsApp Inboxes"
+                      />
+                    </div>
+                    {waInboxes.length > 0 && (
+                      <>
+                        <select value={waInboxId} onChange={(e) => setWaInboxId(e.target.value)} className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm">
+                          {waInboxes.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                        </select>
+                        <Button solid blue type="submit" isLoading={loading} label="Enable WhatsApp Calling" />
+                      </>
+                    )}
+                  </form>
                 ) : (
                   <div className="text-sm text-n-slate-11">
                     Channel configuration not supported in this wizard.

@@ -46,6 +46,7 @@ pub fn routes() -> Router<AppState> {
             "/companies/{id}/contacts/{contact_id}",
             delete(company_contacts_destroy),
         )
+        .route("/companies/{id}/enrichment", post(company_enrichment))
         // Audit Logs (admin only)
         .route("/audit_logs", get(audit_logs_index))
         // Custom Roles (admin only for mutations)
@@ -1503,4 +1504,78 @@ async fn custom_roles_destroy(
         .await?;
 
     Ok(Json(json!({ "ok": true })))
+}
+
+// POST /companies/{id}/enrichment
+async fn company_enrichment(
+    Path((account_id, id)): Path<(i64, i64)>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id).await?;
+    let row: CompanyRow = sqlx::query_as(
+        "SELECT id, name, domain, description, account_id, created_at, updated_at,
+                contacts_count, additional_attributes, custom_attributes, last_activity_at
+         FROM companies WHERE account_id = $1 AND id = $2",
+    )
+    .bind(account_id)
+    .bind(id)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+
+    let domain = row
+        .domain
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::bad("Company domain is required for enrichment"))?
+        .to_string();
+
+    let mut attrs = row
+        .additional_attributes
+        .clone()
+        .unwrap_or_else(|| json!({}));
+    if let Ok(base) = std::env::var("COMPANY_ENRICHMENT_API_URL")
+        && !base.trim().is_empty()
+        && let Ok(client) = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+        && let Ok(resp) = client
+            .get(format!(
+                "{}/companies/find?domain={}",
+                base.trim_end_matches('/'),
+                domain
+            ))
+            .send()
+            .await
+        && resp.status().is_success()
+        && let Ok(raw) = resp.bytes().await
+        && let Ok(enriched) = serde_json::from_slice::<Value>(&raw)
+        && let Some(obj) = attrs.as_object_mut()
+    {
+        obj.insert("enrichment".into(), enriched);
+    } else if let Some(obj) = attrs.as_object_mut() {
+        obj.insert(
+            "enrichment".into(),
+            json!({
+                "domain": domain,
+                "enriched_at": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+    }
+
+    let updated: CompanyRow = sqlx::query_as(
+        "UPDATE companies SET additional_attributes = $1, updated_at = now()
+         WHERE account_id = $2 AND id = $3
+         RETURNING id, name, domain, description, account_id, created_at, updated_at,
+                   contacts_count, additional_attributes, custom_attributes, last_activity_at",
+    )
+    .bind(&attrs)
+    .bind(account_id)
+    .bind(id)
+    .fetch_one(&st.db)
+    .await?;
+
+    Ok(Json(company_to_json(&updated)))
 }

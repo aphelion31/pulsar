@@ -33,8 +33,10 @@ ADRs: [DECISIONS.md](DECISIONS.md) | Terms: [GLOSSARY.md](GLOSSARY.md)
 - Gate: `cargo test` 48/48 passed, `pnpm typecheck && pnpm build` passed, `tools/wave3-integrations.sh` passed against PostgreSQL 18 + mock integration APIs.
 
 ## Wave 4 — Captain AI, Conversation Monitors, Voice/Calls
-- `open` | Backend `src/captain.rs`, `src/monitors.rs`, `src/voice.rs`, enterprise helpers
-- `open` | UI `captain/*`, `reports.monitors.tsx`, `reports.monitor-detail.tsx`, `calls.tsx`
+- `done` | Backend `src/captain.rs` (preferences, assistants, inboxes, scenarios, documents, responses, FAQ suggestions, bulk actions, message reports, agent sessions, copilot, custom tools, MCP servers, tools manifest, writing tasks)
+- `done` | Backend `src/monitors.rs`, `src/voice.rs` (calls, WhatsApp calling, Twilio Voice TwiML/conference/announcements/routing), and enterprise helpers (`companies/enrichment`, `conversations/campaign_history`, `csat_survey_responses` review notes, `enterprise/api/v1/accounts/{id}/limits`, `"voice"` inbox creation)
+- `done` | UI `captain/*`, `reports.monitors.tsx`, `reports.monitor-detail.tsx`, `calls.tsx`, `inbox.tsx` AI composer actions, `inbox-new.tsx` (`voice` + `whatsapp_call`), Sidebar links
+- Gate: `cargo test --offline --locked` 48/48 passed, `pnpm typecheck && pnpm build` passed, `tools/wave4-captain-monitors-voice.sh` passed against PostgreSQL 18 + mock OpenAI/Twilio/MCP APIs.
 
 ## Wave 5 — Super Admin, Onboarding & Final Release Gate
 - `open` | Backend `src/super_admin.rs`, `src/platform.rs` (`email_channel_migrations`)

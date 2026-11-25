@@ -23,6 +23,10 @@ pub fn routes() -> Router<AppState> {
                 .delete(hook_destroy),
         )
         .route("/csat_survey_responses", get(csat_index))
+        .route(
+            "/csat_survey_responses/{id}",
+            axum::routing::patch(csat_update).put(csat_update),
+        )
         .route("/csat_survey_responses/metrics", get(csat_metrics))
         .route("/csat_survey_responses/download", get(csat_download))
 }
@@ -290,6 +294,42 @@ async fn csat_index(
         .fetch_all(&st.db)
         .await?;
     Ok(Json(json!(rows)))
+}
+
+async fn csat_update(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((a, id)): Path<(i64, i64)>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    require_account(&st.db, &user, a).await?.require_admin()?;
+    let notes = body["csat_review_notes"]
+        .as_str()
+        .or_else(|| body["csat_survey_response"]["csat_review_notes"].as_str())
+        .map(|s| s.to_string());
+
+    let row: Value = sqlx::query_scalar(
+        "UPDATE csat_survey_responses r
+         SET csat_review_notes = $1, review_notes_updated_at = now(), review_notes_updated_by_id = $2, updated_at = now()
+         FROM conversations c
+         WHERE r.id = $3 AND r.account_id = $4 AND c.id = r.conversation_id
+         RETURNING jsonb_build_object(
+             'id', r.id, 'rating', r.rating, 'feedback_message', r.feedback_message,
+             'csat_review_notes', r.csat_review_notes,
+             'review_notes_updated_at', EXTRACT(EPOCH FROM r.review_notes_updated_at)::bigint,
+             'account_id', r.account_id, 'message_id', r.message_id,
+             'conversation_id', c.display_id,
+             'created_at', EXTRACT(EPOCH FROM r.created_at)::bigint
+         )",
+    )
+    .bind(&notes)
+    .bind(user.id)
+    .bind(id)
+    .bind(a)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+    Ok(Json(row))
 }
 
 async fn csat_metrics(

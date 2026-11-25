@@ -29,7 +29,17 @@ export default [
     route("accounts/:accountId/dashboard", "routes/inbox.tsx", { id: "cw-dashboard" }),
     route("accounts/:accountId/inbox-view", "routes/inbox-view.tsx", { id: "cw-inbox-view" }),
     route("accounts/:accountId/inbox-view/:type/:id", "routes/inbox-view.tsx", { id: "cw-inbox-view-item" }),
-    ph("accounts/:accountId/calls", "cw-calls"),
+    route("accounts/:accountId/calls", "routes/calls.tsx", { id: "cw-calls" }),
+
+    // Captain AI
+    route("accounts/:accountId/captain", "routes/captain/assistants.tsx", { id: "cw-captain" }),
+    route("accounts/:accountId/captain/assistants", "routes/captain/assistants.tsx", { id: "cw-captain-assistants" }),
+    route("accounts/:accountId/captain/documents", "routes/captain/documents.tsx", { id: "cw-captain-documents" }),
+    route("accounts/:accountId/captain/responses", "routes/captain/responses.tsx", { id: "cw-captain-responses" }),
+    route("accounts/:accountId/captain/tools", "routes/captain/tools.tsx", { id: "cw-captain-tools" }),
+    route("accounts/:accountId/captain/preferences", "routes/captain/preferences.tsx", { id: "cw-captain-preferences" }),
+    route("accounts/:accountId/captain/:assistantId/tools", "routes/captain/tools.tsx", { id: "cw-captain-assistant-tools" }),
+    route("accounts/:accountId/captain/:assistantId/:tab?", "routes/captain/assistant-detail.tsx", { id: "cw-captain-assistant-detail" }),
 
     // Conversation sub-routes
     route("accounts/:accountId/inbox/:inbox_id", "routes/inbox.tsx", { id: "cw-inbox-item" }),
@@ -105,8 +115,8 @@ export default [
     route("accounts/:accountId/reports/sla", "routes/reports.sla.tsx", { id: "cw-reports-sla" }),
     route("accounts/:accountId/reports/csat", "routes/reports.tsx", { id: "cw-reports-csat" }),
     route("accounts/:accountId/reports/bot", "routes/reports.tsx", { id: "cw-reports-bot" }),
-    ph("accounts/:accountId/reports/monitors", "cw-reports-monitors"),
-    ph("accounts/:accountId/reports/monitors/:monitorId", "cw-reports-monitor-detail"),
+    route("accounts/:accountId/reports/monitors", "routes/reports.monitors.tsx", { id: "cw-reports-monitors" }),
+    route("accounts/:accountId/reports/monitors/:monitorId", "routes/reports.monitor-detail.tsx", { id: "cw-reports-monitor-detail" }),
 
     // Profile
     route("accounts/:accountId/profile", "routes/settings/profile.tsx", { id: "cw-profile" }),

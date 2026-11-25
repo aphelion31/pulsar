@@ -89,10 +89,6 @@ pub fn routes() -> Router<AppState> {
                 .patch(branded_email_layout_update),
         )
         .route("/reporting_events", get(reporting_events_index))
-        .route(
-            "/captain/assistants",
-            get(|| async { Json(json!({ "payload": [], "meta": {} })) }),
-        )
 }
 
 fn s(b: &Value, k: &str) -> Option<String> {

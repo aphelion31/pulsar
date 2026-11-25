@@ -474,7 +474,7 @@ pub(crate) async fn inbox_json(
         "Channel::TwilioSms" => {
             // _inbox.json.jbuilder: medium/phone/content_templates for everyone, credentials for admins only
             let c = sqlx::query(
-                "SELECT medium, phone_number, messaging_service_sid, content_templates, account_sid, auth_token, api_key_sid
+                "SELECT medium, phone_number, messaging_service_sid, content_templates, account_sid, auth_token, api_key_sid, voice_enabled, twiml_app_sid, provider_config
                  FROM channel_twilio_sms WHERE id::bigint = $1 AND account_id::bigint = $2",
             )
             .bind(channel_id)
@@ -501,6 +501,14 @@ pub(crate) async fn inbox_json(
                     "content_templates".into(),
                     c.try_get::<Option<Value>, _>("content_templates")?.into(),
                 );
+                let voice_enabled = c.try_get::<bool, _>("voice_enabled").unwrap_or(false);
+                obj.insert("voice_enabled".into(), json!(voice_enabled));
+                obj.insert("voice_call_enabled".into(), json!(voice_enabled));
+                obj.insert(
+                    "provider_config".into(),
+                    c.try_get::<Option<Value>, _>("provider_config")?
+                        .unwrap_or_else(|| json!({})),
+                );
                 if admin {
                     obj.insert(
                         "account_sid".into(),
@@ -515,6 +523,10 @@ pub(crate) async fn inbox_json(
                     obj.insert(
                         "api_key_sid".into(),
                         c.try_get::<Option<String>, _>("api_key_sid")?.into(),
+                    );
+                    obj.insert(
+                        "twiml_app_sid".into(),
+                        c.try_get::<Option<String>, _>("twiml_app_sid")?.into(),
                     );
                 }
             }
@@ -967,7 +979,7 @@ async fn inbox_create(
                 .await?
         }
         Some("line") => crate::channels::line::create_channel(&mut tx, account_id, ch).await?,
-        Some("twilio") | Some("twilio_sms") => {
+        Some("twilio") | Some("twilio_sms") | Some("voice") => {
             crate::channels::twilio::create_channel(&mut tx, account_id, ch).await?
         }
         Some("sms") => crate::channels::sms::create_channel(&mut tx, account_id, ch).await?,

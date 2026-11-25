@@ -6,6 +6,7 @@ mod automation;
 mod bots;
 mod cable;
 mod capacity_policies;
+mod captain;
 mod channels;
 mod common;
 mod companies;
@@ -22,6 +23,7 @@ mod integrations;
 mod listeners;
 mod mailer;
 mod mfa;
+mod monitors;
 mod platform;
 mod public_api;
 mod registration;
@@ -34,6 +36,7 @@ mod shopify;
 mod sla;
 mod slack;
 mod storage;
+mod voice;
 mod web;
 mod widget;
 
@@ -73,7 +76,63 @@ fn account_routes() -> Router<AppState> {
         .merge(integrations::linear::account_routes())
         .merge(integrations::notion::account_routes())
         .merge(integrations::stripe::account_routes())
+        .merge(captain::account_routes())
+        .merge(monitors::account_routes())
+        .merge(voice::account_routes())
         .fallback(web::not_implemented)
+}
+
+async fn enterprise_account_limits(
+    axum::extract::State(st): axum::extract::State<AppState>,
+    user: common::CurrentUser,
+    axum::extract::Path(account_id): axum::extract::Path<i64>,
+) -> common::ApiResult {
+    common::require_account(&st.db, &user, account_id).await?;
+    let convs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM conversations WHERE account_id = $1 AND created_at >= date_trunc('month', now())",
+    )
+    .bind(account_id)
+    .fetch_one(&st.db)
+    .await
+    .unwrap_or(0);
+    let agents: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM account_users WHERE account_id = $1")
+            .bind(account_id)
+            .fetch_one(&st.db)
+            .await
+            .unwrap_or(0);
+    let non_web: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM inboxes WHERE account_id = $1 AND channel_type <> 'Channel::WebWidget'",
+    )
+    .bind(account_id)
+    .fetch_one(&st.db)
+    .await
+    .unwrap_or(0);
+    let stored_limits: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT limits FROM accounts WHERE id = $1::bigint")
+            .bind(account_id)
+            .fetch_optional(&st.db)
+            .await
+            .ok()
+            .flatten();
+
+    let agents_allowed = stored_limits
+        .as_ref()
+        .and_then(|v| v["agents"].as_i64())
+        .unwrap_or(100_000);
+    let inboxes_allowed = stored_limits
+        .as_ref()
+        .and_then(|v| v["inboxes"].as_i64())
+        .unwrap_or(100_000);
+
+    Ok(axum::Json(serde_json::json!({
+        "id": account_id,
+        "limits": {
+            "conversation": { "allowed": 100_000, "consumed": convs },
+            "non_web_inboxes": { "allowed": inboxes_allowed, "consumed": non_web },
+            "agents": { "allowed": agents_allowed, "consumed": agents },
+        }
+    })))
 }
 
 pub fn app(state: AppState) -> Router {
@@ -215,6 +274,12 @@ pub fn app(state: AppState) -> Router {
             "/api/v2/accounts/{account_id}",
             reports::routes().fallback(web::not_implemented),
         )
+        .route(
+            "/enterprise/api/v1/accounts/{account_id}/limits",
+            get(enterprise_account_limits),
+        )
+        .merge(captain::public_routes())
+        .merge(voice::public_routes())
         .merge(widget::routes())
         .merge(dyte::widget_routes())
         .merge(shopify::public_routes())
