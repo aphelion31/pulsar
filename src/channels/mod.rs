@@ -2,3 +2,4 @@
 pub mod line;
 pub mod telegram;
 pub mod twilio;
+pub mod whatsapp;
