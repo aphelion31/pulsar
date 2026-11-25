@@ -173,7 +173,7 @@ createdb pulsar
 for f in migrations/*.sql; do psql -d pulsar -v ON_ERROR_STOP=1 -f "$f"; done
 
 # 2. Build the frontend once (served by the binary at /app)
-(cd web && pnpm install --frozen-lockfile && pnpm build)
+(cd web && bun install --frozen-lockfile && bun run build)
 
 # 3. First admin user, account and API inbox (or use /app/installation/onboarding in the browser)
 cargo run --release -- seed admin@example.com 'change-me-now' Acme
@@ -202,7 +202,7 @@ first, test on a copy, and stop Chatwoot's Sidekiq before switching so two syste
 
 ### Frontend development
 
-Run the binary, then `cd web && PULSAR_URL=http://127.0.0.1:3000 pnpm dev`. Vite proxies `/api`, `/auth`, `/rails`
+Run the binary, then `cd web && PULSAR_URL=http://127.0.0.1:3000 bun run dev`. Vite proxies `/api`, `/auth`, `/rails`
 and the `/cable` websocket to the binary.
 
 ## Scope
@@ -225,7 +225,7 @@ before running more than one instance.
 cargo test --offline --locked                         # Rust unit & router tests
 BASE=http://127.0.0.1:3000 tools/smoke.sh             # API smoke test against a running server
 BASE=http://127.0.0.1:3000 tools/chatwoot-issues.sh   # regression checks
-(cd web && pnpm typecheck && pnpm build)              # frontend types + production bundle
+(cd web && bun run typecheck && bun run build)              # frontend types + production bundle
 ```
 
 ## Security
