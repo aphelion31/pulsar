@@ -518,6 +518,12 @@ export default function Sidebar({ me, accountId }: SidebarProps) {
             icon: "i-lucide-shield",
             to: `${acctPrefix}/settings/security`,
           },
+          {
+            name: "Settings Billing",
+            label: "Billing",
+            icon: "i-lucide-credit-card",
+            to: `${acctPrefix}/settings/billing`,
+          },
         ],
       },
     ];

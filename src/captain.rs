@@ -218,7 +218,9 @@ pub fn account_routes() -> Router<AppState> {
 }
 
 pub fn public_routes() -> Router<AppState> {
-    Router::new().route("/captain/mcp/callback", get(mcp_oauth_callback))
+    Router::new()
+        .route("/captain/mcp/callback", get(mcp_oauth_callback))
+        .route("/enterprise/webhooks/firecrawl", post(firecrawl_webhook))
 }
 
 // ============================================================================
@@ -3943,4 +3945,80 @@ async fn task_follow_up(
         Some(follow_up_context),
     )
     .await
+}
+
+fn verify_firecrawl_token(assistant_id: i64, account_id: i64, token: &str) -> bool {
+    if let Ok(env_secret) = std::env::var("FIRECRAWL_WEBHOOK_SECRET")
+        && !env_secret.is_empty()
+        && token == env_secret
+    {
+        return true;
+    }
+    let secret =
+        std::env::var("SECRET_KEY_BASE").unwrap_or_else(|_| "pulsar-dev-secret-change-me".into());
+    let expected = hex::encode(Sha256::digest(
+        format!("{secret}:firecrawl:{assistant_id}:{account_id}").as_bytes(),
+    ));
+    token == expected
+}
+
+async fn firecrawl_webhook(
+    State(st): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<StatusCode, ApiError> {
+    let assistant_id = i64_param(&body, "assistant_id")
+        .ok_or_else(|| ApiError::bad("assistant_id is required"))?;
+    let token = sopt(&body, "token").unwrap_or_default();
+
+    let account_id: Option<i64> =
+        sqlx::query_scalar("SELECT account_id FROM captain_assistants WHERE id = $1")
+            .bind(assistant_id)
+            .fetch_optional(&st.db)
+            .await?;
+    let Some(account_id) = account_id else {
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "Invalid access_token".into(),
+        ));
+    };
+    if !verify_firecrawl_token(assistant_id, account_id, &token) {
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "Invalid access_token".into(),
+        ));
+    }
+
+    if body["type"].as_str() == Some("crawl.page")
+        && let Some(page) = body["data"].as_array().and_then(|a| a.first())
+    {
+        let link = page["metadata"]["sourceURL"]
+            .as_str()
+            .or_else(|| page["url"].as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !link.is_empty() {
+            let title = page["metadata"]["title"].as_str().unwrap_or(&link);
+            let content = page["markdown"]
+                .as_str()
+                .or_else(|| page["content"].as_str())
+                .unwrap_or("");
+            sqlx::query(
+                "INSERT INTO captain_documents
+                    (name, external_link, content, assistant_id, account_id, status, sync_status, last_synced_at, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, 1, 1, now(), now(), now())
+                 ON CONFLICT (assistant_id, md5(external_link)) DO UPDATE
+                    SET name = EXCLUDED.name, content = EXCLUDED.content, status = 1, sync_status = 1,
+                        last_synced_at = now(), updated_at = now()",
+            )
+            .bind(title)
+            .bind(&link)
+            .bind(content)
+            .bind(assistant_id)
+            .bind(account_id)
+            .execute(&st.db)
+            .await?;
+        }
+    }
+    Ok(StatusCode::OK)
 }

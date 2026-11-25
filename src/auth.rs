@@ -445,7 +445,7 @@ pub async fn user_json(db: &PgPool, user_id: i64) -> Result<Value, ApiError> {
     Ok(v)
 }
 
-fn auth_headers(uid: &str, client: &str, token: &str, expiry: i64) -> HeaderMap {
+pub(crate) fn auth_headers(uid: &str, client: &str, token: &str, expiry: i64) -> HeaderMap {
     let mut h = HeaderMap::new();
     let mut set = |k: &'static str, v: &str| {
         h.insert(k, HeaderValue::from_str(v).unwrap());
@@ -716,7 +716,7 @@ async fn sign_in_mfa(db: &PgPool, mfa_token: &str, body: &Value) -> ApiResult<Re
         .into_response())
 }
 
-async fn issue_token(
+pub(crate) async fn issue_token(
     db: &PgPool,
     user_id: i64,
     tokens: Option<Value>,

@@ -4,9 +4,9 @@ use axum::http::StatusCode;
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
-    response::IntoResponse,
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use hmac::{Hmac, Mac};
@@ -28,7 +28,9 @@ pub fn routes() -> Router<AppState> {
 }
 
 pub fn public_routes() -> Router<AppState> {
-    Router::new().route("/api/v1/integrations/webhooks", post(slack_webhook))
+    Router::new()
+        .route("/api/v1/integrations/webhooks", post(slack_webhook))
+        .route("/slack_uploads", get(slack_uploads_show))
 }
 
 async fn config(db: &PgPool, name: &str, default: &str) -> Result<String, ApiError> {
@@ -443,4 +445,36 @@ async fn slack_webhook(
         }
     }
     Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(serde::Deserialize, Default)]
+struct SlackUploadQuery {
+    blob_key: Option<String>,
+    sender_type: Option<String>,
+}
+
+async fn slack_uploads_show(
+    State(st): State<AppState>,
+    Query(q): Query<SlackUploadQuery>,
+) -> Response {
+    if let Some(key) = q
+        .blob_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        && let Ok(Some((id, filename))) = sqlx::query_as::<_, (i64, String)>(
+            "SELECT id::bigint, filename FROM active_storage_blobs WHERE key = $1 LIMIT 1",
+        )
+        .bind(key)
+        .fetch_optional(&st.db)
+        .await
+    {
+        return Redirect::temporary(&crate::storage::blob_url(id, &filename)).into_response();
+    }
+    let sender = q
+        .sender_type
+        .as_deref()
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or("agent");
+    Redirect::temporary(&format!("/integrations/slack/{sender}.png")).into_response()
 }

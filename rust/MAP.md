@@ -38,7 +38,8 @@ ADRs: [DECISIONS.md](DECISIONS.md) | Terms: [GLOSSARY.md](GLOSSARY.md)
 - `done` | UI `captain/*`, `reports.monitors.tsx`, `reports.monitor-detail.tsx`, `calls.tsx`, `inbox.tsx` AI composer actions, `inbox-new.tsx` (`voice` + `whatsapp_call`), Sidebar links
 - Gate: `cargo test --offline --locked` 48/48 passed, `pnpm typecheck && pnpm build` passed, `tools/wave4-captain-monitors-voice.sh` passed against PostgreSQL 18 + mock OpenAI/Twilio/MCP APIs.
 
-## Wave 5 — Super Admin, Onboarding & Final Release Gate
-- `open` | Backend `src/super_admin.rs`, `src/platform.rs` (`email_channel_migrations`)
-- `open` | UI `installation.onboarding.tsx`, `super-admin/*`, delete `placeholder.tsx` (zero `ph()` routes)
-- `open` | `rust-anything` pure-Ruby unit verification + full HTTP/Playwright acceptance + `cutover.sh`
+## Wave 5 — Super Admin, Onboarding, Final Gaps & Release Gate
+- `done` | Backend `src/super_admin.rs` (`installation/onboarding`, `/super_admin/sign_in`, `/super_admin/logout`, `/super_admin/api/*` incl. `user_diagnostics`), `src/platform.rs` (`email_channel_migrations`)
+- `done` | Final gap closures: `src/data_exports.rs` + `migrations/0006_data_exports.sql` (`/data_exports` CSV generation & ActiveStorage blobs), enterprise billing & webhooks (`src/main.rs` `/enterprise/api/v1/accounts/{id}/*`, `src/integrations/stripe.rs` `/enterprise/webhooks/stripe`, `src/captain.rs` `/enterprise/webhooks/firecrawl`), `src/slack.rs` (`/slack_uploads` redirect), `src/voice.rs` (`whatsapp_call_hours`, `set_whatsapp_callback_permission`)
+- `done` | UI `installation.onboarding.tsx`, `super-admin/*`, `settings/billing.tsx`, `DataExportsPanel` in `r3/data-imports.tsx`, removed `const ph` & deleted `placeholder.tsx` (0 `ph(` routes)
+- `done` | Updated `03.CHATWOOT-COMPAT.md`, `MAP.md`, `HANDOFF.md` & ran full Waves 1–5 + Playwright/build verification gate.

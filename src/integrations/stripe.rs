@@ -35,6 +35,10 @@ pub fn public_routes() -> Router<AppState> {
     Router::new()
         .route("/stripe/callback", get(callback))
         .route("/webhooks/stripe_app", post(stripe_app_webhook))
+        .route(
+            "/enterprise/webhooks/stripe",
+            post(enterprise_stripe_webhook),
+        )
 }
 
 fn api_base() -> String {
@@ -365,6 +369,42 @@ async fn stripe_app_webhook(
             "DELETE FROM integrations_hooks WHERE app_id = 'stripe' AND reference_id = $1",
         )
         .bind(acct)
+        .execute(&st.db)
+        .await;
+    }
+    StatusCode::OK
+}
+
+async fn enterprise_stripe_webhook(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> StatusCode {
+    let secret = std::env::var("STRIPE_WEBHOOK_SECRET").unwrap_or_default();
+    if !secret.is_empty() {
+        let sig = headers
+            .get("stripe-signature")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !verify_stripe_sig(&secret, sig, &body) {
+            return StatusCode::BAD_REQUEST;
+        }
+    }
+    let Ok(ev) = serde_json::from_slice::<Value>(&body) else {
+        return StatusCode::BAD_REQUEST;
+    };
+    if let Some(acct_id) = ev["data"]["object"]["metadata"]["account_id"]
+        .as_str()
+        .and_then(|s| s.parse::<i64>().ok())
+        .or_else(|| ev["data"]["object"]["metadata"]["account_id"].as_i64())
+    {
+        let ev_type = ev["type"].as_str().unwrap_or("");
+        let _ = sqlx::query(
+            "UPDATE accounts SET custom_attributes = COALESCE(custom_attributes, '{}'::jsonb) || $1, updated_at = now()
+             WHERE id = $2::bigint",
+        )
+        .bind(json!({ "stripe_last_event": ev_type }))
+        .bind(acct_id)
         .execute(&st.db)
         .await;
     }

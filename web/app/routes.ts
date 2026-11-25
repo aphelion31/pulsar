@@ -1,10 +1,18 @@
 import { type RouteConfig, index, layout, route } from "@react-router/dev/routes";
 
-const ph = (path: string, id: string) => route(path, "routes/placeholder.tsx", { id });
-
 export default [
   route("login", "routes/login.tsx"),
   route("login/sso", "routes/login.sso.tsx"),
+  route("installation/onboarding", "routes/installation.onboarding.tsx"),
+  route("super_admin/sign_in", "routes/super-admin/sign-in.tsx"),
+  layout("routes/super-admin/layout.tsx", [
+    route("super_admin", "routes/super-admin/dashboard.tsx"),
+    route("super_admin/accounts", "routes/super-admin/accounts.tsx"),
+    route("super_admin/users", "routes/super-admin/users.tsx"),
+    route("super_admin/configs", "routes/super-admin/configs.tsx"),
+    route("super_admin/resources", "routes/super-admin/resources.tsx"),
+    route("super_admin/instance_status", "routes/super-admin/instance-status.tsx"),
+  ]),
   route("auth/signup", "routes/auth.signup.tsx"),
   route("auth/confirmation", "routes/auth.confirmation.tsx"),
   route("auth/verify-email", "routes/auth.verify-email.tsx"),
@@ -38,7 +46,12 @@ export default [
     route("accounts/:accountId/captain/responses", "routes/captain/responses.tsx", { id: "cw-captain-responses" }),
     route("accounts/:accountId/captain/tools", "routes/captain/tools.tsx", { id: "cw-captain-tools" }),
     route("accounts/:accountId/captain/preferences", "routes/captain/preferences.tsx", { id: "cw-captain-preferences" }),
-    route("accounts/:accountId/captain/:assistantId/tools", "routes/captain/tools.tsx", { id: "cw-captain-assistant-tools" }),
+    route("accounts/:accountId/captain/toolsets/install", "routes/captain/tools.tsx", { id: "cw-captain-toolsets-install" }),
+    route("captain/toolsets/install", "routes/captain/tools.tsx", { id: "cw-captain-toolsets-install-root" }),
+    route("accounts/:accountId/captain/:assistantId/tools/:subTab?", "routes/captain/tools.tsx", { id: "cw-captain-assistant-tools" }),
+    route("accounts/:accountId/captain/:assistantId/faqs/:subTab?", "routes/captain/responses.tsx", { id: "cw-captain-assistant-faqs" }),
+    route("accounts/:accountId/captain/:assistantId/documents", "routes/captain/documents.tsx", { id: "cw-captain-assistant-docs" }),
+    route("accounts/:accountId/captain/:assistantId/settings/:subTab?", "routes/captain/assistant-detail.tsx", { id: "cw-captain-assistant-settings" }),
     route("accounts/:accountId/captain/:assistantId/:tab?", "routes/captain/assistant-detail.tsx", { id: "cw-captain-assistant-detail" }),
 
     // Conversation sub-routes
@@ -178,6 +191,8 @@ export default [
     route("accounts/:accountId/settings/custom-roles", "routes/settings/custom-roles.tsx", { id: "cw-settings-custom-roles" }),
     route("accounts/:accountId/settings/custom-roles/list", "routes/settings/custom-roles.tsx", { id: "cw-settings-custom-roles-list" }),
     route("accounts/:accountId/settings/security", "routes/settings/r1/security-page.tsx", { id: "cw-settings-security" }),
+    route("accounts/:accountId/settings/billing", "routes/settings/billing.tsx", { id: "cw-settings-billing" }),
+    route("accounts/:accountId/settings/captain", "routes/captain/preferences.tsx", { id: "cw-settings-captain" }),
     route("accounts/:accountId/settings/conversation-workflow", "routes/settings/r1/conversation-workflow.tsx", { id: "cw-settings-conversation-workflow" }),
 
     // Onboarding & Suspended

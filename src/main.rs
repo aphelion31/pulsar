@@ -12,6 +12,7 @@ mod common;
 mod companies;
 mod contacts;
 mod conversations;
+mod data_exports;
 mod data_imports;
 mod dyte;
 mod email_inbound;
@@ -36,6 +37,7 @@ mod shopify;
 mod sla;
 mod slack;
 mod storage;
+mod super_admin;
 mod voice;
 mod web;
 mod widget;
@@ -65,6 +67,7 @@ fn account_routes() -> Router<AppState> {
         .merge(automation::routes())
         .merge(bots::routes())
         .merge(account_more::routes())
+        .merge(data_exports::routes())
         .merge(data_imports::routes())
         .merge(channels::twilio::account_routes())
         .merge(channels::whatsapp::account_routes())
@@ -133,6 +136,159 @@ async fn enterprise_account_limits(
             "agents": { "allowed": agents_allowed, "consumed": agents },
         }
     })))
+}
+
+async fn enterprise_billing_summary(
+    axum::extract::State(st): axum::extract::State<AppState>,
+    user: common::CurrentUser,
+    axum::extract::Path(account_id): axum::extract::Path<i64>,
+) -> common::ApiResult {
+    common::require_account(&st.db, &user, account_id).await?;
+    let attrs: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT custom_attributes FROM accounts WHERE id = $1::bigint")
+            .bind(account_id)
+            .fetch_optional(&st.db)
+            .await?
+            .flatten();
+    let attrs = attrs.unwrap_or_else(|| serde_json::json!({}));
+    Ok(axum::Json(serde_json::json!({
+        "id": account_id,
+        "plan": attrs.get("plan_name").and_then(|v| v.as_str()).unwrap_or("Enterprise"),
+        "billing_currency": attrs.get("billing_currency").and_then(|v| v.as_str()).unwrap_or("usd"),
+        "stripe_customer_id": attrs.get("stripe_customer_id"),
+        "marked_for_deletion_at": attrs.get("marked_for_deletion_at"),
+    })))
+}
+
+async fn enterprise_select_billing_currency(
+    axum::extract::State(st): axum::extract::State<AppState>,
+    user: common::CurrentUser,
+    axum::extract::Path(account_id): axum::extract::Path<i64>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Result<axum::http::StatusCode, common::ApiError> {
+    common::require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let cur = body["currency"]
+        .as_str()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| matches!(s.as_str(), "usd" | "eur" | "gbp" | "inr"))
+        .ok_or_else(|| common::ApiError::bad("Invalid billing currency"))?;
+    sqlx::query(
+        "UPDATE accounts SET custom_attributes = COALESCE(custom_attributes, '{}'::jsonb) || $1, updated_at = now() WHERE id = $2::bigint",
+    )
+    .bind(serde_json::json!({ "billing_currency": cur }))
+    .bind(account_id)
+    .execute(&st.db)
+    .await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+async fn enterprise_toggle_deletion(
+    axum::extract::State(st): axum::extract::State<AppState>,
+    user: common::CurrentUser,
+    axum::extract::Path(account_id): axum::extract::Path<i64>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> common::ApiResult {
+    common::require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let action = body["action_type"].as_str().unwrap_or("");
+    let patch = match action {
+        "delete" => {
+            serde_json::json!({ "marked_for_deletion_at": chrono::Utc::now().to_rfc3339() })
+        }
+        "undelete" => serde_json::json!({ "marked_for_deletion_at": null }),
+        _ => {
+            return Err(common::ApiError::bad(
+                "Invalid action_type. Must be either \"delete\" or \"undelete\"",
+            ));
+        }
+    };
+    sqlx::query(
+        "UPDATE accounts SET custom_attributes = COALESCE(custom_attributes, '{}'::jsonb) || $1, updated_at = now() WHERE id = $2::bigint",
+    )
+    .bind(&patch)
+    .bind(account_id)
+    .execute(&st.db)
+    .await?;
+    Ok(axum::Json(
+        serde_json::json!({ "id": account_id, "action_type": action }),
+    ))
+}
+
+async fn enterprise_topup_options(
+    axum::extract::State(st): axum::extract::State<AppState>,
+    user: common::CurrentUser,
+    axum::extract::Path(account_id): axum::extract::Path<i64>,
+) -> common::ApiResult {
+    common::require_account(&st.db, &user, account_id).await?;
+    let attrs: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT custom_attributes FROM accounts WHERE id = $1::bigint")
+            .bind(account_id)
+            .fetch_optional(&st.db)
+            .await?
+            .flatten();
+    let currency = attrs
+        .as_ref()
+        .and_then(|v| v["billing_currency"].as_str())
+        .unwrap_or("usd");
+    Ok(axum::Json(serde_json::json!({
+        "id": account_id,
+        "currency": currency,
+        "options": [
+            { "credits": 500, "amount_cents": 2000 },
+            { "credits": 2500, "amount_cents": 8000 },
+            { "credits": 10000, "amount_cents": 25000 }
+        ]
+    })))
+}
+
+async fn enterprise_legal_compliance(
+    axum::extract::State(st): axum::extract::State<AppState>,
+    user: common::CurrentUser,
+    axum::extract::Path(account_id): axum::extract::Path<i64>,
+) -> common::ApiResult {
+    common::require_account(&st.db, &user, account_id).await?;
+    let val: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT serialized_value FROM installation_configs WHERE name = 'CHATWOOT_DPA_SIGNING_URL' ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_optional(&st.db)
+    .await
+    .ok()
+    .flatten();
+    let dpa_url = val.and_then(|v| {
+        v.get("value")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.as_str())
+            .filter(|s| !s.is_empty() && *s != "null")
+            .map(str::to_string)
+    });
+    Ok(axum::Json(
+        serde_json::json!({ "dpa_signing_url": dpa_url }),
+    ))
+}
+
+async fn enterprise_checkout_stub(
+    axum::extract::State(st): axum::extract::State<AppState>,
+    user: common::CurrentUser,
+    axum::extract::Path(account_id): axum::extract::Path<i64>,
+) -> common::ApiResult {
+    common::require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    Ok(axum::Json(serde_json::json!({ "redirect_url": null })))
+}
+
+async fn enterprise_subscription_noop(
+    axum::extract::State(st): axum::extract::State<AppState>,
+    user: common::CurrentUser,
+    axum::extract::Path(account_id): axum::extract::Path<i64>,
+) -> Result<axum::http::StatusCode, common::ApiError> {
+    common::require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 pub fn app(state: AppState) -> Router {
@@ -248,6 +404,10 @@ pub fn app(state: AppState) -> Router {
             get(|| async { "User-agent: *\nDisallow: /app\n" }),
         )
         .route(
+            "/favicon.ico",
+            get(|| async { axum::http::StatusCode::NO_CONTENT }),
+        )
+        .route(
             "/.well-known/assetlinks.json",
             get(|| async { axum::Json(serde_json::json!([])) }),
         )
@@ -278,6 +438,42 @@ pub fn app(state: AppState) -> Router {
             "/enterprise/api/v1/accounts/{account_id}/limits",
             get(enterprise_account_limits),
         )
+        .route(
+            "/enterprise/api/v1/accounts/{account_id}/billing_summary",
+            get(enterprise_billing_summary),
+        )
+        .route(
+            "/enterprise/api/v1/accounts/{account_id}/checkout",
+            post(enterprise_checkout_stub),
+        )
+        .route(
+            "/enterprise/api/v1/accounts/{account_id}/subscription",
+            post(enterprise_subscription_noop),
+        )
+        .route(
+            "/enterprise/api/v1/accounts/{account_id}/select_billing_currency",
+            post(enterprise_select_billing_currency),
+        )
+        .route(
+            "/enterprise/api/v1/accounts/{account_id}/toggle_deletion",
+            post(enterprise_toggle_deletion),
+        )
+        .route(
+            "/enterprise/api/v1/accounts/{account_id}/topup_checkout",
+            post(enterprise_checkout_stub),
+        )
+        .route(
+            "/enterprise/api/v1/accounts/{account_id}/topup_options",
+            get(enterprise_topup_options),
+        )
+        .route(
+            "/enterprise/api/v1/accounts/{account_id}/legal_compliance",
+            get(enterprise_legal_compliance),
+        )
+        .route(
+            "/enterprise/api/v1/accounts/{account_id}/reconnect_shopify",
+            post(enterprise_checkout_stub),
+        )
         .merge(captain::public_routes())
         .merge(voice::public_routes())
         .merge(widget::routes())
@@ -299,6 +495,7 @@ pub fn app(state: AppState) -> Router {
         .merge(public_api::routes())
         .merge(help_center::public_routes())
         .merge(storage::routes())
+        .merge(super_admin::routes())
         .route("/api/{*rest}", any(web::not_implemented))
         .route("/cable", get(cable::ws_handler))
         .route("/", get(|| async { axum::response::Redirect::to("/app/") }))
@@ -378,6 +575,10 @@ async fn main() -> anyhow::Result<()> {
         .execute(&db)
         .await
         .map_err(|e| anyhow::anyhow!("creating pulsar_events: {e}"))?;
+    sqlx::raw_sql(include_str!("../migrations/0006_data_exports.sql"))
+        .execute(&db)
+        .await
+        .map_err(|e| anyhow::anyhow!("creating data_exports: {e}"))?;
 
     let state = AppState {
         db,

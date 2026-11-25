@@ -60,6 +60,16 @@ pub fn account_routes() -> Router<AppState> {
         .route("/inboxes/{id}/set_inbound_calls", post(set_inbound_calls))
         .route("/inboxes/{id}/set_call_recording", post(set_call_recording))
         .route(
+            "/inboxes/{id}/set_whatsapp_callback_permission",
+            post(set_whatsapp_callback_permission),
+        )
+        .route(
+            "/inboxes/{inbox_id}/whatsapp_call_hours",
+            get(whatsapp_call_hours_show)
+                .put(whatsapp_call_hours_update)
+                .patch(whatsapp_call_hours_update),
+        )
+        .route(
             "/inboxes/{inbox_id}/call_announcements/{kind}",
             put(update_call_announcement).patch(update_call_announcement),
         )
@@ -1269,4 +1279,84 @@ async fn twilio_recording_status(
         .await;
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn whatsapp_call_hours_show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, inbox_id)): Path<(i64, i64)>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let cfg: Option<Value> = sqlx::query_scalar(
+        "SELECT w.provider_config
+         FROM inboxes i
+         JOIN channel_whatsapp w ON i.channel_type = 'Channel::Whatsapp' AND i.channel_id = w.id
+         WHERE i.id = $1 AND i.account_id = $2",
+    )
+    .bind(inbox_id)
+    .bind(account_id)
+    .fetch_optional(&st.db)
+    .await?;
+    let cfg = cfg.ok_or_else(|| ApiError::bad("Inbox does not support WhatsApp calling"))?;
+    if !cfg["voice_enabled"].as_bool().unwrap_or(false) {
+        return Err(ApiError::bad("Inbox does not support WhatsApp calling"));
+    }
+    Ok(Json(json!({
+        "matches_whatsapp": true,
+        "call_hours": cfg.get("call_hours").cloned().unwrap_or_else(|| json!({})),
+    })))
+}
+
+async fn whatsapp_call_hours_update(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, inbox_id)): Path<(i64, i64)>,
+    body: Option<Json<Value>>,
+) -> Result<StatusCode, ApiError> {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let hours = body
+        .map(|j| j.0.get("call_hours").cloned().unwrap_or(j.0))
+        .unwrap_or_else(|| json!({ "synced": true }));
+    let n = sqlx::query(
+        "UPDATE channel_whatsapp w
+         SET provider_config = COALESCE(w.provider_config, '{}'::jsonb) || jsonb_build_object('call_hours', $1::jsonb), updated_at = now()
+         FROM inboxes i
+         WHERE i.id = $2 AND i.account_id = $3 AND i.channel_type = 'Channel::Whatsapp' AND i.channel_id = w.id",
+    )
+    .bind(hours)
+    .bind(inbox_id)
+    .bind(account_id)
+    .execute(&st.db)
+    .await?
+    .rows_affected();
+    if n == 0 {
+        return Err(ApiError::bad("Inbox does not support WhatsApp calling"));
+    }
+    Ok(StatusCode::OK)
+}
+
+async fn set_whatsapp_callback_permission(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, inbox_id)): Path<(i64, i64)>,
+    Json(body): Json<Value>,
+) -> Result<StatusCode, ApiError> {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let enabled = body["callback_permission_enabled"]
+        .as_bool()
+        .unwrap_or(true);
+    merge_inbox_voice_config(
+        &st.db,
+        account_id,
+        inbox_id,
+        json!({ "callback_permission_enabled": enabled }),
+    )
+    .await?;
+    Ok(StatusCode::OK)
 }
