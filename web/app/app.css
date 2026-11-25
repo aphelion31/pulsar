@@ -1,0 +1,144 @@
+/* Pulsar dashboard: Chatwoot design tokens (generated) + Inter typography + base styles. */
+@import "tailwindcss";
+@import "./chatwoot-theme.css";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/app/fonts/InterVariable.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/app/fonts/InterVariable-Italic.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "InterDisplay";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/app/fonts/InterDisplay-Regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "InterDisplay";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/app/fonts/InterDisplay-Medium.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "InterDisplay";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/app/fonts/InterDisplay-SemiBold.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "InterDisplay";
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  src: url("/app/fonts/InterDisplay-Bold.woff2") format("woff2");
+}
+
+@theme {
+  --font-sans: "Inter", -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Tahoma, Arial, sans-serif;
+  --font-inter: "Inter", var(--font-sans);
+  --font-inter-display: "InterDisplay", var(--font-sans);
+  --font-weight-420: 420;
+  --font-weight-440: 440;
+  --font-weight-460: 460;
+  --font-weight-520: 520;
+  --font-weight-620: 620;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Pulsar's semantic tokens pointing at Chatwoot's palette (chatwoot-theme.css). */
+  --color-bg: rgb(var(--background-color));
+  --color-surface: rgb(var(--surface-1));
+  --color-raised: rgb(var(--slate-3));
+  --color-line: rgb(var(--border-weak));
+  --color-line-strong: rgb(var(--border-strong));
+  --color-ink: rgb(var(--slate-12));
+  --color-ink-2: rgb(var(--slate-11));
+  --color-ink-3: rgb(var(--slate-10));
+  --color-accent: #2781f6;
+  --color-accent-ink: #ffffff;
+  --color-accent-soft: rgb(var(--blue-3));
+  --color-note: rgb(var(--amber-2));
+  --color-note-line: rgb(var(--amber-6));
+  --color-ok: rgb(var(--teal-11));
+  --color-warn: rgb(var(--amber-11));
+  --color-bad: rgb(var(--ruby-11));
+
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+html,
+body {
+  overflow-x: clip;
+  height: 100%;
+}
+
+body {
+  background: rgb(var(--background-color));
+  color: rgb(var(--slate-12));
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid #2781f6;
+  outline-offset: 2px;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.font-inter-display {
+  font-family: var(--font-inter-display);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@keyframes cw-wiggle {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
+}
+
+.animate-wiggle {
+  animation: cw-wiggle 0.35s ease-in-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+}

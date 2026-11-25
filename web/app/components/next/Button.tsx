@@ -1,0 +1,28 @@
+import * as Lucide from "lucide-react";
+import type { ButtonHTMLAttributes, ComponentType, ReactNode } from "react";
+
+type Variant = "solid" | "outline" | "faded" | "link" | "ghost";
+type Color = "blue" | "ruby" | "amber" | "slate" | "teal";
+type Size = "xs" | "sm" | "md" | "lg";
+type Props = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "color"> & { label?: string | number; variant?: Variant; color?: Color; size?: Size; justify?: "start" | "center" | "end"; icon?: string | ComponentType<{ className?: string }>; iconSlot?: ReactNode; trailingIcon?: boolean; isLoading?: boolean; noAnimation?: boolean } & Partial<Record<Variant | Color | Size | "start" | "center" | "end", boolean>>;
+const colors: Record<Color, Record<Variant, string>> = {
+  blue: { solid: "bg-n-brand text-white hover:enabled:brightness-110 focus-visible:brightness-110 outline-transparent", faded: "bg-n-brand/10 text-n-blue-11 hover:enabled:bg-n-brand/20 focus-visible:bg-n-brand/20 outline-transparent", outline: "text-n-blue-11 outline-n-brand", ghost: "text-n-blue-11 hover:enabled:bg-n-alpha-2 focus-visible:bg-n-alpha-2 outline-transparent", link: "text-n-blue-11 hover:enabled:underline focus-visible:underline outline-transparent" },
+  ruby: { solid: "bg-n-ruby-9 text-white hover:enabled:bg-n-ruby-10 focus-visible:bg-n-ruby-10 outline-transparent", faded: "bg-n-ruby-9/10 text-n-ruby-11 hover:enabled:bg-n-ruby-9/20 focus-visible:bg-n-ruby-9/20 outline-transparent", outline: "text-n-ruby-11 hover:enabled:bg-n-ruby-9/10 focus-visible:bg-n-ruby-9/10 outline-n-ruby-8", ghost: "text-n-ruby-11 hover:enabled:bg-n-alpha-2 focus-visible:bg-n-alpha-2 outline-transparent", link: "text-n-ruby-9 dark:text-n-ruby-11 hover:enabled:underline focus-visible:underline outline-transparent" },
+  amber: { solid: "bg-n-amber-9 text-n-amber-12 dark:text-n-amber-3 hover:enabled:bg-n-amber-10 focus-visible:bg-n-amber-10 outline-transparent", faded: "bg-n-amber-9/10 text-n-slate-12 hover:enabled:bg-n-amber-9/20 focus-visible:bg-n-amber-9/20 outline-transparent", outline: "text-n-amber-11 hover:enabled:bg-n-amber-9/10 focus-visible:bg-n-amber-9/10 outline-n-amber-9", ghost: "text-n-amber-9 hover:enabled:bg-n-alpha-2 focus-visible:bg-n-alpha-2 outline-transparent", link: "text-n-amber-9 hover:enabled:underline focus-visible:underline outline-transparent" },
+  slate: { solid: "bg-n-button-color dark:hover:enabled:bg-n-solid-2 dark:focus-visible:bg-n-solid-2 hover:enabled:bg-n-alpha-2 focus-visible:bg-n-alpha-2 text-n-slate-12 outline-n-container", faded: "bg-n-slate-9/10 text-n-slate-12 hover:enabled:bg-n-slate-9/20 focus-visible:bg-n-slate-9/20 outline-transparent", outline: "text-n-slate-11 outline-n-strong hover:enabled:bg-n-slate-9/10 focus-visible:bg-n-slate-9/10", ghost: "text-n-slate-12 hover:enabled:bg-n-alpha-2 focus-visible:bg-n-alpha-2 outline-transparent", link: "text-n-slate-11 hover:enabled:text-n-slate-12 focus-visible:text-n-slate-12 hover:enabled:underline focus-visible:underline outline-transparent" },
+  teal: { solid: "bg-n-teal-9 text-white hover:enabled:bg-n-teal-10 focus-visible:bg-n-teal-10 outline-transparent", faded: "bg-n-teal-9/10 text-n-teal-11 hover:enabled:bg-n-teal-9/20 focus-visible:bg-n-teal-9/20 outline-transparent", outline: "text-n-teal-11 hover:enabled:bg-n-teal-9/10 focus-visible:bg-n-teal-9/10 outline-n-teal-9", ghost: "text-n-teal-9 hover:enabled:bg-n-alpha-2 focus-visible:bg-n-alpha-2 outline-transparent", link: "text-n-teal-9 hover:enabled:underline focus-visible:underline outline-transparent" },
+};
+export default function Button({ label = "", variant, color, size, justify, icon, iconSlot, trailingIcon, isLoading, noAnimation, children, className = "", solid, outline, faded, link, ghost, blue, ruby, amber, slate, teal, xs, sm, md, lg, start, center, end, ...attrs }: Props) {
+  const v = variant || (solid ? "solid" : outline ? "outline" : faded ? "faded" : link ? "link" : ghost ? "ghost" : "solid");
+  const c = color || (blue ? "blue" : ruby ? "ruby" : amber ? "amber" : slate ? "slate" : teal ? "teal" : "blue");
+  const s = size || (xs ? "xs" : sm ? "sm" : md ? "md" : lg ? "lg" : "md");
+  const j = justify || (start ? "start" : center ? "center" : end ? "end" : "center");
+  const iconOnly = !label && !children;
+  const sizes = iconOnly ? { xs: "h-6 w-6 p-0", sm: "h-8 w-8 p-0", md: "h-10 w-10 p-0", lg: "h-12 w-12 p-0" } : { xs: "h-6 px-2", sm: "h-8 px-3", md: "h-10 px-4", lg: "h-12 px-5" };
+  const Icon = typeof icon === "string" ? (Lucide as unknown as Record<string, ComponentType<{className?: string}>>)[icon.replace(/^i-lucide-/, "").replace(/(^|-)(\w)/g, (_, _p, x: string) => x.toUpperCase())] : icon;
+  return <button {...attrs} className={["inline-flex items-center min-w-0 gap-2 transition-all duration-100 ease-out border-0 rounded-lg outline-1 outline disabled:opacity-50", colors[c][v], v === "link" ? "p-0 font-medium underline-offset-2" : sizes[s], { xs: "text-xs", sm: "text-sm", md: "text-sm font-medium", lg: "text-base" }[s], !noAnimation && (s === "xs" || s === "sm" ? "active:enabled:scale-[0.97]" : "active:enabled:scale-[0.98]"), { start: "justify-start", center: "justify-center", end: "justify-end" }[j], trailingIcon && !iconOnly && "flex-row-reverse", className].filter(Boolean).join(" ")}>
+    {!isLoading && (iconSlot || (Icon && <Icon className="flex-shrink-0" />))}
+    {isLoading && <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="round" strokeLinejoin="round" className="animate-spin !w-5 !h-5 flex-shrink-0"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>}
+    {children || (label ? <span className="min-w-0 truncate">{label}</span> : null)}
+  </button>;
+}

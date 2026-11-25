@@ -1,0 +1,402 @@
+[
+  {
+    "name": "inbound_emails",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "channel_email",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "channel_facebook",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "conversation_unread_counts",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "ip_lookup",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "disable_branding",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "email_continuity_on_api_channel",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "help_center",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "agent_bots",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "macros",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "agent_management",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "team_management",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "inbox_management",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "labels",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "custom_attributes",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "automations",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "canned_responses",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "integrations",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "voice_recorder",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "report_rollup",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "channel_website",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "campaigns",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "reports",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "crm",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "auto_resolve_conversations",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "custom_reply_email",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "custom_reply_domain",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "audit_logs",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "custom_tools",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "message_reply_to",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "branded_email_templates",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "inbox_view",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "sla",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "help_center_embedding_search",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "linear_integration",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "captain_integration",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "custom_roles",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "chatwoot_v4",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "captain_v1_action_classifier",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "contact_chatwoot_support_team",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "shopify_integration",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "search_with_gin",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "channel_instagram",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "crm_integration",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "channel_voice",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "notion_integration",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "captain_integration_v2",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "whatsapp_embedded_signup",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "whatsapp_campaign",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "crm_v2",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "assignment_v2",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "captain_document_auto_sync",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "advanced_search",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "saml",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "advanced_search_indexing",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "reply_mailer_migration",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "unread_count_for_filters",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "companies",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "channel_tiktok",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "csat_review_notes",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "captain_tasks",
+    "enabled": true,
+    "column": "feature_flags"
+  },
+  {
+    "name": "conversation_required_attributes",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "advanced_assignment",
+    "enabled": false,
+    "column": "feature_flags"
+  },
+  {
+    "name": "whatsapp_manual_transfer",
+    "enabled": false,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "data_import",
+    "enabled": true,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "api_and_webhooks",
+    "enabled": true,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "whatsapp_reconfigure",
+    "enabled": false,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "whatsapp_embedded_signup_inbox_creation",
+    "enabled": false,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "delayed_automations",
+    "enabled": false,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "audit_log_ip_address",
+    "enabled": false,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "captain_classifier",
+    "enabled": false,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "conversation_monitors",
+    "enabled": false,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "campaign_analytics",
+    "enabled": false,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "company_enrichment",
+    "enabled": false,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "stripe_integration",
+    "enabled": false,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "mobile_voice_push",
+    "enabled": true,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "auto_translate",
+    "enabled": false,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "copilot_workflows",
+    "enabled": false,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "shopify_custom_apps",
+    "enabled": false,
+    "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "captain_mcp_servers",
+    "enabled": false,
+    "column": "feature_flags_ext_1"
+  }
+]
