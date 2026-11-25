@@ -1,0 +1,5 @@
+<svg width="120" height="32" viewBox="0 0 120 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="32" height="32" rx="8" fill="#2781F6"/>
+  <path d="M10.2 6.5H17.5A6.25 6.25 0 0 1 17.5 19H16.3A0.8 0.8 0 0 1 15.5 18.2V15.8A0.8 0.8 0 0 1 16.3 15H17.5A2.25 2.25 0 0 0 17.5 10.5H13.8A0.8 0.8 0 0 0 13 11.3V24.3A1.2 1.2 0 0 1 11.8 25.5H10.2A1.2 1.2 0 0 1 9 24.3V7.7A1.2 1.2 0 0 1 10.2 6.5Z" fill="#FFFFFF"/>
+  <text x="42" y="23.5" fill="#F8FAFC" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="600" letter-spacing="-0.6">pulsar</text>
+</svg>

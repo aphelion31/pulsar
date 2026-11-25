@@ -7,7 +7,7 @@ export function Button({ variant = "primary", className = "", ...p }: ButtonHTML
     variant === "primary"
       ? "bg-accent text-accent-ink hover:bg-[#1a5fb4]"
       : variant === "danger"
-        ? "text-bad hover:bg-[#fdecea]"
+        ? "text-bad hover:bg-n-ruby-3"
         : "text-ink-2 hover:bg-raised hover:text-ink";
   return (
     <button

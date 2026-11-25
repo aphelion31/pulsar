@@ -13,11 +13,15 @@ import { acct, api, type Inbox, type Label, type Profile, type Team } from "~/li
 import SidebarAccountSwitcher, { Logo } from "./SidebarAccountSwitcher";
 import SidebarGroup from "./SidebarGroup";
 import SidebarProfileMenu from "./SidebarProfileMenu";
+import { openCommandBar } from "~/components/next/CommandBar";
 
 export type SidebarProps = {
   me: Profile;
   accountId: number;
   online?: boolean;
+  mobileOpen?: boolean;
+  onCloseMobile?: () => void;
+  onOpenShortcuts?: () => void;
 };
 
 const DEFAULT_WIDTH = 240;
@@ -35,7 +39,13 @@ function channelIcon(type?: string) {
   return <MessageSquare className="size-4 shrink-0" />;
 }
 
-export default function Sidebar({ me, accountId }: SidebarProps) {
+export default function Sidebar({
+  me,
+  accountId,
+  mobileOpen = false,
+  onCloseMobile,
+  onOpenShortcuts,
+}: SidebarProps) {
   const location = useLocation();
   const currentAccount =
     me.accounts.find((a) => a.id === accountId) ?? me.accounts[0];
@@ -530,128 +540,154 @@ export default function Sidebar({ me, accountId }: SidebarProps) {
   }, [accountId, inboxes, labels, teams]);
 
   return (
-    <aside
-      className="bg-n-background flex flex-col text-sm pb-px relative shrink-0 h-full border-r border-n-weak select-none"
-      style={{
-        width: `${isCollapsed ? MIN_WIDTH : sidebarWidth}px`,
-        transition: isResizing ? "none" : "width 150ms ease-out",
-      }}
-    >
-      {/* Top Header: Account switcher & Search */}
-      <section className={`grid ${isCollapsed ? "mt-3 mb-4 gap-3 px-1" : "mt-2 mb-3 gap-2 px-2"}`}>
+    <>
+      {mobileOpen && (
         <div
-          className={`flex items-center min-w-0 ${
-            isCollapsed ? "justify-center" : "gap-2"
-          }`}
-        >
-          {isCollapsed ? (
-            <SidebarAccountSwitcher
-              isCollapsed
-              currentAccount={currentAccount}
-              accounts={me.accounts}
-            />
-          ) : (
-            <>
-              <div className="grid shrink-0 place-content-center size-6">
-                <Logo className="size-4" />
-              </div>
-              <div className="shrink-0 w-px h-3 bg-n-strong" />
+          className="fixed inset-0 z-40 bg-n-overlay-default md:hidden"
+          onClick={onCloseMobile}
+          aria-hidden="true"
+        />
+      )}
+      <aside
+        className={`bg-n-surface-2 md:bg-n-background flex flex-col text-sm pb-px shrink-0 h-full border-r border-n-weak select-none fixed inset-y-0 left-0 z-50 md:relative md:z-auto transition-transform duration-200 ${
+          mobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+        }`}
+        style={{
+          width: `${isCollapsed ? MIN_WIDTH : sidebarWidth}px`,
+          transition: isResizing
+            ? "none"
+            : "width 150ms ease-out, transform 200ms ease-out",
+        }}
+      >
+        {/* Top Header: Account switcher & Search */}
+        <section className={`grid ${isCollapsed ? "mt-3 mb-4 gap-3 px-1" : "mt-2 mb-3 gap-2 px-2"}`}>
+          <div
+            className={`flex items-center min-w-0 ${
+              isCollapsed ? "justify-center" : "gap-2"
+            }`}
+          >
+            {isCollapsed ? (
               <SidebarAccountSwitcher
+                isCollapsed
                 currentAccount={currentAccount}
                 accounts={me.accounts}
               />
-            </>
-          )}
-        </div>
+            ) : (
+              <>
+                <div className="grid shrink-0 place-content-center size-6">
+                  <Logo className="size-4" />
+                </div>
+                <div className="shrink-0 w-px h-3 bg-n-strong" />
+                <SidebarAccountSwitcher
+                  currentAccount={currentAccount}
+                  accounts={me.accounts}
+                />
+              </>
+            )}
+          </div>
 
-        {/* Search & New Conversation */}
-        <div
-          className={`flex items-center min-w-0 ${
-            isCollapsed ? "justify-center" : "gap-1.5"
-          }`}
-        >
-          {isCollapsed ? (
-            <Link
-              to={`/accounts/${accountId}/search`}
-              className="flex items-center justify-center size-8 rounded-lg outline outline-1 outline-n-weak bg-n-button-color hover:bg-n-alpha-2 transition-colors"
-              title="Search"
-            >
-              <Search className="size-4 text-n-slate-11" />
-            </Link>
-          ) : (
-            <>
-              <Link
-                to={`/accounts/${accountId}/search`}
-                className="flex items-center gap-2 px-2 py-1 flex-1 min-w-0 h-7 rounded-lg outline outline-1 outline-n-weak bg-n-button-color text-n-slate-10 hover:text-n-slate-12 transition-colors"
+          {/* Search & New Conversation */}
+          <div
+            className={`flex items-center min-w-0 ${
+              isCollapsed ? "justify-center" : "gap-1.5"
+            }`}
+          >
+            {isCollapsed ? (
+              <button
+                type="button"
+                onClick={() => {
+                  onCloseMobile?.();
+                  openCommandBar();
+                }}
+                className="flex items-center justify-center size-8 rounded-lg outline outline-1 outline-n-weak bg-n-button-color hover:bg-n-alpha-2 transition-colors"
+                title="Search (⌘K)"
               >
-                <Search className="size-3.5 shrink-0 text-n-slate-10" />
-                <span className="truncate text-xs flex-1">Search</span>
-                <span className="text-[11px] font-mono opacity-60">⌘K</span>
-              </Link>
-              <Link
-                to={`/accounts/${accountId}/conversations`}
-                className="flex items-center justify-center size-7 rounded-lg outline outline-1 outline-n-weak bg-n-button-color text-n-slate-11 hover:text-n-slate-12 hover:bg-n-alpha-2 transition-colors shrink-0"
-                title="New conversation"
-              >
-                <PenLine className="size-3.5" />
-              </Link>
-            </>
-          )}
-        </div>
-      </section>
+                <Search className="size-4 text-n-slate-11" />
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onCloseMobile?.();
+                    openCommandBar();
+                  }}
+                  className="flex items-center gap-2 px-2 py-1 flex-1 min-w-0 h-7 rounded-lg outline outline-1 outline-n-weak bg-n-button-color text-n-slate-10 hover:text-n-slate-12 transition-colors text-left"
+                >
+                  <Search className="size-3.5 shrink-0 text-n-slate-10" />
+                  <span className="truncate text-xs flex-1">Search</span>
+                  <kbd className="text-[11px] font-mono opacity-60">⌘K</kbd>
+                </button>
+                <Link
+                  to={`/accounts/${accountId}/conversations`}
+                  onClick={() => onCloseMobile?.()}
+                  className="flex items-center justify-center size-7 rounded-lg outline outline-1 outline-n-weak bg-n-button-color text-n-slate-11 hover:text-n-slate-12 hover:bg-n-alpha-2 transition-colors shrink-0"
+                  title="Conversations"
+                >
+                  <PenLine className="size-3.5" />
+                </Link>
+              </>
+            )}
+          </div>
+        </section>
 
-      {/* Nav Menu Items */}
-      <nav
-        className={`flex-1 overflow-y-auto no-scrollbar min-w-0 ${
-          isCollapsed ? "px-1" : "px-2"
-        }`}
-      >
-        <ul
-          className={`flex flex-col gap-1 m-0 list-none min-w-0 ${
-            isCollapsed ? "items-center" : ""
+        {/* Nav Menu Items */}
+        <nav
+          className={`flex-1 overflow-y-auto no-scrollbar min-w-0 ${
+            isCollapsed ? "px-1" : "px-2"
           }`}
+          onClick={() => {
+            if (window.innerWidth < 768) onCloseMobile?.();
+          }}
         >
-          {menuItems.map((item) => (
-            <SidebarGroup
-              key={item.name}
-              name={item.name}
-              label={item.label}
-              icon={item.icon}
-              to={item.to}
-              children={item.children}
-              isCollapsed={isCollapsed}
-              isExpanded={expandedGroup === item.name}
-              onToggle={() =>
-                setExpandedGroup(expandedGroup === item.name ? null : item.name)
-              }
-              activePath={location.pathname}
-            />
-          ))}
-        </ul>
-      </nav>
+          <ul
+            className={`flex flex-col gap-1 m-0 list-none min-w-0 ${
+              isCollapsed ? "items-center" : ""
+            }`}
+          >
+            {menuItems.map((item) => (
+              <SidebarGroup
+                key={item.name}
+                name={item.name}
+                label={item.label}
+                icon={item.icon}
+                to={item.to}
+                children={item.children}
+                isCollapsed={isCollapsed}
+                isExpanded={expandedGroup === item.name}
+                onToggle={() =>
+                  setExpandedGroup(expandedGroup === item.name ? null : item.name)
+                }
+                activePath={location.pathname}
+              />
+            ))}
+          </ul>
+        </nav>
 
-      {/* Bottom Profile section */}
-      <section className="mt-auto shrink-0 border-t border-n-weak p-1">
-        <SidebarProfileMenu
-          me={me}
-          accountId={accountId}
-          isCollapsed={isCollapsed}
-        />
-      </section>
+        {/* Bottom Profile section */}
+        <section className="mt-auto shrink-0 border-t border-n-weak p-1">
+          <SidebarProfileMenu
+            me={me}
+            accountId={accountId}
+            isCollapsed={isCollapsed}
+            onOpenShortcuts={onOpenShortcuts}
+          />
+        </section>
 
-      {/* Desktop Resize Handle */}
-      <div
-        className="hidden md:block absolute top-0 right-0 h-full w-1.5 cursor-col-resize z-40 group hover:bg-n-brand/30"
-        onMouseDown={startResize}
-        onDoubleClick={toggleCollapsed}
-        title="Double click to toggle collapse, drag to resize"
-      >
+        {/* Desktop Resize Handle */}
         <div
-          className={`absolute top-0 right-0 h-full w-0.5 transition-colors ${
-            isResizing ? "bg-n-brand" : "group-hover:bg-n-brand"
-          }`}
-        />
-      </div>
-    </aside>
+          className="hidden md:block absolute top-0 right-0 h-full w-1.5 cursor-col-resize z-40 group hover:bg-n-brand/30"
+          onMouseDown={startResize}
+          onDoubleClick={toggleCollapsed}
+          title="Double click to toggle collapse, drag to resize"
+        >
+          <div
+            className={`absolute top-0 right-0 h-full w-0.5 transition-colors ${
+              isResizing ? "bg-n-brand" : "group-hover:bg-n-brand"
+            }`}
+          />
+        </div>
+      </aside>
+    </>
   );
 }

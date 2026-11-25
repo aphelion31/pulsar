@@ -86,7 +86,13 @@ export async function signOut() {
 
 // ---------- types (subset of the Chatwoot payloads Pulsar returns) ----------
 
-export type Account = { id: number; name: string; role: "administrator" | "agent"; availability: string };
+export type Account = {
+  id: number;
+  name: string;
+  role: "administrator" | "agent";
+  availability: string;
+  availability_status?: string;
+};
 export type Profile = {
   id: number;
   name: string;
@@ -95,6 +101,9 @@ export type Profile = {
   avatar_url: string;
   pubsub_token: string;
   account_id: number;
+  type?: string | null;
+  role?: string;
+  ui_settings?: Record<string, unknown>;
   accounts: Account[];
 };
 export type Contact = {
@@ -104,10 +113,21 @@ export type Contact = {
   phone_number: string | null;
   identifier?: string | null;
   thumbnail?: string;
+  availability_status?: string;
   created_at?: number;
   last_activity_at?: number | null;
+  custom_attributes?: Record<string, unknown>;
+  additional_attributes?: Record<string, unknown>;
 };
-export type Agent = { id: number; name: string; available_name: string; email: string; role: string; availability_status: string };
+export type Agent = {
+  id: number;
+  name: string;
+  available_name: string;
+  email: string;
+  role: string;
+  availability_status: string;
+  thumbnail?: string;
+};
 export type Attachment = { id: number; file_type: string; data_url: string; thumb_url: string; extension: string | null; file_size: number };
 export type Message = {
   id: number;
@@ -116,10 +136,15 @@ export type Message = {
   private: boolean;
   created_at: number;
   conversation_id: number;
-  sender?: { id: number; name: string; type: "user" | "contact" };
+  sender?: { id: number; name: string; type: "user" | "contact"; thumbnail?: string };
   attachments?: Attachment[];
   echo_id?: string;
-  content_attributes?: { deleted?: boolean };
+  content_type?: string;
+  content_attributes?: {
+    deleted?: boolean;
+    in_reply_to?: number | null;
+    email?: { subject?: string; from?: string[]; to?: string[]; cc?: string[]; bcc?: string[] };
+  };
 };
 export type Conversation = {
   id: number;
@@ -129,11 +154,30 @@ export type Conversation = {
   labels: string[];
   unread_count: number;
   timestamp: number;
+  created_at?: number;
+  snoozed_until?: number | null;
+  muted?: boolean;
+  can_reply?: boolean;
+  additional_attributes?: Record<string, unknown>;
+  custom_attributes?: Record<string, unknown>;
   messages: Message[];
   last_non_activity_message: Message | null;
-  meta: { sender: Contact; assignee?: Agent; team?: { id: number; name: string } };
+  meta: {
+    sender: Contact;
+    assignee?: Agent;
+    team?: { id: number; name: string };
+    channel?: string;
+    hmac_verified?: boolean;
+  };
 };
-export type Inbox = { id: number; name: string; channel_type: string; website_token?: string; web_widget_script?: string };
+export type Inbox = {
+  id: number;
+  name: string;
+  channel_type: string;
+  medium?: string;
+  website_token?: string;
+  web_widget_script?: string;
+};
 export type Label = { id: number; title: string; description: string | null; color: string; show_on_sidebar: boolean | null };
 export type Team = { id: number; name: string; description: string | null };
 export type Canned = { id: number; short_code: string; content: string };

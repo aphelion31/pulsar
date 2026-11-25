@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { Button } from "~/components/ui";
+import { AuthShell } from "~/components/next/AuthShell";
+
+const inputCls =
+  "block h-10 w-full rounded-lg border-0 bg-n-alpha-black2 px-3 py-2 text-sm text-n-slate-12 outline outline-1 outline-n-weak transition-colors placeholder:text-n-slate-10 hover:outline-n-slate-6 focus:outline-n-brand";
 
 export default function InstallationOnboardingRoute() {
   const nav = useNavigate();
@@ -40,7 +43,9 @@ export default function InstallationOnboardingRoute() {
       const res = await fetch("/installation/onboarding", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ user: { company: company.trim(), name: name.trim(), email: email.trim(), password } }),
+        body: JSON.stringify({
+          user: { company: company.trim(), name: name.trim(), email: email.trim(), password },
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || data.message || "Onboarding failed");
@@ -59,37 +64,76 @@ export default function InstallationOnboardingRoute() {
   }
 
   if (needed === null) {
-    return <div className="flex min-h-screen items-center justify-center bg-bg text-sm text-ink-3">Checking installation state...</div>;
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-n-background text-sm text-n-slate-10">
+        Checking installation state...
+      </div>
+    );
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-bg p-6">
-      <form onSubmit={submit} className="w-full max-w-md space-y-4 rounded-2xl border border-line bg-surface p-6 shadow-sm">
-        <div>
-          <h1 className="text-xl font-semibold text-ink">Welcome to Pulsar</h1>
-          <p className="mt-1 text-sm text-ink-3">Create the initial organization and SuperAdmin account for this installation.</p>
-        </div>
-        {error && <p role="alert" className="rounded-lg bg-bad/10 px-3 py-2 text-sm text-bad">{error}</p>}
-        <label className="flex flex-col gap-1 text-sm font-medium text-ink">
-          Company / Workspace Name
-          <input required value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Acme Corp" className="h-10 rounded-lg border border-line bg-bg px-3 text-sm" />
+    <AuthShell
+      title="Welcome to Pulsar"
+      subtitle="Create the initial workspace and SuperAdmin account for this installation."
+    >
+      <form onSubmit={submit} className="space-y-4">
+        {error && (
+          <p role="alert" className="rounded-lg bg-n-ruby-3 px-3 py-2 text-sm text-n-ruby-11">
+            {error}
+          </p>
+        )}
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-n-slate-12">Company / Workspace Name</span>
+          <input
+            required
+            autoFocus
+            value={company}
+            onChange={(e) => setCompany(e.target.value)}
+            placeholder="Acme Corp"
+            className={inputCls}
+          />
         </label>
-        <label className="flex flex-col gap-1 text-sm font-medium text-ink">
-          Your Name
-          <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="Ada Lovelace" className="h-10 rounded-lg border border-line bg-bg px-3 text-sm" />
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-n-slate-12">Your Name</span>
+          <input
+            required
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Ada Lovelace"
+            className={inputCls}
+          />
         </label>
-        <label className="flex flex-col gap-1 text-sm font-medium text-ink">
-          Admin Email
-          <input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@example.com" className="h-10 rounded-lg border border-line bg-bg px-3 text-sm" />
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-n-slate-12">Admin Email</span>
+          <input
+            required
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="admin@example.com"
+            className={inputCls}
+          />
         </label>
-        <label className="flex flex-col gap-1 text-sm font-medium text-ink">
-          Password (min 6 chars)
-          <input required type="password" minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} className="h-10 rounded-lg border border-line bg-bg px-3 text-sm" />
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-n-slate-12">Password (min 6 chars)</span>
+          <input
+            required
+            type="password"
+            minLength={6}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Strong password"
+            className={inputCls}
+          />
         </label>
-        <Button type="submit" disabled={busy} className="w-full">
+        <button
+          type="submit"
+          disabled={busy}
+          className="mt-2 flex h-10 w-full items-center justify-center rounded-lg bg-n-brand px-4 text-sm font-medium text-white transition hover:bg-n-blue-10 disabled:opacity-50"
+        >
           {busy ? "Creating installation..." : "Complete Installation"}
-        </Button>
+        </button>
       </form>
-    </div>
+    </AuthShell>
   );
 }
