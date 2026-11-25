@@ -1,5 +1,6 @@
 //! Channel integrations (Telegram, LINE, etc.).
 pub mod line;
+pub mod sms;
 pub mod telegram;
 pub mod twilio;
 pub mod whatsapp;

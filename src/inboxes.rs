@@ -5,7 +5,7 @@ use axum::{
     routing::{delete, get, patch, post},
     Json, Router,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use sqlx::{PgPool, Row};
 use axum::http::StatusCode;
 
@@ -360,6 +360,26 @@ pub(crate) async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admi
                 }
             }
         }
+        "Channel::Sms" => {
+            // _inbox.json.jbuilder: phone_number for everyone; provider_config (sliced to 3 keys) for admins only
+            let c = sqlx::query("SELECT phone_number, provider_config FROM channel_sms WHERE id::bigint = $1 AND account_id::bigint = $2")
+                .bind(channel_id)
+                .bind(account_id)
+                .fetch_optional(db)
+                .await?;
+            if let Some(c) = c {
+                obj.insert("phone_number".into(), c.try_get::<Option<String>, _>("phone_number")?.into());
+                obj.insert("messaging_service_sid".into(), Value::Null);
+                if admin {
+                    let cfg: Value = c.try_get::<Option<Value>, _>("provider_config")?.unwrap_or(json!({}));
+                    let sliced: Map<String, Value> = ["account_id", "application_id", "client_id"]
+                        .iter()
+                        .filter_map(|k| cfg.get(*k).map(|v| (k.to_string(), v.clone())))
+                        .collect();
+                    obj.insert("provider_config".into(), Value::Object(sliced));
+                }
+            }
+        }
         "Channel::WebWidget" => {
             let c = sqlx::query(
                 "SELECT website_url, widget_color, website_token, welcome_title, welcome_tagline, hmac_token,
@@ -511,6 +531,7 @@ async fn inbox_create(
         Some("telegram") => crate::channels::telegram::create_channel(&mut tx, account_id, ch, &st.frontend_url).await?,
         Some("line") => crate::channels::line::create_channel(&mut tx, account_id, ch).await?,
         Some("twilio") | Some("twilio_sms") => crate::channels::twilio::create_channel(&mut tx, account_id, ch).await?,
+        Some("sms") => crate::channels::sms::create_channel(&mut tx, account_id, ch).await?,
         _ => return Err(ApiError::bad("Invalid channel type")),
     };
 

@@ -112,6 +112,7 @@ pub fn app(state: AppState) -> Router {
         .merge(channels::line::routes())
         .merge(channels::twilio::routes())
         .merge(channels::whatsapp::routes())
+        .merge(channels::sms::routes())
         .nest("/platform/api/v1", platform::routes())
         .merge(public_api::routes())
         .merge(help_center::public_routes())
@@ -197,6 +198,7 @@ async fn main() -> anyhow::Result<()> {
             ("line_outbound", events::listener(listeners::line_outbound::handle)),
             ("twilio_outbound", events::listener(listeners::twilio_outbound::handle)),
             ("whatsapp_outbound", events::listener(channels::whatsapp::outbound)),
+            ("sms_outbound", events::listener(listeners::sms_outbound::handle)),
         ],
     );
     // Chatwoot FetchImapEmailInboxesJob: poll IMAP for Channel::Email inboxes. Errors are logged per inbox.
