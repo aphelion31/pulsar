@@ -15,7 +15,12 @@ pub async fn handle(st: AppState, ev: Event) {
     }
 }
 
-async fn mark_failed(st: &AppState, msg_id: i64, account_id: i64, err_msg: &str) -> anyhow::Result<()> {
+async fn mark_failed(
+    st: &AppState,
+    msg_id: i64,
+    account_id: i64,
+    err_msg: &str,
+) -> anyhow::Result<()> {
     sqlx::query(
         "UPDATE messages
          SET status = 3,
@@ -56,7 +61,9 @@ async fn send(st: &AppState, ev: &Event) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    let content: String = r.try_get::<Option<String>, _>("content")?.unwrap_or_default();
+    let content: String = r
+        .try_get::<Option<String>, _>("content")?
+        .unwrap_or_default();
     if content.is_empty() {
         return Ok(());
     }

@@ -4,14 +4,14 @@
 //! Backup codes are encrypted (not hashed), exactly like CE's `encrypts :otp_backup_codes`.
 use crate::{ar_encryption, common::*};
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac};
 use rand::RngCore;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha1::Sha1;
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -30,7 +30,10 @@ fn feature() -> ApiResult<()> {
     if ar_encryption::configured() {
         return Ok(());
     }
-    Err(ApiError(StatusCode::FORBIDDEN, "MFA feature is not available. Please configure encryption keys.".into()))
+    Err(ApiError(
+        StatusCode::FORBIDDEN,
+        "MFA feature is not available. Please configure encryption keys.".into(),
+    ))
 }
 
 /// CE ensure_interactive_session: MFA settings never via api_access_token.
@@ -143,7 +146,11 @@ fn pct(s: &str) -> String {
 }
 
 fn provisioning_uri(email: &str, secret: &str) -> String {
-    format!("otpauth://totp/{}?secret={secret}&issuer={}", pct(&format!("{ISSUER}:{email}")), pct(ISSUER))
+    format!(
+        "otpauth://totp/{}?secret={secret}&issuer={}",
+        pct(&format!("{ISSUER}:{email}")),
+        pct(ISSUER)
+    )
 }
 
 struct MfaRow {
@@ -173,7 +180,11 @@ async fn lock_mfa(tx: &mut Transaction<'_, Postgres>, id: i64) -> ApiResult<MfaR
     })
 }
 
-async fn write_codes(tx: &mut Transaction<'_, Postgres>, id: i64, codes: &[String]) -> ApiResult<()> {
+async fn write_codes(
+    tx: &mut Transaction<'_, Postgres>,
+    id: i64,
+    codes: &[String],
+) -> ApiResult<()> {
     sqlx::query("UPDATE users SET otp_backup_codes = $1, updated_at = now() WHERE id = $2")
         .bind(ar_encryption::encrypt(&yaml_dump(codes)))
         .bind(id)
@@ -192,8 +203,12 @@ async fn consume_factor(
     backup: Option<&str>,
 ) -> ApiResult<bool> {
     if let Some(code) = otp.filter(|c| !c.is_empty()) {
-        let Some(secret) = m.secret.as_deref() else { return Ok(false) };
-        let Some(step) = otp_step(secret, code, m.consumed) else { return Ok(false) };
+        let Some(secret) = m.secret.as_deref() else {
+            return Ok(false);
+        };
+        let Some(step) = otp_step(secret, code, m.consumed) else {
+            return Ok(false);
+        };
         sqlx::query("UPDATE users SET consumed_timestep = $1 WHERE id = $2")
             .bind(step as i32)
             .bind(id)
@@ -201,9 +216,14 @@ async fn consume_factor(
             .await?;
         return Ok(true);
     }
-    let Some(code) = backup.filter(|c| !c.is_empty()) else { return Ok(false) };
+    let Some(code) = backup.filter(|c| !c.is_empty()) else {
+        return Ok(false);
+    };
     let mut codes = yaml_load(m.backup.as_deref().unwrap_or(""));
-    let Some(i) = codes.iter().position(|c| c != USED_CODE && ct_eq(c.as_bytes(), code.as_bytes())) else {
+    let Some(i) = codes
+        .iter()
+        .position(|c| c != USED_CODE && ct_eq(c.as_bytes(), code.as_bytes()))
+    else {
         return Ok(false);
     };
     codes[i] = USED_CODE.into();
@@ -253,11 +273,17 @@ pub async fn create(State(db): State<PgPool>, user: CurrentUser) -> ApiResult {
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(Json(json!({ "provisioning_url": provisioning_uri(&user.email, &secret), "secret": secret })))
+    Ok(Json(
+        json!({ "provisioning_url": provisioning_uri(&user.email, &secret), "secret": secret }),
+    ))
 }
 
 /// POST /api/v1/profile/mfa/verify {otp_code}: activates MFA, returns backup codes on first activation.
-pub async fn verify(State(db): State<PgPool>, user: CurrentUser, body: Option<Json<Value>>) -> ApiResult {
+pub async fn verify(
+    State(db): State<PgPool>,
+    user: CurrentUser,
+    body: Option<Json<Value>>,
+) -> ApiResult {
     interactive(&user)?;
     feature()?;
     let b = body_of(body);
@@ -266,7 +292,14 @@ pub async fn verify(State(db): State<PgPool>, user: CurrentUser, body: Option<Js
     if m.enabled {
         return Err(unprocessable("MFA is already enabled"));
     }
-    let ok = consume_factor(&mut tx, user.id, &m, field(&b, "otp_code").as_deref(), field(&b, "backup_code").as_deref()).await?;
+    let ok = consume_factor(
+        &mut tx,
+        user.id,
+        &m,
+        field(&b, "otp_code").as_deref(),
+        field(&b, "backup_code").as_deref(),
+    )
+    .await?;
     if !ok {
         return Err(unprocessable("Invalid verification code"));
     }
@@ -291,7 +324,11 @@ pub async fn verify(State(db): State<PgPool>, user: CurrentUser, body: Option<Js
 }
 
 /// DELETE /api/v1/profile/mfa {password, otp_code|backup_code}
-pub async fn destroy(State(db): State<PgPool>, user: CurrentUser, body: Option<Json<Value>>) -> ApiResult {
+pub async fn destroy(
+    State(db): State<PgPool>,
+    user: CurrentUser,
+    body: Option<Json<Value>>,
+) -> ApiResult {
     interactive(&user)?;
     feature()?;
     let b = body_of(body);
@@ -302,11 +339,20 @@ pub async fn destroy(State(db): State<PgPool>, user: CurrentUser, body: Option<J
     }
     let pw = field(&b, "password").unwrap_or_default();
     let hash = m.pw.clone();
-    let pw_ok = tokio::task::spawn_blocking(move || bcrypt::verify(&pw, &hash).unwrap_or(false)).await.unwrap_or(false);
+    let pw_ok = tokio::task::spawn_blocking(move || bcrypt::verify(&pw, &hash).unwrap_or(false))
+        .await
+        .unwrap_or(false);
     if !pw_ok {
         return Err(unprocessable("Invalid credentials or verification code"));
     }
-    let ok = consume_factor(&mut tx, user.id, &m, field(&b, "otp_code").as_deref(), field(&b, "backup_code").as_deref()).await?;
+    let ok = consume_factor(
+        &mut tx,
+        user.id,
+        &m,
+        field(&b, "otp_code").as_deref(),
+        field(&b, "backup_code").as_deref(),
+    )
+    .await?;
     if !ok {
         return Err(unprocessable("Invalid verification code"));
     }
@@ -319,7 +365,11 @@ pub async fn destroy(State(db): State<PgPool>, user: CurrentUser, body: Option<J
 }
 
 /// POST /api/v1/profile/mfa/backup_codes {otp_code|backup_code}: regenerates the 10 codes.
-pub async fn backup_codes(State(db): State<PgPool>, user: CurrentUser, body: Option<Json<Value>>) -> ApiResult {
+pub async fn backup_codes(
+    State(db): State<PgPool>,
+    user: CurrentUser,
+    body: Option<Json<Value>>,
+) -> ApiResult {
     interactive(&user)?;
     feature()?;
     let b = body_of(body);
@@ -328,7 +378,14 @@ pub async fn backup_codes(State(db): State<PgPool>, user: CurrentUser, body: Opt
     if !m.enabled {
         return Err(unprocessable("MFA is not enabled"));
     }
-    let ok = consume_factor(&mut tx, user.id, &m, field(&b, "otp_code").as_deref(), field(&b, "backup_code").as_deref()).await?;
+    let ok = consume_factor(
+        &mut tx,
+        user.id,
+        &m,
+        field(&b, "otp_code").as_deref(),
+        field(&b, "backup_code").as_deref(),
+    )
+    .await?;
     if !ok {
         return Err(unprocessable("Invalid verification code"));
     }
@@ -339,7 +396,12 @@ pub async fn backup_codes(State(db): State<PgPool>, user: CurrentUser, body: Opt
 }
 
 /// Second sign-in step (CE handle_mfa_verification). Called by auth::sign_in once the mfa_token checks out.
-pub async fn consume_for_sign_in(db: &PgPool, user_id: i64, otp: Option<&str>, backup: Option<&str>) -> ApiResult<bool> {
+pub async fn consume_for_sign_in(
+    db: &PgPool,
+    user_id: i64,
+    otp: Option<&str>,
+    backup: Option<&str>,
+) -> ApiResult<bool> {
     let mut tx = db.begin().await?;
     let m = lock_mfa(&mut tx, user_id).await?;
     let ok = consume_factor(&mut tx, user_id, &m, otp, backup).await?;
@@ -348,8 +410,10 @@ pub async fn consume_for_sign_in(db: &PgPool, user_id: i64, otp: Option<&str>, b
 }
 
 fn mfa_sig(payload: &str) -> String {
-    let key = std::env::var("SECRET_KEY_BASE").unwrap_or_else(|_| "pulsar-dev-secret-change-me".into());
-    let mut mac = Hmac::<sha2_compat::Sha256>::new_from_slice(key.as_bytes()).expect("hmac takes any key length");
+    let key =
+        std::env::var("SECRET_KEY_BASE").unwrap_or_else(|_| "pulsar-dev-secret-change-me".into());
+    let mut mac = Hmac::<sha2_compat::Sha256>::new_from_slice(key.as_bytes())
+        .expect("hmac takes any key length");
     mac.update(payload.as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }
@@ -374,14 +438,20 @@ pub fn verify_mfa_token(token: &str) -> Option<i64> {
 }
 
 /// DELETE /api/v1/profile/sessions/:id. Session id is user_sessions.id; revokes its devise token.
-pub async fn session_destroy(State(db): State<PgPool>, user: CurrentUser, Path(id): Path<i64>) -> ApiResult<StatusCode> {
+pub async fn session_destroy(
+    State(db): State<PgPool>,
+    user: CurrentUser,
+    Path(id): Path<i64>,
+) -> ApiResult<StatusCode> {
     let mut tx = db.begin().await?;
-    let client: String = sqlx::query_scalar("SELECT client_id FROM user_sessions WHERE id = $1 AND user_id = $2 FOR UPDATE")
-        .bind(id)
-        .bind(user.id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
+    let client: String = sqlx::query_scalar(
+        "SELECT client_id FROM user_sessions WHERE id = $1 AND user_id = $2 FOR UPDATE",
+    )
+    .bind(id)
+    .bind(user.id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
     if user.client.as_deref() == Some(client.as_str()) {
         return Err(unprocessable("You cannot revoke the current session."));
     }
@@ -390,7 +460,10 @@ pub async fn session_destroy(State(db): State<PgPool>, user: CurrentUser, Path(i
         .bind(user.id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM user_sessions WHERE id = $1").bind(id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM user_sessions WHERE id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(StatusCode::OK)
 }

@@ -7,18 +7,18 @@
 use std::collections::HashMap;
 
 use axum::{
+    Json, Router,
     extract::{Multipart, Path, Query, State},
     http::header,
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use chrono::{NaiveDateTime, SecondsFormat};
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sqlx::PgPool;
 
-use crate::common::{now, require_account, ApiError, ApiResult, AppState, CurrentUser};
+use crate::common::{ApiError, ApiResult, AppState, CurrentUser, now, require_account};
 use crate::contacts::parse_csv;
 
 // Chatwoot DataImport status enum: pending 0, processing 1, completed 2, failed 3, completed_with_errors 6, abandoned 7.
@@ -181,7 +181,10 @@ async fn log_counts(db: &PgPool, ids: &[i64]) -> Result<HashMap<i64, (i64, i64)>
     .bind(ids.to_vec())
     .fetch_all(db)
     .await?;
-    Ok(rows.into_iter().map(|(id, errs, skips)| (id, (errs, skips))).collect())
+    Ok(rows
+        .into_iter()
+        .map(|(id, errs, skips)| (id, (errs, skips)))
+        .collect())
 }
 
 fn with_counts(mut v: Value, errs: i64, skips: i64) -> Value {
@@ -191,21 +194,29 @@ fn with_counts(mut v: Value, errs: i64, skips: i64) -> Value {
 }
 
 async fn find(db: &PgPool, account_id: i64, id: i64) -> Result<ImportRow, ApiError> {
-    sqlx::query_as(&format!("{IMPORT_SELECT} WHERE d.account_id = $1 AND d.id = $2"))
-        .bind(account_id)
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .ok_or_else(ApiError::not_found)
+    sqlx::query_as(&format!(
+        "{IMPORT_SELECT} WHERE d.account_id = $1 AND d.id = $2"
+    ))
+    .bind(account_id)
+    .bind(id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(ApiError::not_found)
 }
 
 /// Same payload as data_imports/show.json.jbuilder.
 async fn detail(db: &PgPool, row: &ImportRow, skip_type: Option<&str>) -> Result<Value, ApiError> {
-    let (errs, skips) = log_counts(db, &[row.id]).await?.get(&row.id).copied().unwrap_or((0, 0));
-    let errors: Vec<LogRow> = sqlx::query_as(&format!("{LOG_SELECT} WHERE data_import_id = $1 AND {NON_SKIP} ORDER BY created_at DESC LIMIT 5"))
-        .bind(row.id)
-        .fetch_all(db)
-        .await?;
+    let (errs, skips) = log_counts(db, &[row.id])
+        .await?
+        .get(&row.id)
+        .copied()
+        .unwrap_or((0, 0));
+    let errors: Vec<LogRow> = sqlx::query_as(&format!(
+        "{LOG_SELECT} WHERE data_import_id = $1 AND {NON_SKIP} ORDER BY created_at DESC LIMIT 5"
+    ))
+    .bind(row.id)
+    .fetch_all(db)
+    .await?;
     let selected = skip_type.filter(|t| SOURCE_TYPES.contains(t));
     let skip_rows: Vec<LogRow> = sqlx::query_as(&format!(
         "{LOG_SELECT} WHERE data_import_id = $1 AND {SKIP} AND ($2::text IS NULL OR source_object_type = $2) ORDER BY created_at DESC LIMIT 5"
@@ -220,21 +231,41 @@ async fn detail(db: &PgPool, row: &ImportRow, skip_type: Option<&str>) -> Result
     .bind(row.id)
     .fetch_all(db)
     .await?;
-    let counts: Map<String, Value> = by_type.into_iter().map(|(t, c)| (t.unwrap_or_default(), json!(c))).collect();
+    let counts: Map<String, Value> = by_type
+        .into_iter()
+        .map(|(t, c)| (t.unwrap_or_default(), json!(c)))
+        .collect();
 
     let mut v = with_counts(render(row), errs, skips);
-    v["import_errors"] = json!(errors.iter().map(|l| log_json(l, false)).collect::<Vec<_>>());
-    v["skip_logs"] = json!(skip_rows.iter().map(|l| log_json(l, true)).collect::<Vec<_>>());
-    v["skip_logs_filters"] = json!({ "selected_source_object_type": selected, "counts_by_type": counts });
+    v["import_errors"] = json!(
+        errors
+            .iter()
+            .map(|l| log_json(l, false))
+            .collect::<Vec<_>>()
+    );
+    v["skip_logs"] = json!(
+        skip_rows
+            .iter()
+            .map(|l| log_json(l, true))
+            .collect::<Vec<_>>()
+    );
+    v["skip_logs_filters"] =
+        json!({ "selected_source_object_type": selected, "counts_by_type": counts });
     Ok(v)
 }
 
-async fn index(Path(account_id): Path<i64>, user: CurrentUser, State(st): State<AppState>) -> ApiResult {
+async fn index(
+    Path(account_id): Path<i64>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+) -> ApiResult {
     admin(&st.db, &user, account_id).await?;
-    let rows: Vec<ImportRow> = sqlx::query_as(&format!("{IMPORT_SELECT} WHERE d.account_id = $1 ORDER BY d.created_at DESC"))
-        .bind(account_id)
-        .fetch_all(&st.db)
-        .await?;
+    let rows: Vec<ImportRow> = sqlx::query_as(&format!(
+        "{IMPORT_SELECT} WHERE d.account_id = $1 ORDER BY d.created_at DESC"
+    ))
+    .bind(account_id)
+    .fetch_all(&st.db)
+    .await?;
     let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
     let counts = log_counts(&st.db, &ids).await?;
     let payload: Vec<Value> = rows
@@ -247,10 +278,17 @@ async fn index(Path(account_id): Path<i64>, user: CurrentUser, State(st): State<
     Ok(Json(json!({ "payload": payload })))
 }
 
-async fn show(Path((account_id, id)): Path<(i64, i64)>, Query(q): Query<ShowQuery>, user: CurrentUser, State(st): State<AppState>) -> ApiResult {
+async fn show(
+    Path((account_id, id)): Path<(i64, i64)>,
+    Query(q): Query<ShowQuery>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+) -> ApiResult {
     admin(&st.db, &user, account_id).await?;
     let row = find(&st.db, account_id, id).await?;
-    Ok(Json(detail(&st.db, &row, q.skip_logs_type.as_deref()).await?))
+    Ok(Json(
+        detail(&st.db, &row, q.skip_logs_type.as_deref()).await?,
+    ))
 }
 
 async fn ensure_file_table(db: &PgPool) -> Result<(), ApiError> {
@@ -266,22 +304,55 @@ async fn ensure_file_table(db: &PgPool) -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn create(Path(account_id): Path<i64>, user: CurrentUser, State(st): State<AppState>, mut multipart: Multipart) -> ApiResult {
+async fn create(
+    Path(account_id): Path<i64>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+    mut multipart: Multipart,
+) -> ApiResult {
     admin(&st.db, &user, account_id).await?;
     let mut file: Option<Vec<u8>> = None;
     let mut name: Option<String> = None;
-    while let Some(field) = multipart.next_field().await.map_err(|_| ApiError::bad("Invalid multipart"))? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| ApiError::bad("Invalid multipart"))?
+    {
         let key = field.name().unwrap_or_default().to_string();
         match key.as_str() {
-            "import_file" => file = Some(field.bytes().await.map_err(|_| ApiError::bad("Invalid CSV"))?.to_vec()),
-            "name" => name = Some(field.text().await.map_err(|_| ApiError::bad("Invalid name"))?),
+            "import_file" => {
+                file = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|_| ApiError::bad("Invalid CSV"))?
+                        .to_vec(),
+                )
+            }
+            "name" => {
+                name = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|_| ApiError::bad("Invalid name"))?,
+                )
+            }
             "source_provider" => {
-                if !field.text().await.map_err(|_| ApiError::bad("Invalid source"))?.trim().is_empty() {
+                if !field
+                    .text()
+                    .await
+                    .map_err(|_| ApiError::bad("Invalid source"))?
+                    .trim()
+                    .is_empty()
+                {
                     return Err(ApiError::bad("unsupported source"));
                 }
             }
             "data_type" => {
-                let value = field.text().await.map_err(|_| ApiError::bad("Invalid data type"))?;
+                let value = field
+                    .text()
+                    .await
+                    .map_err(|_| ApiError::bad("Invalid data type"))?;
                 if !value.trim().is_empty() && value.trim() != "contacts" {
                     return Err(ApiError::bad("unsupported source"));
                 }
@@ -292,7 +363,9 @@ async fn create(Path(account_id): Path<i64>, user: CurrentUser, State(st): State
     let bytes = file.ok_or_else(|| ApiError::bad("import_file required"))?;
     let content = String::from_utf8(bytes).map_err(|_| ApiError::bad("Invalid CSV"))?;
     let rows = parse_csv(&content)?;
-    let (_, data) = rows.split_first().ok_or_else(|| ApiError::bad("CSV header required"))?;
+    let (_, data) = rows
+        .split_first()
+        .ok_or_else(|| ApiError::bad("CSV header required"))?;
     let total = data.len() as i32;
     let name = name
         .map(|n| n.trim().to_string())
@@ -329,7 +402,11 @@ async fn create(Path(account_id): Path<i64>, user: CurrentUser, State(st): State
     Ok(Json(detail(&st.db, &row, None).await?))
 }
 
-async fn start(Path((account_id, id)): Path<(i64, i64)>, user: CurrentUser, State(st): State<AppState>) -> ApiResult {
+async fn start(
+    Path((account_id, id)): Path<(i64, i64)>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+) -> ApiResult {
     admin(&st.db, &user, account_id).await?;
     let row = find(&st.db, account_id, id).await?;
     // Only a pending import needs kicking. The claim in `process` stops a second worker from running it twice.
@@ -339,18 +416,27 @@ async fn start(Path((account_id, id)): Path<(i64, i64)>, user: CurrentUser, Stat
     Ok(Json(detail(&st.db, &row, None).await?))
 }
 
-async fn retry(Path((account_id, id)): Path<(i64, i64)>, user: CurrentUser, State(st): State<AppState>) -> ApiResult {
+async fn retry(
+    Path((account_id, id)): Path<(i64, i64)>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+) -> ApiResult {
     admin(&st.db, &user, account_id).await?;
     let row = find(&st.db, account_id, id).await?;
-    let has_file: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pulsar_data_import_files WHERE data_import_id = $1)")
-        .bind(id)
-        .fetch_one(&st.db)
-        .await?;
+    let has_file: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pulsar_data_import_files WHERE data_import_id = $1)",
+    )
+    .bind(id)
+    .fetch_one(&st.db)
+    .await?;
     if !(row.status == FAILED || row.status == ABANDONED) || !has_file {
         return Err(ApiError::bad("This import cannot be retried."));
     }
     let mut tx = st.db.begin().await?;
-    sqlx::query("DELETE FROM data_import_errors WHERE data_import_id = $1").bind(id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM data_import_errors WHERE data_import_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query(
         "UPDATE data_imports SET status = $3, processing_errors = NULL, abandoned_at = NULL, processed_records = 0, updated_at = $4
          WHERE id = $1 AND account_id = $2",
@@ -367,7 +453,11 @@ async fn retry(Path((account_id, id)): Path<(i64, i64)>, user: CurrentUser, Stat
     Ok(Json(detail(&st.db, &row, None).await?))
 }
 
-async fn abandon(Path((account_id, id)): Path<(i64, i64)>, user: CurrentUser, State(st): State<AppState>) -> ApiResult {
+async fn abandon(
+    Path((account_id, id)): Path<(i64, i64)>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+) -> ApiResult {
     admin(&st.db, &user, account_id).await?;
     sqlx::query("UPDATE data_imports SET status = $3, abandoned_at = $4, updated_at = $4 WHERE id = $1 AND account_id = $2 AND status IN ($5, $6)")
         .bind(id)
@@ -392,13 +482,24 @@ fn csv_field(s: &str) -> String {
 
 fn csv_response(body: String, filename: String) -> Response {
     (
-        [(header::CONTENT_TYPE, "text/csv".to_string()), (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\""))],
+        [
+            (header::CONTENT_TYPE, "text/csv".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
         body,
     )
         .into_response()
 }
 
-async fn logs_csv(db: &PgPool, id: i64, filter: &str, filename: String) -> Result<Response, ApiError> {
+async fn logs_csv(
+    db: &PgPool,
+    id: i64,
+    filter: &str,
+    filename: String,
+) -> Result<Response, ApiError> {
     let logs: Vec<(i64, String, Option<String>, Option<String>, Option<String>, Value, NaiveDateTime)> = sqlx::query_as(&format!(
         "SELECT id, error_code, message, source_object_type, source_object_id, details, created_at FROM data_import_errors
          WHERE data_import_id = $1 AND {filter} ORDER BY created_at ASC"
@@ -406,11 +507,18 @@ async fn logs_csv(db: &PgPool, id: i64, filter: &str, filename: String) -> Resul
     .bind(id)
     .fetch_all(db)
     .await?;
-    let mut out = String::from("created_at,kind,source_object_type,source_object_id,error_code,message,details\r\n");
+    let mut out = String::from(
+        "created_at,kind,source_object_type,source_object_id,error_code,message,details\r\n",
+    );
     for (_, error_code, message, object_type, object_id, details, created_at) in logs {
-        let kind = details.get("kind").and_then(Value::as_str).unwrap_or_default();
+        let kind = details
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let fields = [
-            created_at.and_utc().to_rfc3339_opts(SecondsFormat::Secs, true),
+            created_at
+                .and_utc()
+                .to_rfc3339_opts(SecondsFormat::Secs, true),
             kind.to_string(),
             object_type.unwrap_or_default(),
             object_id.unwrap_or_default(),
@@ -418,19 +526,39 @@ async fn logs_csv(db: &PgPool, id: i64, filter: &str, filename: String) -> Resul
             message.unwrap_or_default(),
             details.to_string(),
         ];
-        out.push_str(&fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(","));
+        out.push_str(
+            &fields
+                .iter()
+                .map(|f| csv_field(f))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
         out.push_str("\r\n");
     }
     Ok(csv_response(out, filename))
 }
 
-async fn error_logs(Path((account_id, id)): Path<(i64, i64)>, user: CurrentUser, State(st): State<AppState>) -> Result<Response, ApiError> {
+async fn error_logs(
+    Path((account_id, id)): Path<(i64, i64)>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+) -> Result<Response, ApiError> {
     admin(&st.db, &user, account_id).await?;
     find(&st.db, account_id, id).await?;
-    logs_csv(&st.db, id, NON_SKIP, format!("data-import-{id}-error-logs.csv")).await
+    logs_csv(
+        &st.db,
+        id,
+        NON_SKIP,
+        format!("data-import-{id}-error-logs.csv"),
+    )
+    .await
 }
 
-async fn skip_logs(Path((account_id, id)): Path<(i64, i64)>, user: CurrentUser, State(st): State<AppState>) -> Result<Response, ApiError> {
+async fn skip_logs(
+    Path((account_id, id)): Path<(i64, i64)>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+) -> Result<Response, ApiError> {
     admin(&st.db, &user, account_id).await?;
     find(&st.db, account_id, id).await?;
     logs_csv(&st.db, id, SKIP, format!("data-import-{id}-skip-logs.csv")).await
@@ -480,7 +608,9 @@ async fn process(db: &PgPool, id: i64) -> Result<(), ApiError> {
     .ok_or_else(|| ApiError::bad("Import file is missing"))?;
 
     let rows = parse_csv(&content)?;
-    let (headers, data) = rows.split_first().ok_or_else(|| ApiError::bad("CSV header required"))?;
+    let (headers, data) = rows
+        .split_first()
+        .ok_or_else(|| ApiError::bad("CSV header required"))?;
     let total = data.len() as i32;
     let (mut imported, mut skipped, mut failed) = (0, 0, 0);
 
@@ -488,7 +618,10 @@ async fn process(db: &PgPool, id: i64) -> Result<(), ApiError> {
         // Line number in the file: header is line 1.
         let line = (index + 2).to_string();
         let outcome = if row.len() != headers.len() {
-            Outcome::Failed("column_count_mismatch", format!("Expected {} columns, found {}", headers.len(), row.len()))
+            Outcome::Failed(
+                "column_count_mismatch",
+                format!("Expected {} columns, found {}", headers.len(), row.len()),
+            )
         } else {
             match upsert_contact(db, account_id, headers, row).await {
                 Ok(outcome) => outcome,
@@ -525,7 +658,11 @@ async fn process(db: &PgPool, id: i64) -> Result<(), ApiError> {
         }
     }
 
-    let status = if failed > 0 { COMPLETED_WITH_ERRORS } else { COMPLETED };
+    let status = if failed > 0 {
+        COMPLETED_WITH_ERRORS
+    } else {
+        COMPLETED
+    };
     let done = sqlx::query(
         "UPDATE data_imports SET status = $2, processed_records = $3, stats = $4, completed_at = $5, updated_at = $5,
              last_error_at = CASE WHEN $6 THEN $5 ELSE last_error_at END
@@ -543,12 +680,22 @@ async fn process(db: &PgPool, id: i64) -> Result<(), ApiError> {
     .rows_affected();
     if done > 0 {
         // Raw file is only needed for retry, and retry is not offered after completion.
-        sqlx::query("DELETE FROM pulsar_data_import_files WHERE data_import_id = $1").bind(id).execute(db).await?;
+        sqlx::query("DELETE FROM pulsar_data_import_files WHERE data_import_id = $1")
+            .bind(id)
+            .execute(db)
+            .await?;
     }
     Ok(())
 }
 
-async fn log_row(db: &PgPool, id: i64, line: &str, kind: &str, code: &str, message: &str) -> Result<(), ApiError> {
+async fn log_row(
+    db: &PgPool,
+    id: i64,
+    line: &str,
+    kind: &str,
+    code: &str,
+    message: &str,
+) -> Result<(), ApiError> {
     sqlx::query(
         "INSERT INTO data_import_errors (data_import_id, source_object_type, source_object_id, error_code, message, details, created_at, updated_at)
          VALUES ($1, 'contact', $2, $3, $4, $5, $6, $6)",
@@ -565,7 +712,12 @@ async fn log_row(db: &PgPool, id: i64, line: &str, kind: &str, code: &str, messa
 }
 
 /// One CSV row. Same matching and attribute rules as `import_contacts` in contacts.rs, per row instead of all-or-nothing.
-async fn upsert_contact(db: &PgPool, account_id: i64, headers: &[String], row: &[String]) -> Result<Outcome, sqlx::Error> {
+async fn upsert_contact(
+    db: &PgPool,
+    account_id: i64,
+    headers: &[String],
+    row: &[String],
+) -> Result<Outcome, sqlx::Error> {
     let mut attrs = Map::new();
     for (key, value) in headers.iter().zip(row) {
         if !value.trim().is_empty() {
@@ -576,9 +728,18 @@ async fn upsert_contact(db: &PgPool, account_id: i64, headers: &[String], row: &
     let name = get("name");
     let email = get("email");
     let identifier = get("identifier");
-    let phone = get("phone_number").map(|p| if p.starts_with('+') { p } else { format!("+{p}") });
+    let phone = get("phone_number").map(|p| {
+        if p.starts_with('+') {
+            p
+        } else {
+            format!("+{p}")
+        }
+    });
     if name.is_none() && email.is_none() && identifier.is_none() && phone.is_none() {
-        return Ok(Outcome::Skipped("missing_contact_fields", "Row has no name, email, phone number or identifier".into()));
+        return Ok(Outcome::Skipped(
+            "missing_contact_fields",
+            "Row has no name, email, phone number or identifier".into(),
+        ));
     }
 
     let existing: Option<i32> = sqlx::query_scalar(

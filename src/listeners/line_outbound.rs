@@ -1,7 +1,7 @@
 //! Outbound LINE listener on message.created.
 //! Mirrors chatwoot/app/services/line/send_on_line_service.rb and channel/line.rb.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::Row;
 
 use crate::{channels::line::api_base, common::AppState, events::Event};
@@ -38,7 +38,9 @@ async fn send(st: &AppState, ev: &Event) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    let content: String = r.try_get::<Option<String>, _>("content")?.unwrap_or_default();
+    let content: String = r
+        .try_get::<Option<String>, _>("content")?
+        .unwrap_or_default();
     if content.is_empty() {
         return Ok(());
     }

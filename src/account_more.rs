@@ -17,7 +17,10 @@ pub fn routes() -> Router<AppState> {
         .route("/integrations/hooks", post(hook_create))
         .route(
             "/integrations/hooks/{id}",
-            get(hook_show).patch(hook_update).put(hook_update).delete(hook_destroy),
+            get(hook_show)
+                .patch(hook_update)
+                .put(hook_update)
+                .delete(hook_destroy),
         )
         .route("/csat_survey_responses", get(csat_index))
         .route("/csat_survey_responses/metrics", get(csat_metrics))
@@ -36,7 +39,11 @@ async fn hook_get(st: &AppState, a: i64, id: i64) -> Result<Value, ApiError> {
         .await?)
 }
 
-async fn hook_show(State(st): State<AppState>, user: CurrentUser, Path((a, id)): Path<(i64, i64)>) -> ApiResult {
+async fn hook_show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((a, id)): Path<(i64, i64)>,
+) -> ApiResult {
     require_account(&st.db, &user, a).await?.require_admin()?;
     Ok(Json(hook_get(&st, a, id).await?))
 }
@@ -51,7 +58,9 @@ fn status_int(v: &Value) -> Result<Option<i32>, ApiError> {
     match v {
         Value::Null => Ok(None),
         Value::Bool(b) => Ok(Some(i32::from(*b))),
-        Value::Number(n) if n.as_i64() == Some(0) || n.as_i64() == Some(1) => Ok(n.as_i64().map(|x| x as i32)),
+        Value::Number(n) if n.as_i64() == Some(0) || n.as_i64() == Some(1) => {
+            Ok(n.as_i64().map(|x| x as i32))
+        }
         Value::String(s) if s == "enabled" => Ok(Some(1)),
         Value::String(s) if s == "disabled" => Ok(Some(0)),
         _ => Err(ApiError::bad("status is invalid")),
@@ -59,10 +68,19 @@ fn status_int(v: &Value) -> Result<Option<i32>, ApiError> {
 }
 
 fn new_access_token() -> String {
-    rand::thread_rng().sample_iter(&Alphanumeric).take(24).map(char::from).collect()
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(24)
+        .map(char::from)
+        .collect()
 }
 
-async fn hook_create(State(st): State<AppState>, user: CurrentUser, Path(a): Path<i64>, Json(body): Json<Value>) -> ApiResult {
+async fn hook_create(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(a): Path<i64>,
+    Json(body): Json<Value>,
+) -> ApiResult {
     require_account(&st.db, &user, a).await?.require_admin()?;
     let h = hook_body(&body);
     let app_id = h
@@ -76,24 +94,32 @@ async fn hook_create(State(st): State<AppState>, user: CurrentUser, Path(a): Pat
     }
     let inbox_id = h.get("inbox_id").and_then(Value::as_i64);
     if let Some(i) = inbox_id {
-        let ok: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inboxes WHERE account_id=$1::bigint AND id=$2::bigint)")
-            .bind(a)
-            .bind(i)
-            .fetch_one(&st.db)
-            .await?;
+        let ok: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM inboxes WHERE account_id=$1::bigint AND id=$2::bigint)",
+        )
+        .bind(a)
+        .bind(i)
+        .fetch_one(&st.db)
+        .await?;
         if !ok {
             return Err(ApiError::bad("inbox must belong to account"));
         }
     }
     let status = status_int(h.get("status").unwrap_or(&Value::Null))?.unwrap_or(1);
-    let settings = h.get("settings").filter(|s| s.is_object()).cloned().unwrap_or_else(|| json!({}));
+    let settings = h
+        .get("settings")
+        .filter(|s| s.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     let hook_type: i32 = if inbox_id.is_some() { 1 } else { 0 };
     // Chatwoot validates app_id uniqueness per account (apps that allow several hooks are not modelled here).
-    let dup: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM integrations_hooks WHERE account_id=$1::bigint AND app_id=$2)")
-        .bind(a)
-        .bind(app_id)
-        .fetch_one(&st.db)
-        .await?;
+    let dup: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM integrations_hooks WHERE account_id=$1::bigint AND app_id=$2)",
+    )
+    .bind(a)
+    .bind(app_id)
+    .fetch_one(&st.db)
+    .await?;
     if dup {
         return Err(ApiError::bad("App has already been taken"));
     }
@@ -113,7 +139,12 @@ async fn hook_create(State(st): State<AppState>, user: CurrentUser, Path(a): Pat
     Ok(Json(hook_get(&st, a, id).await?))
 }
 
-async fn hook_update(State(st): State<AppState>, user: CurrentUser, Path((a, id)): Path<(i64, i64)>, Json(body): Json<Value>) -> ApiResult {
+async fn hook_update(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((a, id)): Path<(i64, i64)>,
+    Json(body): Json<Value>,
+) -> ApiResult {
     require_account(&st.db, &user, a).await?.require_admin()?;
     let h = hook_body(&body);
     let app_id: String = sqlx::query_scalar("SELECT COALESCE(app_id,'') FROM integrations_hooks WHERE account_id=$1::bigint AND id=$2::bigint")
@@ -141,7 +172,11 @@ async fn hook_update(State(st): State<AppState>, user: CurrentUser, Path((a, id)
     Ok(Json(hook_get(&st, a, id).await?))
 }
 
-async fn hook_destroy(State(st): State<AppState>, user: CurrentUser, Path((a, id)): Path<(i64, i64)>) -> Result<Response, ApiError> {
+async fn hook_destroy(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((a, id)): Path<(i64, i64)>,
+) -> Result<Response, ApiError> {
     require_account(&st.db, &user, a).await?.require_admin()?;
     let n = sqlx::query("DELETE FROM integrations_hooks WHERE account_id=$1::bigint AND id=$2::bigint AND COALESCE(app_id,'') <> 'stripe'")
         .bind(a)
@@ -183,7 +218,11 @@ struct Filter {
 }
 
 fn ids<T: std::str::FromStr>(s: &Option<String>) -> Option<Vec<T>> {
-    let v: Vec<T> = s.as_deref()?.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    let v: Vec<T> = s
+        .as_deref()?
+        .split(',')
+        .filter_map(|x| x.trim().parse().ok())
+        .collect();
     (!v.is_empty()).then_some(v)
 }
 
@@ -231,7 +270,12 @@ macro_rules! bind_filter {
     }};
 }
 
-async fn csat_index(State(st): State<AppState>, user: CurrentUser, Path(a): Path<i64>, Query(p): Query<CsatParams>) -> ApiResult {
+async fn csat_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(a): Path<i64>,
+    Query(p): Query<CsatParams>,
+) -> ApiResult {
     require_account(&st.db, &user, a).await?.require_admin()?;
     let f = filter(a, &p);
     let page = one::<i64>(&p.page).unwrap_or(1).max(1);
@@ -248,14 +292,26 @@ async fn csat_index(State(st): State<AppState>, user: CurrentUser, Path(a): Path
     Ok(Json(json!(rows)))
 }
 
-async fn csat_metrics(State(st): State<AppState>, user: CurrentUser, Path(a): Path<i64>, Query(p): Query<CsatParams>) -> ApiResult {
+async fn csat_metrics(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(a): Path<i64>,
+    Query(p): Query<CsatParams>,
+) -> ApiResult {
     require_account(&st.db, &user, a).await?.require_admin()?;
     let f = filter(a, &p);
     let total_sql = format!("SELECT COUNT(*){CSAT_FROM}{CSAT_WHERE}");
-    let total: i64 = bind_filter!(sqlx::query_scalar::<_, i64>(&total_sql), f).fetch_one(&st.db).await?;
+    let total: i64 = bind_filter!(sqlx::query_scalar::<_, i64>(&total_sql), f)
+        .fetch_one(&st.db)
+        .await?;
     let ratings_sql = format!("SELECT r.rating, COUNT(*){CSAT_FROM}{CSAT_WHERE} GROUP BY r.rating");
-    let ratings: Vec<(i32, i64)> = bind_filter!(sqlx::query_as::<_, (i32, i64)>(&ratings_sql), f).fetch_all(&st.db).await?;
-    let ratings_count: serde_json::Map<String, Value> = ratings.into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+    let ratings: Vec<(i32, i64)> = bind_filter!(sqlx::query_as::<_, (i32, i64)>(&ratings_sql), f)
+        .fetch_all(&st.db)
+        .await?;
+    let ratings_count: serde_json::Map<String, Value> = ratings
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), json!(v)))
+        .collect();
 
     // Chatwoot: total_sent_messages_count = input_csat messages in the date range, not the response filters.
     // content_type 9 = "input_csat" in the Pulsar CONTENT_TYPES list (conversations.rs).
@@ -278,13 +334,32 @@ async fn csat_metrics(State(st): State<AppState>, user: CurrentUser, Path(a): Pa
 
 /// CSVSafe: quote every cell, double embedded quotes, and prefix formula-leading cells with `'`.
 fn csv_cell(s: &str) -> String {
-    let s = if s.starts_with(['=', '+', '-', '@']) { format!("'{s}") } else { s.to_string() };
+    let s = if s.starts_with(['=', '+', '-', '@']) {
+        format!("'{s}")
+    } else {
+        s.to_string()
+    };
     format!("\"{}\"", s.replace('"', "\"\""))
 }
 
-type CsvRow = (String, String, i32, String, String, String, String, Option<i32>, String);
+type CsvRow = (
+    String,
+    String,
+    i32,
+    String,
+    String,
+    String,
+    String,
+    Option<i32>,
+    String,
+);
 
-async fn csat_download(State(st): State<AppState>, user: CurrentUser, Path(a): Path<i64>, Query(p): Query<CsatParams>) -> Result<Response, ApiError> {
+async fn csat_download(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(a): Path<i64>,
+    Query(p): Query<CsatParams>,
+) -> Result<Response, ApiError> {
     require_account(&st.db, &user, a).await?.require_admin()?;
     let f = filter(a, &p);
     let sql = format!(
@@ -295,21 +370,58 @@ async fn csat_download(State(st): State<AppState>, user: CurrentUser, Path(a): P
          LEFT JOIN contacts ct ON ct.id = r.contact_id AND ct.account_id = r.account_id{CSAT_WHERE} \
          ORDER BY r.created_at DESC, r.id DESC"
     );
-    let rows: Vec<(String, String, i32, String, String, String, String, Option<i32>, String)> =
-        bind_filter!(sqlx::query_as::<_, CsvRow>(&sql), f).fetch_all(&st.db).await?;
+    let rows: Vec<(
+        String,
+        String,
+        i32,
+        String,
+        String,
+        String,
+        String,
+        Option<i32>,
+        String,
+    )> = bind_filter!(sqlx::query_as::<_, CsvRow>(&sql), f)
+        .fetch_all(&st.db)
+        .await?;
 
-    let mut out = String::from("\u{feff}Agent Name,Rating,Feedback,Contact Name,Contact Email Address,Contact Phone Number,Link to the conversation,Recorded at\r\n");
+    let mut out = String::from(
+        "\u{feff}Agent Name,Rating,Feedback,Contact Name,Contact Email Address,Contact Phone Number,Link to the conversation,Recorded at\r\n",
+    );
     for (agent, agent_email, rating, feedback, cname, cemail, cphone, conv, recorded) in rows {
-        let agent_cell = if agent.is_empty() && agent_email.is_empty() { String::new() } else { format!("{agent} ({agent_email})") };
-        let link = conv.map(|c| format!("/app/accounts/{a}/conversations/{c}")).unwrap_or_default();
-        let cells = [agent_cell, rating.to_string(), feedback, cname, cemail, cphone, link, recorded];
-        out.push_str(&cells.iter().map(|c| csv_cell(c)).collect::<Vec<_>>().join(","));
+        let agent_cell = if agent.is_empty() && agent_email.is_empty() {
+            String::new()
+        } else {
+            format!("{agent} ({agent_email})")
+        };
+        let link = conv
+            .map(|c| format!("/app/accounts/{a}/conversations/{c}"))
+            .unwrap_or_default();
+        let cells = [
+            agent_cell,
+            rating.to_string(),
+            feedback,
+            cname,
+            cemail,
+            cphone,
+            link,
+            recorded,
+        ];
+        out.push_str(
+            &cells
+                .iter()
+                .map(|c| csv_cell(c))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
         out.push_str("\r\n");
     }
     Ok((
         [
             (header::CONTENT_TYPE, HeaderValue::from_static("text/csv")),
-            (header::CONTENT_DISPOSITION, HeaderValue::from_static("attachment; filename=csat_report.csv")),
+            (
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_static("attachment; filename=csat_report.csv"),
+            ),
         ],
         out,
     )

@@ -36,10 +36,22 @@ const DEFAULT_SECRET: &str = "pulsar-dev-secret-change-me";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/widget/direct_uploads", post(widget_direct_upload_create))
-        .route("/rails/active_storage/disk_uploads/{key}", put(disk_upload_put))
-        .route("/rails/active_storage/blobs/redirect/{signed_id}/{filename}", get(serve))
-        .route("/rails/active_storage/blobs/{signed_id}/{filename}", get(serve))
+        .route(
+            "/api/v1/widget/direct_uploads",
+            post(widget_direct_upload_create),
+        )
+        .route(
+            "/rails/active_storage/disk_uploads/{key}",
+            put(disk_upload_put),
+        )
+        .route(
+            "/rails/active_storage/blobs/redirect/{signed_id}/{filename}",
+            get(serve),
+        )
+        .route(
+            "/rails/active_storage/blobs/{signed_id}/{filename}",
+            get(serve),
+        )
 }
 
 // ---------- disk service (Rails ActiveStorage Disk layout) ----------
@@ -49,7 +61,10 @@ fn storage_root() -> PathBuf {
 }
 
 fn valid_key(key: &str) -> bool {
-    key.len() >= 4 && key.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    key.len() >= 4
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
 fn blob_path_in(root: &FsPath, key: &str) -> PathBuf {
@@ -63,7 +78,9 @@ fn blob_path(key: &str) -> PathBuf {
 fn new_key() -> String {
     const C: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let mut rng = rand::thread_rng();
-    (0..28).map(|_| C[rng.gen_range(0..C.len())] as char).collect()
+    (0..28)
+        .map(|_| C[rng.gen_range(0..C.len())] as char)
+        .collect()
 }
 
 fn io_err(e: std::io::Error) -> ApiError {
@@ -93,21 +110,39 @@ fn clean_name(raw: &str) -> String {
         .take(255)
         .collect();
     let t = base.trim();
-    if t.is_empty() { "file".into() } else { t.to_string() }
+    if t.is_empty() {
+        "file".into()
+    } else {
+        t.to_string()
+    }
 }
 
 /// Keep only a plausible `type/subtype` value, otherwise octet-stream (header-safe).
 fn clean_ct(raw: Option<&str>) -> String {
     match raw {
-        Some(c) if c.contains('/') && c.bytes().all(|b| b.is_ascii_graphic() && b != b';' || b == b';') && c.len() <= 255 => {
-            c.split(';').next().unwrap_or("").trim().to_ascii_lowercase()
+        Some(c)
+            if c.contains('/')
+                && c.bytes()
+                    .all(|b| b.is_ascii_graphic() && b != b';' || b == b';')
+                && c.len() <= 255 =>
+        {
+            c.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
         }
         _ => "application/octet-stream".into(),
     }
 }
 
 /// Insert file on disk plus `active_storage_blobs` row. Returns (blob_id, key).
-pub(crate) async fn save_blob(db: &PgPool, bytes: &[u8], filename: &str, content_type: &str) -> Result<(i64, String), ApiError> {
+pub(crate) async fn save_blob(
+    db: &PgPool,
+    bytes: &[u8],
+    filename: &str,
+    content_type: &str,
+) -> Result<(i64, String), ApiError> {
     let key = new_key();
     let path = blob_path(&key);
     write_file(&path, bytes).await?;
@@ -135,7 +170,13 @@ pub(crate) async fn save_blob(db: &PgPool, bytes: &[u8], filename: &str, content
 }
 
 /// Link blob to a record (Rails `attach`). Used for `Attachment#file` and `User#avatar`.
-pub(crate) async fn attach(db: &PgPool, record_type: &str, record_id: i64, name: &str, blob_id: i64) -> Result<(), ApiError> {
+pub(crate) async fn attach(
+    db: &PgPool,
+    record_type: &str,
+    record_id: i64,
+    name: &str,
+    blob_id: i64,
+) -> Result<(), ApiError> {
     sqlx::query(
         "INSERT INTO active_storage_attachments (name, record_type, record_id, blob_id, created_at) VALUES ($1, $2, $3, $4, $5)",
     )
@@ -151,7 +192,13 @@ pub(crate) async fn attach(db: &PgPool, record_type: &str, record_id: i64, name:
 
 /// Replace the single attachment `(record_type, record_id, name)` in one transaction.
 /// Returns the blob ids that were detached so the caller can purge them.
-async fn swap_attachment(db: &PgPool, record_type: &str, record_id: i64, name: &str, blob_id: Option<i64>) -> Result<Vec<i64>, ApiError> {
+async fn swap_attachment(
+    db: &PgPool,
+    record_type: &str,
+    record_id: i64,
+    name: &str,
+    blob_id: Option<i64>,
+) -> Result<Vec<i64>, ApiError> {
     let mut tx = db.begin().await?;
     let old: Vec<i64> = sqlx::query_scalar(
         "DELETE FROM active_storage_attachments WHERE record_type = $1 AND record_id = $2 AND name = $3 RETURNING blob_id",
@@ -224,7 +271,11 @@ fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
 }
 
 fn sig_for(blob_id: i64) -> String {
-    hex::encode(hmac_sha256(secret().as_bytes(), format!("blob:{blob_id}").as_bytes()))[..32].to_string()
+    hex::encode(hmac_sha256(
+        secret().as_bytes(),
+        format!("blob:{blob_id}").as_bytes(),
+    ))[..32]
+        .to_string()
 }
 
 fn signed_id(blob_id: i64) -> String {
@@ -242,7 +293,10 @@ fn verify_signed_id(s: &str) -> Option<i64> {
     if sig.len() != expected.len() {
         return None;
     }
-    let diff = sig.bytes().zip(expected.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b));
+    let diff = sig
+        .bytes()
+        .zip(expected.bytes())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b));
     if diff == 0 { Some(id) } else { None }
 }
 
@@ -260,7 +314,11 @@ fn pct(s: &str) -> String {
 }
 
 pub(crate) fn blob_url(blob_id: i64, filename: &str) -> String {
-    format!("/rails/active_storage/blobs/redirect/{}/{}", signed_id(blob_id), pct(filename))
+    format!(
+        "/rails/active_storage/blobs/redirect/{}/{}",
+        signed_id(blob_id),
+        pct(filename)
+    )
 }
 
 // ---------- serving ----------
@@ -273,22 +331,46 @@ fn inline_ok(ct: &str) -> bool {
         || ct == "text/plain"
 }
 
-async fn serve(State(st): State<AppState>, Path((signed, _filename)): Path<(String, String)>) -> ApiResult<Response> {
+async fn serve(
+    State(st): State<AppState>,
+    Path((signed, _filename)): Path<(String, String)>,
+) -> ApiResult<Response> {
     let blob_id = verify_signed_id(&signed).ok_or_else(ApiError::not_found)?;
-    let row: Option<(String, String, Option<String>)> =
-        sqlx::query_as("SELECT key, filename, content_type FROM active_storage_blobs WHERE id = $1")
-            .bind(blob_id)
-            .fetch_optional(&st.db)
-            .await?;
+    let row: Option<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT key, filename, content_type FROM active_storage_blobs WHERE id = $1",
+    )
+    .bind(blob_id)
+    .fetch_optional(&st.db)
+    .await?;
     let (key, filename, ct) = row.ok_or_else(ApiError::not_found)?;
     if !valid_key(&key) {
         return Err(ApiError::not_found());
     }
-    let bytes = tokio::fs::read(blob_path(&key)).await.map_err(|_| ApiError::not_found())?;
-    let ct = ct.filter(|c| !c.is_empty()).unwrap_or_else(|| "application/octet-stream".into());
-    let disp = if inline_ok(&ct) { "inline" } else { "attachment" };
-    let ascii: String = filename.chars().map(|c| if c.is_ascii_graphic() && c != '"' && c != '\\' { c } else { '_' }).collect();
-    let cd = format!("{disp}; filename=\"{ascii}\"; filename*=UTF-8''{}", pct(&filename));
+    let bytes = tokio::fs::read(blob_path(&key))
+        .await
+        .map_err(|_| ApiError::not_found())?;
+    let ct = ct
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| "application/octet-stream".into());
+    let disp = if inline_ok(&ct) {
+        "inline"
+    } else {
+        "attachment"
+    };
+    let ascii: String = filename
+        .chars()
+        .map(|c| {
+            if c.is_ascii_graphic() && c != '"' && c != '\\' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let cd = format!(
+        "{disp}; filename=\"{ascii}\"; filename*=UTF-8''{}",
+        pct(&filename)
+    );
     Ok((
         [
             (header::CONTENT_TYPE, ct),
@@ -329,13 +411,23 @@ fn file_type_of(ct: &str) -> i32 {
 
 fn extension_of(filename: &str) -> Option<String> {
     let (_, e) = filename.rsplit_once('.')?;
-    if e.is_empty() || e.len() > 16 { None } else { Some(e.to_ascii_lowercase()) }
+    if e.is_empty() || e.len() > 16 {
+        None
+    } else {
+        Some(e.to_ascii_lowercase())
+    }
 }
 
 /// Store `bytes` as an attachment of an existing message (channel inbound media). `file_type` overrides the
 /// content-type guess when the channel knows better (e.g. Telegram voice notes).
 pub(crate) async fn attach_to_message(
-    db: &PgPool, account_id: i64, message_id: i64, fname: &str, content_type: &str, bytes: &[u8], file_type: Option<i32>,
+    db: &PgPool,
+    account_id: i64,
+    message_id: i64,
+    fname: &str,
+    content_type: &str,
+    bytes: &[u8],
+    file_type: Option<i32>,
 ) -> Result<(), ApiError> {
     if bytes.len() > MAX_BYTES {
         return Err(ApiError::bad("Attachment too large"));
@@ -372,18 +464,20 @@ pub(crate) async fn attachments_json(db: &PgPool, message_id: i64) -> Vec<Value>
         vec![]
     });
     rows.into_iter()
-        .map(|(id, ft, ext, account_id, msg_id, created, blob_id, filename, ct, size)| {
-            let data_url = blob_url(blob_id, &filename);
-            let is_image = ct.as_deref().is_some_and(|c| c.starts_with("image/"));
-            json!({
-                "id": id, "message_id": msg_id, "account_id": account_id,
-                "file_type": file_type_name(ft), "extension": ext,
-                "data_url": data_url,
-                "thumb_url": if is_image { data_url.clone() } else { String::new() },
-                "file_size": size, "width": null, "height": null,
-                "created_at": created.and_utc().timestamp(),
-            })
-        })
+        .map(
+            |(id, ft, ext, account_id, msg_id, created, blob_id, filename, ct, size)| {
+                let data_url = blob_url(blob_id, &filename);
+                let is_image = ct.as_deref().is_some_and(|c| c.starts_with("image/"));
+                json!({
+                    "id": id, "message_id": msg_id, "account_id": account_id,
+                    "file_type": file_type_name(ft), "extension": ext,
+                    "data_url": data_url,
+                    "thumb_url": if is_image { data_url.clone() } else { String::new() },
+                    "file_size": size, "width": null, "height": null,
+                    "created_at": created.and_utc().timestamp(),
+                })
+            },
+        )
         .collect()
 }
 
@@ -402,18 +496,21 @@ pub(crate) async fn create_with_attachments(
     mut multipart: Multipart,
 ) -> ApiResult {
     let au = require_account(&st.db, user, account_id).await?;
-    let conv: Conv = sqlx::query_as(&format!("SELECT {CONV_COLS} FROM conversations c WHERE c.account_id = $1 AND c.display_id = $2"))
-        .bind(account_id)
-        .bind(display_id)
-        .fetch_optional(&st.db)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
+    let conv: Conv = sqlx::query_as(&format!(
+        "SELECT {CONV_COLS} FROM conversations c WHERE c.account_id = $1 AND c.display_id = $2"
+    ))
+    .bind(account_id)
+    .bind(display_id)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
     if !au.is_admin() {
-        let member: Option<i32> = sqlx::query_scalar("SELECT 1 FROM inbox_members WHERE inbox_id = $1 AND user_id = $2")
-            .bind(conv.inbox_id)
-            .bind(user.id)
-            .fetch_optional(&st.db)
-            .await?;
+        let member: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM inbox_members WHERE inbox_id = $1 AND user_id = $2")
+                .bind(conv.inbox_id)
+                .bind(user.id)
+                .fetch_optional(&st.db)
+                .await?;
         if member.is_none() {
             return Err(ApiError::not_found());
         }
@@ -432,14 +529,17 @@ pub(crate) async fn create_with_attachments(
             "content_attributes" => {
                 let t = field.text().await.map_err(mp_err)?;
                 if !t.trim().is_empty() {
-                    content_attributes = serde_json::from_str(&t).map_err(|_| ApiError::bad("content_attributes must be JSON"))?;
+                    content_attributes = serde_json::from_str(&t)
+                        .map_err(|_| ApiError::bad("content_attributes must be JSON"))?;
                     if !content_attributes.is_object() {
                         return Err(ApiError::bad("content_attributes must be an object"));
                     }
                 }
             }
             "attachments[]" | "attachments" => {
-                let Some(fname) = field.file_name().map(clean_name) else { continue };
+                let Some(fname) = field.file_name().map(clean_name) else {
+                    continue;
+                };
                 let ct = clean_ct(field.content_type());
                 let bytes = field.bytes().await.map_err(mp_err)?;
                 if bytes.len() > MAX_BYTES {
@@ -505,10 +605,12 @@ pub(crate) async fn create_with_attachments(
     }
 
     // 4. broadcast with attachments populated
-    let m: Msg = sqlx::query_as(&format!("SELECT {MSG_COLS} FROM messages m WHERE m.id = $1"))
-        .bind(msg_id)
-        .fetch_one(&st.db)
-        .await?;
+    let m: Msg = sqlx::query_as(&format!(
+        "SELECT {MSG_COLS} FROM messages m WHERE m.id = $1"
+    ))
+    .bind(msg_id)
+    .fetch_one(&st.db)
+    .await?;
     let conv = reload(&st.db, conv.id).await?;
     let mut data = msg_json(&st.db, &m, &conv).await;
     data["attachments"] = json!(attachments_json(&st.db, msg_id).await);
@@ -522,7 +624,12 @@ pub(crate) async fn create_with_attachments(
 // ---------- avatars ----------
 
 /// Store an uploaded image as the record's `avatar`, replacing the previous one. Returns its URL.
-pub(crate) async fn set_avatar(db: &PgPool, record_type: &str, record_id: i64, field: Field<'_>) -> Result<String, ApiError> {
+pub(crate) async fn set_avatar(
+    db: &PgPool,
+    record_type: &str,
+    record_id: i64,
+    field: Field<'_>,
+) -> Result<String, ApiError> {
     let ct = clean_ct(field.content_type());
     if !ct.starts_with("image/") {
         return Err(ApiError::bad("Avatar must be an image"));
@@ -558,7 +665,11 @@ pub(crate) async fn avatar_url(db: &PgPool, record_type: &str, record_id: i64) -
 }
 
 /// Detach and purge the record's avatar.
-pub(crate) async fn remove_avatar(db: &PgPool, record_type: &str, record_id: i64) -> Result<(), ApiError> {
+pub(crate) async fn remove_avatar(
+    db: &PgPool,
+    record_type: &str,
+    record_id: i64,
+) -> Result<(), ApiError> {
     let old = swap_attachment(db, record_type, record_id, "avatar", None).await?;
     purge_blobs(db, &old).await;
     Ok(())
@@ -583,13 +694,19 @@ mod tests {
         assert!(!valid_key("../etc"));
         assert!(!valid_key("ab"));
         assert!(!valid_key("AB12cd34"));
-        assert_eq!(blob_path_in(FsPath::new("s"), "abcdefgh"), PathBuf::from("s/ab/cd/abcdefgh"));
+        assert_eq!(
+            blob_path_in(FsPath::new("s"), "abcdefgh"),
+            PathBuf::from("s/ab/cd/abcdefgh")
+        );
     }
 
     #[test]
     fn hmac_rfc4231_case2() {
         let out = hex::encode(hmac_sha256(b"Jefe", b"what do ya want for nothing?"));
-        assert_eq!(out, "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+        assert_eq!(
+            out,
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
     }
 }
 
@@ -597,11 +714,18 @@ mod tests {
 
 /// Signed PUT target for a pending blob. Rails signs the disk URL too; we HMAC the key.
 fn direct_upload_token(key: &str) -> String {
-    hex::encode(hmac_sha256(secret().as_bytes(), format!("upload:{key}").as_bytes()))[..32].to_string()
+    hex::encode(hmac_sha256(
+        secret().as_bytes(),
+        format!("upload:{key}").as_bytes(),
+    ))[..32]
+        .to_string()
 }
 
 fn direct_upload_url(key: &str) -> String {
-    format!("/rails/active_storage/disk_uploads/{key}?token={}", direct_upload_token(key))
+    format!(
+        "/rails/active_storage/disk_uploads/{key}?token={}",
+        direct_upload_token(key)
+    )
 }
 
 /// POST /api/v1/widget/direct_uploads?website_token= {blob:{filename,content_type,byte_size,checksum}}
@@ -630,7 +754,9 @@ pub(crate) async fn conversation_direct_upload(
     )
     .bind(account_id).bind(display_id).bind(au.is_admin()).bind(user.id)
     .fetch_optional(&st.db).await?;
-    if visible.is_none() { return Err(ApiError::not_found()); }
+    if visible.is_none() {
+        return Err(ApiError::not_found());
+    }
     direct_upload_create(&st, body).await
 }
 
@@ -638,7 +764,10 @@ async fn direct_upload_create(st: &AppState, body: Value) -> ApiResult {
     let b = &body["blob"];
     let filename = clean_name(b["filename"].as_str().unwrap_or("file"));
     let ct = clean_ct(b["content_type"].as_str());
-    let size = b["byte_size"].as_i64().filter(|s| *s >= 0).ok_or_else(|| ApiError::bad("byte_size is required"))?;
+    let size = b["byte_size"]
+        .as_i64()
+        .filter(|s| *s >= 0)
+        .ok_or_else(|| ApiError::bad("byte_size is required"))?;
     if size as usize > MAX_BYTES {
         return Err(ApiError::bad("File is too large (max 40 MB)"));
     }
@@ -680,13 +809,19 @@ pub(crate) async fn account_upload(
 ) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
     while let Some(field) = multipart.next_field().await.map_err(mp_err)? {
-        if field.name() != Some("attachment") { continue; }
+        if field.name() != Some("attachment") {
+            continue;
+        }
         let filename = clean_name(field.file_name().unwrap_or("file"));
         let ct = clean_ct(field.content_type());
         let bytes = field.bytes().await.map_err(mp_err)?;
-        if bytes.len() > MAX_BYTES { return Err(ApiError::bad("File is too large (max 40 MB)")); }
+        if bytes.len() > MAX_BYTES {
+            return Err(ApiError::bad("File is too large (max 40 MB)"));
+        }
         let (id, _) = save_blob(&st.db, &bytes, &filename, &ct).await?;
-        return Ok(Json(json!({"file_url": blob_url(id, &filename), "blob_id": signed_id(id)})));
+        return Ok(Json(
+            json!({"file_url": blob_url(id, &filename), "blob_id": signed_id(id)}),
+        ));
     }
     Err(ApiError::bad("Attachment is required"))
 }
@@ -701,21 +836,33 @@ async fn disk_upload_put(
     let tok = q.get("token").cloned().unwrap_or_default();
     let want = direct_upload_token(&key);
     // constant-time compare: the token is an HMAC, do not leak a prefix through timing
-    let same = tok.len() == want.len() && tok.bytes().zip(want.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0;
+    let same = tok.len() == want.len()
+        && tok
+            .bytes()
+            .zip(want.bytes())
+            .fold(0u8, |a, (x, y)| a | (x ^ y))
+            == 0;
     if !valid_key(&key) || !same {
         return Err(ApiError::forbidden());
     }
-    let row: Option<(i64, i64)> = sqlx::query_as("SELECT id::bigint, byte_size FROM active_storage_blobs WHERE key = $1")
-        .bind(&key)
-        .fetch_optional(&st.db)
-        .await?;
+    let row: Option<(i64, i64)> =
+        sqlx::query_as("SELECT id::bigint, byte_size FROM active_storage_blobs WHERE key = $1")
+            .bind(&key)
+            .fetch_optional(&st.db)
+            .await?;
     let (_, size) = row.ok_or_else(ApiError::not_found)?;
     if body.len() as i64 != size {
         return Err(ApiError::bad("Uploaded size does not match byte_size"));
     }
     // A signed URL uploads once: an already stored blob is never overwritten through it.
-    if tokio::fs::try_exists(blob_path(&key)).await.unwrap_or(false) {
-        return Err(ApiError(StatusCode::CONFLICT, "Blob already uploaded".into()));
+    if tokio::fs::try_exists(blob_path(&key))
+        .await
+        .unwrap_or(false)
+    {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "Blob already uploaded".into(),
+        ));
     }
     write_file(&blob_path(&key), &body).await?;
     Ok(StatusCode::NO_CONTENT)

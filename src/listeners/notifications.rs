@@ -9,7 +9,7 @@
 //! because the event carries no previous assignee to detect a real change.
 
 use chrono::NaiveDateTime;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use crate::common::AppState;
@@ -75,15 +75,20 @@ async fn conv_ref(db: &PgPool, account_id: i64, display_id: i64) -> sqlx::Result
 }
 
 async fn conversation_created(st: &AppState, ev: &Event) -> sqlx::Result<()> {
-    let Some(did) = ev.data["id"].as_i64() else { return Ok(()) };
-    let Some(conv) = conv_ref(&st.db, ev.account_id, did).await? else { return Ok(()) };
+    let Some(did) = ev.data["id"].as_i64() else {
+        return Ok(());
+    };
+    let Some(conv) = conv_ref(&st.db, ev.account_id, did).await? else {
+        return Ok(());
+    };
     if conv.status == PENDING {
         return Ok(());
     }
-    let members: Vec<i64> = sqlx::query_scalar("SELECT user_id::bigint FROM inbox_members WHERE inbox_id = $1::bigint")
-        .bind(conv.inbox_id)
-        .fetch_all(&st.db)
-        .await?;
+    let members: Vec<i64> =
+        sqlx::query_scalar("SELECT user_id::bigint FROM inbox_members WHERE inbox_id = $1::bigint")
+            .bind(conv.inbox_id)
+            .fetch_all(&st.db)
+            .await?;
     for uid in members {
         build(st, ev.account_id, &conv, uid, CONVERSATION_CREATION, None).await?;
     }
@@ -91,9 +96,15 @@ async fn conversation_created(st: &AppState, ev: &Event) -> sqlx::Result<()> {
 }
 
 async fn assignee_changed(st: &AppState, ev: &Event) -> sqlx::Result<()> {
-    let Some(did) = ev.data["id"].as_i64() else { return Ok(()) };
-    let Some(conv) = conv_ref(&st.db, ev.account_id, did).await? else { return Ok(()) };
-    let Some(assignee) = conv.assignee_id else { return Ok(()) };
+    let Some(did) = ev.data["id"].as_i64() else {
+        return Ok(());
+    };
+    let Some(conv) = conv_ref(&st.db, ev.account_id, did).await? else {
+        return Ok(());
+    };
+    let Some(assignee) = conv.assignee_id else {
+        return Ok(());
+    };
     add_participant(&st.db, ev.account_id, assignee, conv.id).await?;
     if conv.status == PENDING {
         return Ok(());
@@ -110,18 +121,36 @@ async fn assignee_changed(st: &AppState, ev: &Event) -> sqlx::Result<()> {
     if unread_dup {
         return Ok(());
     }
-    build(st, ev.account_id, &conv, assignee, CONVERSATION_ASSIGNMENT, None).await
+    build(
+        st,
+        ev.account_id,
+        &conv,
+        assignee,
+        CONVERSATION_ASSIGNMENT,
+        None,
+    )
+    .await
 }
 
 async fn message_created(st: &AppState, ev: &Event) -> sqlx::Result<()> {
     let db = &st.db;
     let d = &ev.data;
-    let Some(did) = d["conversation_id"].as_i64() else { return Ok(()) };
-    let Some(msg_id) = d["id"].as_i64() else { return Ok(()) };
-    let Some(conv) = conv_ref(db, ev.account_id, did).await? else { return Ok(()) };
+    let Some(did) = d["conversation_id"].as_i64() else {
+        return Ok(());
+    };
+    let Some(msg_id) = d["id"].as_i64() else {
+        return Ok(());
+    };
+    let Some(conv) = conv_ref(db, ev.account_id, did).await? else {
+        return Ok(());
+    };
     let private = d["private"].as_bool().unwrap_or(false);
     let content = d["content"].as_str().unwrap_or_default();
-    let sender = if d["sender_type"].as_str() == Some("User") { d["sender_id"].as_i64() } else { None };
+    let sender = if d["sender_type"].as_str() == Some("User") {
+        d["sender_id"].as_i64()
+    } else {
+        None
+    };
     let secondary = Some(("Message", msg_id));
 
     // Mentions run first, like Chatwoot's listener: private notes only, mentioned users must be admins or inbox members.
@@ -153,7 +182,15 @@ async fn message_created(st: &AppState, ev: &Event) -> sqlx::Result<()> {
         for uid in ids {
             add_participant(db, ev.account_id, uid, conv.id).await?;
             if Some(uid) != sender {
-                build(st, ev.account_id, &conv, uid, CONVERSATION_MENTION, secondary).await?;
+                build(
+                    st,
+                    ev.account_id,
+                    &conv,
+                    uid,
+                    CONVERSATION_MENTION,
+                    secondary,
+                )
+                .await?;
             }
         }
     }
@@ -168,16 +205,25 @@ async fn message_created(st: &AppState, ev: &Event) -> sqlx::Result<()> {
             build(st, ev.account_id, &conv, a, ASSIGNED_NEW_MESSAGE, secondary).await?;
         }
     }
-    let participants: Vec<i64> =
-        sqlx::query_scalar("SELECT user_id::bigint FROM conversation_participants WHERE conversation_id = $1::bigint")
-            .bind(conv.id)
-            .fetch_all(db)
-            .await?;
+    let participants: Vec<i64> = sqlx::query_scalar(
+        "SELECT user_id::bigint FROM conversation_participants WHERE conversation_id = $1::bigint",
+    )
+    .bind(conv.id)
+    .fetch_all(db)
+    .await?;
     for uid in participants {
         if Some(uid) == sender || already_notified(db, conv.id, uid, msg_id).await? {
             continue;
         }
-        build(st, ev.account_id, &conv, uid, PARTICIPATING_NEW_MESSAGE, secondary).await?;
+        build(
+            st,
+            ev.account_id,
+            &conv,
+            uid,
+            PARTICIPATING_NEW_MESSAGE,
+            secondary,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -185,10 +231,18 @@ async fn message_created(st: &AppState, ev: &Event) -> sqlx::Result<()> {
 /// Chatwoot Messages::MentionService#mentioned_ids: `(mention://user/ID/name)` or `(mention://team/ID/name)`.
 fn mention_ids(text: &str, kind: &str) -> Vec<i64> {
     let marker = format!("(mention://{kind}/");
-    text.split(marker.as_str()).skip(1).filter_map(|rest| rest.split('/').next()?.parse::<i64>().ok()).collect()
+    text.split(marker.as_str())
+        .skip(1)
+        .filter_map(|rest| rest.split('/').next()?.parse::<i64>().ok())
+        .collect()
 }
 
-async fn already_notified(db: &PgPool, conv_id: i64, user_id: i64, msg_id: i64) -> sqlx::Result<bool> {
+async fn already_notified(
+    db: &PgPool,
+    conv_id: i64,
+    user_id: i64,
+    msg_id: i64,
+) -> sqlx::Result<bool> {
     sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM notifications WHERE user_id = $1::bigint AND primary_actor_type = 'Conversation'
            AND primary_actor_id = $2::bigint AND secondary_actor_type = 'Message' AND secondary_actor_id = $3::bigint)",
@@ -200,7 +254,12 @@ async fn already_notified(db: &PgPool, conv_id: i64, user_id: i64, msg_id: i64) 
     .await
 }
 
-async fn add_participant(db: &PgPool, account_id: i64, user_id: i64, conv_id: i64) -> sqlx::Result<()> {
+async fn add_participant(
+    db: &PgPool,
+    account_id: i64,
+    user_id: i64,
+    conv_id: i64,
+) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO conversation_participants (account_id, user_id, conversation_id, created_at, updated_at)
          VALUES ($1::bigint, $2::bigint, $3::bigint, now(), now()) ON CONFLICT DO NOTHING",
@@ -215,7 +274,12 @@ async fn add_participant(db: &PgPool, account_id: i64, user_id: i64, conv_id: i6
 
 /// Chatwoot NotificationBuilder#perform: subscription, blocked-contact and access checks, then insert and push.
 async fn build(
-    st: &AppState, account_id: i64, conv: &ConvRef, user_id: i64, kind: i64, secondary: Option<(&str, i64)>,
+    st: &AppState,
+    account_id: i64,
+    conv: &ConvRef,
+    user_id: i64,
+    kind: i64,
+    secondary: Option<(&str, i64)>,
 ) -> sqlx::Result<()> {
     let db = &st.db;
     if kind == CONVERSATION_CREATION {
@@ -232,11 +296,12 @@ async fn build(
     }
     if kind != CONVERSATION_MENTION {
         if let Some(cid) = conv.contact_id {
-            let blocked: bool = sqlx::query_scalar("SELECT blocked FROM contacts WHERE id = $1::bigint")
-                .bind(cid)
-                .fetch_optional(db)
-                .await?
-                .unwrap_or(false);
+            let blocked: bool =
+                sqlx::query_scalar("SELECT blocked FROM contacts WHERE id = $1::bigint")
+                    .bind(cid)
+                    .fetch_optional(db)
+                    .await?
+                    .unwrap_or(false);
             if blocked {
                 return Ok(());
             }
@@ -298,7 +363,19 @@ async fn email(st: &AppState, id: i64) -> anyhow::Result<()> {
     if !crate::mailer::configured() {
         return Ok(());
     }
-    type Row = (i64, i64, i64, i64, String, String, Option<NaiveDateTime>, Option<NaiveDateTime>, i64, Option<String>, Option<i64>);
+    type Row = (
+        i64,
+        i64,
+        i64,
+        i64,
+        String,
+        String,
+        Option<NaiveDateTime>,
+        Option<NaiveDateTime>,
+        i64,
+        Option<String>,
+        Option<i64>,
+    );
     let r: Option<Row> = sqlx::query_as(
         "SELECT n.account_id::bigint, n.user_id::bigint, n.notification_type::bigint, c.display_id::bigint,
                 u.email, COALESCE(NULLIF(u.display_name, ''), u.name), u.confirmed_at, n.read_at,
@@ -311,39 +388,78 @@ async fn email(st: &AppState, id: i64) -> anyhow::Result<()> {
     .bind(id)
     .fetch_optional(&st.db)
     .await?;
-    let Some((account_id, user_id, kind, display_id, to, name, confirmed, read, flags, inbox, message_id)) = r else { return Ok(()) };
+    let Some((
+        account_id,
+        user_id,
+        kind,
+        display_id,
+        to,
+        name,
+        confirmed,
+        read,
+        flags,
+        inbox,
+        message_id,
+    )) = r
+    else {
+        return Ok(());
+    };
     // has_flags bit_operator: notification type N maps to bit (N - 1)
     if read.is_some() || confirmed.is_none() || flags & (1 << (kind - 1)) == 0 {
         return Ok(());
     }
     // assigned/participating new message: skip when the agent is online
-    if (kind == 3 || kind == 5) && crate::cable::presence_snapshot().is_online(account_id, user_id) {
+    if (kind == 3 || kind == 5) && crate::cable::presence_snapshot().is_online(account_id, user_id)
+    {
         return Ok(());
     }
-    let url = format!("{}/app/accounts/{account_id}/conversations/{display_id}", st.frontend_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/app/accounts/{account_id}/conversations/{display_id}",
+        st.frontend_url.trim_end_matches('/')
+    );
     let link = format!("<a href=\"{url}\">");
     let subject_name = name.clone();
     let name = html_escape(&name); // body only; subjects are plain text
     let (subject, body) = match kind {
         1 => (
-            format!("{subject_name}, A new conversation [ID - {display_id}] has been created in {}.", inbox.clone().unwrap_or_default()),
-            format!("<p>Hi {name}</p><p>A new conversation ({link}#{display_id}</a>) has been created in {}.</p>", html_escape(&inbox.unwrap_or_default())),
+            format!(
+                "{subject_name}, A new conversation [ID - {display_id}] has been created in {}.",
+                inbox.clone().unwrap_or_default()
+            ),
+            format!(
+                "<p>Hi {name}</p><p>A new conversation ({link}#{display_id}</a>) has been created in {}.</p>",
+                html_escape(&inbox.unwrap_or_default())
+            ),
         ),
         2 => (
-            format!("{subject_name}, A new conversation [ID - {display_id}] has been assigned to you."),
-            format!("<p>Hi {name},</p><p>Time to save the world. A new conversation has been assigned to you</p><p>Click {link}here</a> to get cracking.</p>"),
+            format!(
+                "{subject_name}, A new conversation [ID - {display_id}] has been assigned to you."
+            ),
+            format!(
+                "<p>Hi {name},</p><p>Time to save the world. A new conversation has been assigned to you</p><p>Click {link}here</a> to get cracking.</p>"
+            ),
         ),
         3 => (
-            format!("{subject_name}, New message in your assigned conversation [ID - {display_id}]."),
-            format!("<p>Hi {name},</p><p>You have received a new message in your assigned conversation.</p><p>Click {link}here</a> to get cracking.</p>"),
+            format!(
+                "{subject_name}, New message in your assigned conversation [ID - {display_id}]."
+            ),
+            format!(
+                "<p>Hi {name},</p><p>You have received a new message in your assigned conversation.</p><p>Click {link}here</a> to get cracking.</p>"
+            ),
         ),
         4 => {
             let text: Option<String> = match message_id {
-                Some(m) => sqlx::query_scalar("SELECT content FROM messages WHERE id = $1").bind(m).fetch_optional(&st.db).await?.flatten(),
+                Some(m) => sqlx::query_scalar("SELECT content FROM messages WHERE id = $1")
+                    .bind(m)
+                    .fetch_optional(&st.db)
+                    .await?
+                    .flatten(),
                 None => None,
             };
             (
-                format!("{subject_name}, You have been mentioned in conversation [ID - {display_id}]"),
+                format!(
+                    "{subject_name}, You have been mentioned in conversation [ID - {display_id}]"
+                ),
                 format!(
                     "<p>Hi {name}, </p><p>You've been mentioned in a conversation.</p><blockquote style=\"padding:8px 16px;border-left:5px solid #eeeeee\">{}</blockquote><p>{link}View Message</a></p>",
                     html_escape(&text.unwrap_or_default())
@@ -351,8 +467,12 @@ async fn email(st: &AppState, id: i64) -> anyhow::Result<()> {
             )
         }
         5 => (
-            format!("{subject_name}, New message in your participating conversation [ID - {display_id}]."),
-            format!("<p>Hi {name},</p><p>You have received a new message in a conversation you are participating.</p><p>Click {link}here</a> to view.</p>"),
+            format!(
+                "{subject_name}, New message in your participating conversation [ID - {display_id}]."
+            ),
+            format!(
+                "<p>Hi {name},</p><p>You have received a new message in a conversation you are participating.</p><p>Click {link}here</a> to view.</p>"
+            ),
         ),
         _ => return Ok(()),
     };
@@ -360,7 +480,10 @@ async fn email(st: &AppState, id: i64) -> anyhow::Result<()> {
 }
 
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// ActionCableListener#notification_created: `notification.created` to the user's pubsub token.
@@ -381,8 +504,13 @@ async fn broadcast(st: &AppState, account_id: i64, user_id: i64, id: i64) -> sql
     .bind(user_id)
     .fetch_one(db)
     .await?;
-    let Some(token) = row.pubsub_token else { return Ok(()) };
-    let type_name = TYPE_NAMES.get((row.notification_type - 1).max(0) as usize).copied().unwrap_or(TYPE_NAMES[0]);
+    let Some(token) = row.pubsub_token else {
+        return Ok(());
+    };
+    let type_name = TYPE_NAMES
+        .get((row.notification_type - 1).max(0) as usize)
+        .copied()
+        .unwrap_or(TYPE_NAMES[0]);
     let notification: Value = json!({
         "id": id, "notification_type": type_name, "push_message_title": "", "push_message_body": "",
         "primary_actor_type": "Conversation", "primary_actor_id": row.primary_actor_id,
@@ -392,7 +520,11 @@ async fn broadcast(st: &AppState, account_id: i64, user_id: i64, id: i64) -> sql
         "last_activity_at": row.last_activity_at.map(|t| t.and_utc().timestamp()).unwrap_or(0),
         "snoozed_until": null, "meta": {},
     });
-    st.hub.broadcast(&[token], "notification.created", json!({ "notification": notification, "unread_count": unread, "count": count }));
+    st.hub.broadcast(
+        &[token],
+        "notification.created",
+        json!({ "notification": notification, "unread_count": unread, "count": count }),
+    );
     Ok(())
 }
 
@@ -402,7 +534,13 @@ mod tests {
 
     #[test]
     fn parses_user_and_team_mentions() {
-        assert_eq!(mention_ids("hi (mention://user/12/Ann) and (mention://user/7/Bo)", "user"), vec![12, 7]);
+        assert_eq!(
+            mention_ids(
+                "hi (mention://user/12/Ann) and (mention://user/7/Bo)",
+                "user"
+            ),
+            vec![12, 7]
+        );
         assert_eq!(mention_ids("(mention://team/3/Support)", "team"), vec![3]);
         assert!(mention_ids("(mention://user/9)", "user").is_empty());
     }

@@ -1,7 +1,7 @@
 //! Outbound Telegram listener on message.created.
 //! Mirrors chatwoot/app/services/telegram/send_on_telegram_service.rb and channel/telegram.rb.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::Row;
 
 use crate::{channels::telegram::api_base, common::AppState, events::Event};
@@ -39,7 +39,9 @@ async fn send(st: &AppState, ev: &Event) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    let content: String = r.try_get::<Option<String>, _>("content")?.unwrap_or_default();
+    let content: String = r
+        .try_get::<Option<String>, _>("content")?
+        .unwrap_or_default();
     if content.is_empty() {
         return Ok(());
     }
@@ -91,7 +93,9 @@ async fn send(st: &AppState, ev: &Event) -> anyhow::Result<()> {
     if !status.is_success() || parsed["ok"].as_bool() == Some(false) {
         let err_msg = format!(
             "{}, {}",
-            parsed["error_code"].as_i64().unwrap_or(status.as_u16() as i64),
+            parsed["error_code"]
+                .as_i64()
+                .unwrap_or(status.as_u16() as i64),
             parsed["description"].as_str().unwrap_or("telegram error")
         );
         sqlx::query(

@@ -3,13 +3,13 @@
 use std::collections::HashMap;
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, get, post},
-    Json, Router,
 };
 use chrono::NaiveDateTime;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use crate::auth::{availability_name, role_name};
@@ -20,8 +20,19 @@ const PRIORITIES: [&str; 4] = ["low", "medium", "high", "urgent"];
 const MSG_STATUSES: [&str; 4] = ["sent", "delivered", "read", "failed"];
 const MSG_TYPES: [&str; 4] = ["incoming", "outgoing", "activity", "template"];
 const CONTENT_TYPES: [&str; 13] = [
-    "text", "input_text", "input_textarea", "input_email", "input_select", "cards", "form", "article",
-    "incoming_email", "input_csat", "integrations", "sticker", "voice_call",
+    "text",
+    "input_text",
+    "input_textarea",
+    "input_email",
+    "input_select",
+    "cards",
+    "form",
+    "article",
+    "incoming_email",
+    "input_csat",
+    "integrations",
+    "sticker",
+    "voice_call",
 ];
 const CONTACT_TYPES: [&str; 3] = ["visitor", "lead", "customer"];
 const PER_PAGE: i64 = 25;
@@ -33,37 +44,96 @@ pub fn routes() -> Router<AppState> {
         .route("/conversations/search", get(search))
         .route("/conversations/filter", post(filter_conversations))
         .route("/conversations/unread_counts", get(unread_counts_index))
-        .route("/conversations/{id}", get(show).patch(update_conversation).put(update_conversation).delete(destroy_conversation))
-        .route("/conversations/{id}/draft_messages", get(draft_show).put(draft_update).patch(draft_update).delete(draft_destroy))
-        .route("/conversations/{id}/direct_uploads", post(crate::storage::conversation_direct_upload))
+        .route(
+            "/conversations/{id}",
+            get(show)
+                .patch(update_conversation)
+                .put(update_conversation)
+                .delete(destroy_conversation),
+        )
+        .route(
+            "/conversations/{id}/draft_messages",
+            get(draft_show)
+                .put(draft_update)
+                .patch(draft_update)
+                .delete(draft_destroy),
+        )
+        .route(
+            "/conversations/{id}/direct_uploads",
+            post(crate::storage::conversation_direct_upload),
+        )
         .route("/upload", post(crate::storage::account_upload))
         .route("/bulk_actions", post(bulk_actions_create))
         .route("/conversations/{id}/toggle_status", post(toggle_status))
         .route("/conversations/{id}/toggle_priority", post(toggle_priority))
-        .route("/conversations/{id}/toggle_typing_status", post(toggle_typing))
+        .route(
+            "/conversations/{id}/toggle_typing_status",
+            post(toggle_typing),
+        )
         .route("/conversations/{id}/assignments", post(assign))
-        .route("/conversations/{id}/update_last_seen", post(update_last_seen))
+        .route(
+            "/conversations/{id}/update_last_seen",
+            post(update_last_seen),
+        )
         .route("/conversations/{id}/unread", post(unread))
-        .route("/conversations/{id}/custom_attributes", post(custom_attributes))
-        .route("/conversations/{id}/destroy_custom_attributes", post(destroy_custom_attributes))
+        .route(
+            "/conversations/{id}/custom_attributes",
+            post(custom_attributes),
+        )
+        .route(
+            "/conversations/{id}/destroy_custom_attributes",
+            post(destroy_custom_attributes),
+        )
         .route("/conversations/{id}/mute", post(mute))
         .route("/conversations/{id}/unmute", post(unmute))
         .route("/conversations/{id}/transcript", post(transcript))
-        .route("/conversations/{id}/labels", get(labels_index).post(labels_create))
+        .route(
+            "/conversations/{id}/labels",
+            get(labels_index).post(labels_create),
+        )
         .route("/conversations/{id}/labels/add", post(labels_add))
         .route("/conversations/{id}/labels/remove", post(labels_remove))
-        .route("/conversations/{id}/participants", get(participants_show).post(participants_create).patch(participants_update).put(participants_update).delete(participants_destroy))
+        .route(
+            "/conversations/{id}/participants",
+            get(participants_show)
+                .post(participants_create)
+                .patch(participants_update)
+                .put(participants_update)
+                .delete(participants_destroy),
+        )
         .route("/conversations/{id}/attachments", get(attachments_index))
         .route(
             "/conversations/{id}/messages",
-            get(messages_index)
-                .post(messages_create_any)
-                .layer(axum::extract::DefaultBodyLimit::max(crate::storage::MAX_BYTES + 1024 * 1024)),
+            get(messages_index).post(messages_create_any).layer(
+                axum::extract::DefaultBodyLimit::max(crate::storage::MAX_BYTES + 1024 * 1024),
+            ),
         )
-        .route("/conversations/{id}/messages/{message_id}", delete(messages_destroy).patch(messages_update).put(messages_update))
-        .route("/conversations/{id}/messages/{message_id}/retry", post(messages_retry))
-        .route("/conversations/{id}/messages/{message_id}/translate", post(messages_translate))
-        .route("/conversations/{id}/request_contact_info", post(request_contact_info))
+        .route(
+            "/conversations/{id}/messages/{message_id}",
+            delete(messages_destroy)
+                .patch(messages_update)
+                .put(messages_update),
+        )
+        .route(
+            "/conversations/{id}/messages/{message_id}/retry",
+            post(messages_retry),
+        )
+        .route(
+            "/conversations/{id}/messages/{message_id}/translate",
+            post(messages_translate),
+        )
+        .route(
+            "/conversations/{id}/request_contact_info",
+            post(request_contact_info),
+        )
+        .route(
+            "/conversations/{id}/contact_info_request",
+            get(contact_info_request_show).post(request_contact_info),
+        )
+        .route(
+            "/conversations/{id}/reporting_events",
+            get(conversation_reporting_events),
+        )
 }
 
 fn idx(list: &[&str], s: &str) -> Option<i32> {
@@ -73,7 +143,8 @@ fn name_of(list: &[&'static str], i: i32) -> &'static str {
     list.get(i as usize).copied().unwrap_or(list[0])
 }
 fn num(v: &Value) -> Option<i64> {
-    v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+    v.as_i64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
 }
 
 // ---------- rows ----------
@@ -152,21 +223,26 @@ impl Conv {
 }
 
 async fn load(db: &PgPool, au: &AccountUser, display_id: i64) -> Result<Conv, ApiError> {
-    let c: Conv = sqlx::query_as(&format!("SELECT {CONV_COLS} FROM conversations c WHERE c.account_id = $1 AND c.display_id = $2"))
-        .bind(au.account_id)
-        .bind(display_id)
-        .fetch_optional(db)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
+    let c: Conv = sqlx::query_as(&format!(
+        "SELECT {CONV_COLS} FROM conversations c WHERE c.account_id = $1 AND c.display_id = $2"
+    ))
+    .bind(au.account_id)
+    .bind(display_id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
     if !au.is_admin() && !is_inbox_member(db, c.inbox_id, au.user_id).await? {
         return Err(ApiError::not_found());
     }
     if au.custom_perms.is_some() && !au.is_admin() {
-        let ok: bool = sqlx::query_scalar(&format!("SELECT {} FROM conversations c WHERE c.id = $1", au.custom_scope_sql("$2")))
-            .bind(c.id)
-            .bind(au.user_id)
-            .fetch_one(db)
-            .await?;
+        let ok: bool = sqlx::query_scalar(&format!(
+            "SELECT {} FROM conversations c WHERE c.id = $1",
+            au.custom_scope_sql("$2")
+        ))
+        .bind(c.id)
+        .bind(au.user_id)
+        .fetch_one(db)
+        .await?;
         if !ok {
             return Err(ApiError::not_found());
         }
@@ -175,15 +251,21 @@ async fn load(db: &PgPool, au: &AccountUser, display_id: i64) -> Result<Conv, Ap
 }
 
 pub(crate) async fn reload(db: &PgPool, id: i64) -> Result<Conv, ApiError> {
-    Ok(sqlx::query_as(&format!("SELECT {CONV_COLS} FROM conversations c WHERE c.id = $1")).bind(id).fetch_one(db).await?)
+    Ok(sqlx::query_as(&format!(
+        "SELECT {CONV_COLS} FROM conversations c WHERE c.id = $1"
+    ))
+    .bind(id)
+    .fetch_one(db)
+    .await?)
 }
 
 async fn is_inbox_member(db: &PgPool, inbox_id: i64, user_id: i64) -> Result<bool, ApiError> {
-    let r: Option<i32> = sqlx::query_scalar("SELECT 1 FROM inbox_members WHERE inbox_id = $1 AND user_id = $2")
-        .bind(inbox_id)
-        .bind(user_id)
-        .fetch_optional(db)
-        .await?;
+    let r: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM inbox_members WHERE inbox_id = $1 AND user_id = $2")
+            .bind(inbox_id)
+            .bind(user_id)
+            .fetch_optional(db)
+            .await?;
     Ok(r.is_some())
 }
 
@@ -192,7 +274,19 @@ async fn is_inbox_member(db: &PgPool, inbox_id: i64, user_id: i64) -> Result<boo
 /// contact push_event_data + _contact.json.jbuilder fields (superset).
 pub(crate) async fn contact_json(db: &PgPool, id: Option<i64>) -> Value {
     let Some(id) = id else { return json!({}) };
-    type Row = (i64, Option<String>, Option<String>, Option<String>, Option<String>, Option<Value>, Option<Value>, bool, Option<i32>, Option<NaiveDateTime>, NaiveDateTime);
+    type Row = (
+        i64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<Value>,
+        Option<Value>,
+        bool,
+        Option<i32>,
+        Option<NaiveDateTime>,
+        NaiveDateTime,
+    );
     let r: Option<Row> = sqlx::query_as(
         "SELECT id::bigint, name, email, phone_number, identifier, additional_attributes, custom_attributes, blocked, contact_type,
                 last_activity_at, created_at FROM contacts WHERE id = $1",
@@ -214,7 +308,16 @@ pub(crate) async fn contact_json(db: &PgPool, id: Option<i64>) -> Value {
 
 /// user push_event_data + _agent.json.jbuilder fields (superset).
 pub(crate) async fn user_json(db: &PgPool, account_id: i64, uid: i64) -> Value {
-    type Row = (i64, String, Option<String>, Option<String>, Option<i32>, Option<bool>, Option<i32>, Option<NaiveDateTime>);
+    type Row = (
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<i32>,
+        Option<bool>,
+        Option<i32>,
+        Option<NaiveDateTime>,
+    );
     let r: Option<Row> = sqlx::query_as(
         "SELECT u.id::bigint, u.name, u.display_name, u.email, au.availability, au.auto_offline, au.role, u.confirmed_at
          FROM users u LEFT JOIN account_users au ON au.user_id = u.id AND au.account_id = $2 WHERE u.id = $1",
@@ -238,13 +341,14 @@ pub(crate) async fn user_json(db: &PgPool, account_id: i64, uid: i64) -> Value {
 
 async fn team_json(db: &PgPool, team_id: Option<i64>) -> Value {
     let Some(t) = team_id else { return Value::Null };
-    let r: Option<(i64, String, Option<String>, Option<bool>, i64)> =
-        sqlx::query_as("SELECT id, name, description, allow_auto_assign, account_id FROM teams WHERE id = $1")
-            .bind(t)
-            .fetch_optional(db)
-            .await
-            .ok()
-            .flatten();
+    let r: Option<(i64, String, Option<String>, Option<bool>, i64)> = sqlx::query_as(
+        "SELECT id, name, description, allow_auto_assign, account_id FROM teams WHERE id = $1",
+    )
+    .bind(t)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
     r.map(|r| json!({ "id": r.0, "name": r.1, "description": r.2, "allow_auto_assign": r.3, "account_id": r.4 }))
         .unwrap_or(Value::Null)
 }
@@ -263,7 +367,9 @@ async fn unread_count(db: &PgPool, c: &Conv) -> i64 {
 }
 
 async fn source_id(db: &PgPool, c: &Conv) -> (Option<String>, Option<bool>) {
-    let Some(ci) = c.contact_inbox_id else { return (None, None) };
+    let Some(ci) = c.contact_inbox_id else {
+        return (None, None);
+    };
     sqlx::query_as("SELECT source_id, hmac_verified FROM contact_inboxes WHERE id = $1")
         .bind(ci)
         .fetch_optional(db)
@@ -309,7 +415,11 @@ pub(crate) async fn msg_json(db: &PgPool, m: &Msg, c: &Conv) -> Value {
 }
 
 async fn last_message(db: &PgPool, c: &Conv, non_activity: bool) -> Value {
-    let filter = if non_activity { "AND m.message_type <> 2" } else { "" };
+    let filter = if non_activity {
+        "AND m.message_type <> 2"
+    } else {
+        ""
+    };
     let m: Option<Msg> = sqlx::query_as(&format!(
         "SELECT {MSG_COLS} FROM messages m WHERE m.conversation_id = $1 AND m.account_id = $2 {filter} ORDER BY m.created_at DESC, m.id DESC LIMIT 1"
     ))
@@ -327,13 +437,14 @@ async fn last_message(db: &PgPool, c: &Conv, non_activity: bool) -> Value {
 
 /// conversations/partials/_conversation.json.jbuilder + EventDataPresenter#push_data.
 pub(crate) async fn conv_json(db: &PgPool, c: &Conv) -> Value {
-    let channel: Option<String> = sqlx::query_scalar("SELECT channel_type FROM inboxes WHERE id = $1")
-        .bind(c.inbox_id)
-        .fetch_optional(db)
-        .await
-        .ok()
-        .flatten()
-        .flatten();
+    let channel: Option<String> =
+        sqlx::query_scalar("SELECT channel_type FROM inboxes WHERE id = $1")
+            .bind(c.inbox_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
     let (sid, hmac) = source_id(db, c).await;
     let mut meta = json!({ "sender": contact_json(db, c.contact_id).await, "channel": channel, "hmac_verified": hmac });
     if let Some(a) = c.assignee_id {
@@ -367,7 +478,16 @@ pub(crate) async fn conv_json(db: &PgPool, c: &Conv) -> Value {
 
 pub(crate) async fn emit(st: &AppState, c: &Conv, event: &str, data: Value) {
     crate::events::publish(event, c.account_id, data.clone(), None);
-    st.hub.to_inbox(&st.db, c.account_id, c.inbox_id, c.contact_inbox_id, event, data).await;
+    st.hub
+        .to_inbox(
+            &st.db,
+            c.account_id,
+            c.inbox_id,
+            c.contact_inbox_id,
+            event,
+            data,
+        )
+        .await;
 }
 
 pub(crate) async fn emit_conv(st: &AppState, id: i64, event: &str) -> Result<Conv, ApiError> {
@@ -383,10 +503,20 @@ const SOURCE_ID_KEY: &str = "__pulsar_source_id";
 /// Insert a message, bump conversation activity, broadcast message.created. Returns the push payload.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn insert_message(
-    st: &AppState, c: &Conv, sender: Option<(&str, i64)>, content: &str, message_type: i32, private: bool,
-    content_type: i32, mut content_attributes: Value, echo_id: Option<&str>,
+    st: &AppState,
+    c: &Conv,
+    sender: Option<(&str, i64)>,
+    content: &str,
+    message_type: i32,
+    private: bool,
+    content_type: i32,
+    mut content_attributes: Value,
+    echo_id: Option<&str>,
 ) -> Result<Value, ApiError> {
-    let source_id = content_attributes.as_object_mut().and_then(|o| o.remove(SOURCE_ID_KEY)).and_then(|v| v.as_str().map(str::to_string));
+    let source_id = content_attributes
+        .as_object_mut()
+        .and_then(|o| o.remove(SOURCE_ID_KEY))
+        .and_then(|v| v.as_str().map(str::to_string));
     // chatwoot#15743: a client retrying a send with the same echo_id gets the original message back
     // instead of a duplicate. The echo_id is kept in additional_attributes; the advisory lock makes
     // concurrent retries safe without a schema change.
@@ -460,7 +590,9 @@ pub(crate) async fn insert_message(
 }
 
 async fn activity(st: &AppState, c: &Conv, content: String) -> Result<(), ApiError> {
-    insert_message(st, c, None, &content, 2, false, 0, json!({}), None).await.map(|_| ())
+    insert_message(st, c, None, &content, 2, false, 0, json!({}), None)
+        .await
+        .map(|_| ())
 }
 
 // ---------- conversations ----------
@@ -479,24 +611,41 @@ struct Filter {
 }
 
 fn parse_filter(q: &[(String, String)]) -> Filter {
-    let get = |k: &str| q.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
-    let labels: Vec<String> = q.iter().filter(|(k, _)| k == "labels[]" || k == "labels").map(|(_, v)| v.clone()).collect();
+    let get = |k: &str| {
+        q.iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.clone())
+            .filter(|v| !v.is_empty())
+    };
+    let labels: Vec<String> = q
+        .iter()
+        .filter(|(k, _)| k == "labels[]" || k == "labels")
+        .map(|(_, v)| v.clone())
+        .collect();
     let status = get("status").unwrap_or_else(|| "open".into());
     Filter {
         status_i: idx(&STATUSES, &status).unwrap_or(-1),
         status,
         inbox_id: get("inbox_id").and_then(|v| v.parse().ok()),
         team_id: get("team_id").and_then(|v| v.parse().ok()),
-        labels: if labels.is_empty() { None } else { Some(labels) },
+        labels: if labels.is_empty() {
+            None
+        } else {
+            Some(labels)
+        },
         q: get("q").map(|s| format!("%{s}%")),
-        conv_type: get("conversation_type").filter(|t| ["mention", "participating", "unattended"].contains(&t.as_str())),
+        conv_type: get("conversation_type")
+            .filter(|t| ["mention", "participating", "unattended"].contains(&t.as_str())),
         assignee: match get("assignee_type").as_deref() {
             Some("me") => "c.assignee_id = $8",
             Some("unassigned") => "c.assignee_id IS NULL",
             Some("assigned") => "c.assignee_id IS NOT NULL",
             _ => "TRUE",
         },
-        page: get("page").and_then(|v| v.parse().ok()).unwrap_or(1i64).max(1),
+        page: get("page")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1i64)
+            .max(1),
         sort: match get("sort_by").as_deref() {
             Some("last_activity_at_asc") => "c.last_activity_at ASC, c.id ASC",
             Some("created_at_desc") => "c.created_at DESC, c.id DESC",
@@ -546,11 +695,20 @@ async fn counts(db: &PgPool, f: &Filter, au: &AccountUser) -> Result<Value, ApiE
         "SELECT COUNT(*) FILTER (WHERE c.assignee_id = $8), COUNT(*) FILTER (WHERE c.assignee_id IS NULL), COUNT(*) {BASE} AND {}",
         au.custom_scope_sql("$8")
     );
-    let (mine, unassigned, all): (i64, i64, i64) = bind_base!(sqlx::query_as(&sql), f, au).fetch_one(db).await?;
-    Ok(json!({ "mine_count": mine, "unassigned_count": unassigned, "assigned_count": all - unassigned, "all_count": all }))
+    let (mine, unassigned, all): (i64, i64, i64) = bind_base!(sqlx::query_as(&sql), f, au)
+        .fetch_one(db)
+        .await?;
+    Ok(
+        json!({ "mine_count": mine, "unassigned_count": unassigned, "assigned_count": all - unassigned, "all_count": all }),
+    )
 }
 
-async fn index(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Query(q): Query<Vec<(String, String)>>) -> ApiResult {
+async fn index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Query(q): Query<Vec<(String, String)>>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let f = parse_filter(&q);
     let meta = counts(&st.db, &f, &au).await?;
@@ -561,7 +719,9 @@ async fn index(State(st): State<AppState>, user: CurrentUser, Path(account_id): 
         f.sort,
         (f.page - 1) * PER_PAGE
     );
-    let rows: Vec<Conv> = bind_base!(sqlx::query_as(&sql), f, au).fetch_all(&st.db).await?;
+    let rows: Vec<Conv> = bind_base!(sqlx::query_as(&sql), f, au)
+        .fetch_all(&st.db)
+        .await?;
     // Chatwoot PR #15719 (N+1 on the list): each row needs ~8 small lookups. Run rows concurrently, capped
     // below the pool size so one list request cannot starve the rest.
     // ponytail: still 8 queries per row; batch them into set-based queries if lists grow past 25 rows.
@@ -573,127 +733,348 @@ async fn index(State(st): State<AppState>, user: CurrentUser, Path(account_id): 
         }
         payload.extend(futures::future::join_all(futs).await);
     }
-    Ok(Json(json!({ "data": { "meta": meta, "payload": payload } })))
+    Ok(Json(
+        json!({ "data": { "meta": meta, "payload": payload } }),
+    ))
 }
 
-async fn meta(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Query(q): Query<Vec<(String, String)>>) -> ApiResult {
+async fn meta(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Query(q): Query<Vec<(String, String)>>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let f = parse_filter(&q);
     Ok(Json(json!({ "meta": counts(&st.db, &f, &au).await? })))
 }
 
-async fn show(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     Ok(Json(conv_json(&st.db, &c).await))
 }
 
-async fn search(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Query(mut q): Query<Vec<(String, String)>>) -> ApiResult {
-    if !q.iter().any(|(k, _)| k == "status") { q.push(("status".into(), "all".into())); }
+async fn search(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Query(mut q): Query<Vec<(String, String)>>,
+) -> ApiResult {
+    if !q.iter().any(|(k, _)| k == "status") {
+        q.push(("status".into(), "all".into()));
+    }
     let Json(result) = index(State(st), user, Path(account_id), Query(q)).await?;
     Ok(Json(result["data"].clone()))
 }
 
-async fn filter_conversations(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Query(q): Query<HashMap<String,String>>, Json(body): Json<Value>) -> ApiResult {
+async fn filter_conversations(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+    Json(body): Json<Value>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
-    let filters = body.get("payload").and_then(Value::as_array).ok_or_else(|| ApiError::bad("payload required"))?;
-    let mut sql = sqlx::QueryBuilder::<sqlx::Postgres>::new(format!("SELECT {CONV_COLS} FROM conversations c WHERE c.account_id = "));
-    sql.push_bind(account_id).push(" AND (").push_bind(au.is_admin()).push(" OR c.inbox_id IN (SELECT inbox_id FROM inbox_members WHERE user_id = ").push_bind(au.user_id).push(")) AND ").push(au.custom_scope_sql(&au.user_id.to_string()));
+    let filters = body
+        .get("payload")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ApiError::bad("payload required"))?;
+    let mut sql = sqlx::QueryBuilder::<sqlx::Postgres>::new(format!(
+        "SELECT {CONV_COLS} FROM conversations c WHERE c.account_id = "
+    ));
+    sql.push_bind(account_id)
+        .push(" AND (")
+        .push_bind(au.is_admin())
+        .push(" OR c.inbox_id IN (SELECT inbox_id FROM inbox_members WHERE user_id = ")
+        .push_bind(au.user_id)
+        .push(")) AND ")
+        .push(au.custom_scope_sql(&au.user_id.to_string()));
     sql.push(" AND (");
-    if filters.is_empty() { sql.push("TRUE"); }
+    if filters.is_empty() {
+        sql.push("TRUE");
+    }
     for (i, f) in filters.iter().enumerate() {
         if i > 0 {
-            let op = filters[i-1].get("query_operator").and_then(Value::as_str).unwrap_or("and");
-            sql.push(match op.to_ascii_lowercase().as_str() { "and" => " AND ", "or" => " OR ", _ => return Err(ApiError::bad("Invalid query operator")) });
+            let op = filters[i - 1]
+                .get("query_operator")
+                .and_then(Value::as_str)
+                .unwrap_or("and");
+            sql.push(match op.to_ascii_lowercase().as_str() {
+                "and" => " AND ",
+                "or" => " OR ",
+                _ => return Err(ApiError::bad("Invalid query operator")),
+            });
         }
         let key = f["attribute_key"].as_str().unwrap_or("");
-        let column = match key { "status" => "c.status", "assignee_id" => "c.assignee_id", "inbox_id" => "c.inbox_id", "team_id" => "c.team_id", "priority" => "c.priority", "display_id" => "c.display_id", "created_at" => "c.created_at", "last_activity_at" => "c.last_activity_at", "labels" => "c.cached_label_list", _ => return Err(ApiError::bad("Invalid attribute")) };
+        let column = match key {
+            "status" => "c.status",
+            "assignee_id" => "c.assignee_id",
+            "inbox_id" => "c.inbox_id",
+            "team_id" => "c.team_id",
+            "priority" => "c.priority",
+            "display_id" => "c.display_id",
+            "created_at" => "c.created_at",
+            "last_activity_at" => "c.last_activity_at",
+            "labels" => "c.cached_label_list",
+            _ => return Err(ApiError::bad("Invalid attribute")),
+        };
         let op = f["filter_operator"].as_str().unwrap_or("");
         let values = f["values"].as_array().cloned().unwrap_or_default();
-        if op == "is_present" || op == "is_not_present" { sql.push(column).push(if op == "is_present" { " IS NOT NULL" } else { " IS NULL" }); continue; }
-        if values.is_empty() { return Err(ApiError::bad("Invalid value")); }
+        if op == "is_present" || op == "is_not_present" {
+            sql.push(column).push(if op == "is_present" {
+                " IS NOT NULL"
+            } else {
+                " IS NULL"
+            });
+            continue;
+        }
+        if values.is_empty() {
+            return Err(ApiError::bad("Invalid value"));
+        }
         let negative = matches!(op, "not_equal_to" | "does_not_contain");
-        if !matches!(op, "equal_to" | "not_equal_to" | "contains" | "does_not_contain" | "is_greater_than" | "is_less_than" | "days_before") { return Err(ApiError::bad("Invalid operator")); }
+        if !matches!(
+            op,
+            "equal_to"
+                | "not_equal_to"
+                | "contains"
+                | "does_not_contain"
+                | "is_greater_than"
+                | "is_less_than"
+                | "days_before"
+        ) {
+            return Err(ApiError::bad("Invalid operator"));
+        }
         sql.push("(");
         for (n, v) in values.iter().enumerate() {
-            if n > 0 { sql.push(if negative { " AND " } else { " OR " }); }
+            if n > 0 {
+                sql.push(if negative { " AND " } else { " OR " });
+            }
             if key == "created_at" || key == "last_activity_at" {
-                if op == "days_before" { let days = num(v).filter(|d| *d >= 0 && *d < 100000).ok_or_else(|| ApiError::bad("Invalid value"))?; sql.push(column).push(" < now() - ").push_bind(days).push(" * interval '1 day'"); }
-                else { let s = v.as_str().ok_or_else(|| ApiError::bad("Invalid value"))?; let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| ApiError::bad("Invalid date"))?; sql.push(column).push(match op { "equal_to" => "::date = ", "not_equal_to" => "::date <> ", "is_greater_than" => "::date > ", "is_less_than" => "::date < ", _ => return Err(ApiError::bad("Invalid operator")) }).push_bind(date); }
+                if op == "days_before" {
+                    let days = num(v)
+                        .filter(|d| *d >= 0 && *d < 100000)
+                        .ok_or_else(|| ApiError::bad("Invalid value"))?;
+                    sql.push(column)
+                        .push(" < now() - ")
+                        .push_bind(days)
+                        .push(" * interval '1 day'");
+                } else {
+                    let s = v.as_str().ok_or_else(|| ApiError::bad("Invalid value"))?;
+                    let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                        .map_err(|_| ApiError::bad("Invalid date"))?;
+                    sql.push(column)
+                        .push(match op {
+                            "equal_to" => "::date = ",
+                            "not_equal_to" => "::date <> ",
+                            "is_greater_than" => "::date > ",
+                            "is_less_than" => "::date < ",
+                            _ => return Err(ApiError::bad("Invalid operator")),
+                        })
+                        .push_bind(date);
+                }
             } else if key == "labels" {
                 let s = v.as_str().ok_or_else(|| ApiError::bad("Invalid value"))?;
-                sql.push("COALESCE(").push(column).push(", '')").push(if negative { " NOT ILIKE " } else { " ILIKE " }).push_bind(format!("%{s}%"));
+                sql.push("COALESCE(")
+                    .push(column)
+                    .push(", '')")
+                    .push(if negative { " NOT ILIKE " } else { " ILIKE " })
+                    .push_bind(format!("%{s}%"));
             } else {
-                let value = match key { "status" => v.as_str().and_then(|s| idx(&STATUSES,s)).map(i64::from), "priority" => v.as_str().and_then(|s| idx(&PRIORITIES,s)).map(i64::from), _ => num(v) }.ok_or_else(|| ApiError::bad("Invalid value"))?;
-                sql.push(column).push(match op { "equal_to" => " = ", "not_equal_to" => " <> ", "is_greater_than" => " > ", "is_less_than" => " < ", _ => return Err(ApiError::bad("Invalid operator")) }).push_bind(value);
+                let value = match key {
+                    "status" => v.as_str().and_then(|s| idx(&STATUSES, s)).map(i64::from),
+                    "priority" => v.as_str().and_then(|s| idx(&PRIORITIES, s)).map(i64::from),
+                    _ => num(v),
+                }
+                .ok_or_else(|| ApiError::bad("Invalid value"))?;
+                sql.push(column)
+                    .push(match op {
+                        "equal_to" => " = ",
+                        "not_equal_to" => " <> ",
+                        "is_greater_than" => " > ",
+                        "is_less_than" => " < ",
+                        _ => return Err(ApiError::bad("Invalid operator")),
+                    })
+                    .push_bind(value);
             }
         }
         sql.push(")");
     }
     sql.push(") ORDER BY c.last_activity_at DESC, c.id DESC");
     let rows: Vec<Conv> = sql.build_query_as().fetch_all(&st.db).await?;
-    let mine = rows.iter().filter(|c| c.assignee_id == Some(au.user_id)).count();
+    let mine = rows
+        .iter()
+        .filter(|c| c.assignee_id == Some(au.user_id))
+        .count();
     let unassigned = rows.iter().filter(|c| c.assignee_id.is_none()).count();
     let count = rows.len();
-    let page = q.get("page").and_then(|s| s.parse::<usize>().ok()).unwrap_or(1).max(1);
+    let page = q
+        .get("page")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1)
+        .max(1);
     let mut payload = Vec::new();
-    for c in rows.iter().skip(page.saturating_sub(1).saturating_mul(PER_PAGE as usize)).take(PER_PAGE as usize) { payload.push(conv_json(&st.db,c).await); }
-    Ok(Json(json!({"meta":{"mine_count":mine,"unassigned_count":unassigned,"all_count":count},"payload":payload})))
+    for c in rows
+        .iter()
+        .skip(page.saturating_sub(1).saturating_mul(PER_PAGE as usize))
+        .take(PER_PAGE as usize)
+    {
+        payload.push(conv_json(&st.db, c).await);
+    }
+    Ok(Json(
+        json!({"meta":{"mine_count":mine,"unassigned_count":unassigned,"all_count":count},"payload":payload}),
+    ))
 }
 
-async fn set_mute(st: AppState, user: CurrentUser, account_id: i64, id: i64, blocked: bool) -> ApiResult {
+async fn set_mute(
+    st: AppState,
+    user: CurrentUser,
+    account_id: i64,
+    id: i64,
+    blocked: bool,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     if let Some(contact_id) = c.contact_id {
         let mut tx = st.db.begin().await?;
         sqlx::query("UPDATE contacts SET blocked = $1, updated_at = now() WHERE id = $2 AND account_id = $3").bind(blocked).bind(contact_id).bind(account_id).execute(&mut *tx).await?;
-        if blocked { sqlx::query("UPDATE conversations SET status = 1, updated_at = now() WHERE id = $1").bind(c.id).execute(&mut *tx).await?; }
+        if blocked {
+            sqlx::query("UPDATE conversations SET status = 1, updated_at = now() WHERE id = $1")
+                .bind(c.id)
+                .execute(&mut *tx)
+                .await?;
+        }
         tx.commit().await?;
-        activity(&st, &c, format!("{} has {} the conversation", user.name, if blocked { "muted" } else { "unmuted" })).await?;
+        activity(
+            &st,
+            &c,
+            format!(
+                "{} has {} the conversation",
+                user.name,
+                if blocked { "muted" } else { "unmuted" }
+            ),
+        )
+        .await?;
         emit_conv(&st, c.id, "conversation.updated").await?;
     }
     Ok(Json(json!({})))
 }
-async fn mute(State(st): State<AppState>, user: CurrentUser, Path((a,id)): Path<(i64,i64)>) -> ApiResult { set_mute(st,user,a,id,true).await }
-async fn unmute(State(st): State<AppState>, user: CurrentUser, Path((a,id)): Path<(i64,i64)>) -> ApiResult { set_mute(st,user,a,id,false).await }
+async fn mute(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((a, id)): Path<(i64, i64)>,
+) -> ApiResult {
+    set_mute(st, user, a, id, true).await
+}
+async fn unmute(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((a, id)): Path<(i64, i64)>,
+) -> ApiResult {
+    set_mute(st, user, a, id, false).await
+}
 
-async fn transcript(State(st): State<AppState>, user: CurrentUser, Path((account_id,id)): Path<(i64,i64)>, Json(b): Json<Value>) -> ApiResult {
+async fn transcript(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
-    let email = b["email"].as_str().filter(|s| !s.trim().is_empty()).ok_or_else(|| ApiError::bad("email param missing"))?;
+    let email = b["email"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| ApiError::bad("email param missing"))?;
     let messages: Vec<Option<String>> = sqlx::query_scalar("SELECT content FROM messages WHERE conversation_id = $1 AND account_id = $2 AND private = false AND message_type IN (0, 1) AND content_attributes::jsonb ->> 'forwarded_message_id' IS NULL ORDER BY created_at, id").bind(c.id).bind(account_id).fetch_all(&st.db).await?;
     let mut html = String::from("<html><body><ul>");
-    for m in messages.into_iter().flatten() { html.push_str("<li>"); html.push_str(&m.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")); html.push_str("</li>"); }
+    for m in messages.into_iter().flatten() {
+        html.push_str("<li>");
+        html.push_str(
+            &m.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+                .replace('\'', "&#39;"),
+        );
+        html.push_str("</li>");
+    }
     html.push_str("</ul></body></html>");
-    crate::mailer::send_html(email, "Conversation transcript", html).await.map_err(|e| { tracing::error!("transcript email: {e}"); ApiError::bad("Unable to send transcript") })?;
+    crate::mailer::send_html(email, "Conversation transcript", html)
+        .await
+        .map_err(|e| {
+            tracing::error!("transcript email: {e}");
+            ApiError::bad("Unable to send transcript")
+        })?;
     Ok(Json(json!({})))
 }
 
-async fn destroy_custom_attributes(State(st): State<AppState>, user: CurrentUser, Path((account_id,id)): Path<(i64,i64)>, Json(b): Json<Value>) -> ApiResult {
+async fn destroy_custom_attributes(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     let mut attrs = c.custom_attributes.unwrap_or(json!({}));
-    if let (Some(map), Some(keys)) = (attrs.as_object_mut(), b["custom_attributes"].as_array()) { for key in keys.iter().filter_map(Value::as_str) { map.remove(key); } }
-    sqlx::query("UPDATE conversations SET custom_attributes = $1, updated_at = now() WHERE id = $2").bind(&attrs).bind(c.id).execute(&st.db).await?;
+    if let (Some(map), Some(keys)) = (attrs.as_object_mut(), b["custom_attributes"].as_array()) {
+        for key in keys.iter().filter_map(Value::as_str) {
+            map.remove(key);
+        }
+    }
+    sqlx::query(
+        "UPDATE conversations SET custom_attributes = $1, updated_at = now() WHERE id = $2",
+    )
+    .bind(&attrs)
+    .bind(c.id)
+    .execute(&st.db)
+    .await?;
     emit_conv(&st, c.id, "conversation.updated").await?;
     Ok(Json(json!({"custom_attributes":attrs})))
 }
 
-async fn update_conversation(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+async fn update_conversation(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     if let Some(priority) = b.get("priority") {
-        let p = if priority.is_null() { None } else { Some(idx(&PRIORITIES, priority.as_str().unwrap_or("")).ok_or_else(|| ApiError::bad("Invalid priority"))?) };
-        sqlx::query("UPDATE conversations SET priority = $1, updated_at = now() WHERE id = $2").bind(p).bind(c.id).execute(&st.db).await?;
+        let p = if priority.is_null() {
+            None
+        } else {
+            Some(
+                idx(&PRIORITIES, priority.as_str().unwrap_or(""))
+                    .ok_or_else(|| ApiError::bad("Invalid priority"))?,
+            )
+        };
+        sqlx::query("UPDATE conversations SET priority = $1, updated_at = now() WHERE id = $2")
+            .bind(p)
+            .bind(c.id)
+            .execute(&st.db)
+            .await?;
     }
     let c = emit_conv(&st, c.id, "conversation.updated").await?;
     Ok(Json(conv_json(&st.db, &c).await))
 }
 
-async fn destroy_conversation(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn destroy_conversation(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
-    if !au.is_admin() { return Err(ApiError::forbidden()); }
+    if !au.is_admin() {
+        return Err(ApiError::forbidden());
+    }
     let mut tx = st.db.begin().await?;
     for statement in [
         "DELETE FROM active_storage_attachments WHERE record_type = 'Attachment' AND record_id IN (SELECT a.id FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.conversation_id = $1)",
@@ -707,7 +1088,9 @@ async fn destroy_conversation(State(st): State<AppState>, user: CurrentUser, Pat
         "DELETE FROM taggings WHERE taggable_type = 'Conversation' AND taggable_id = $1",
         "DELETE FROM messages WHERE conversation_id = $1",
         "DELETE FROM conversations WHERE id = $1",
-    ] { sqlx::query(statement).bind(c.id).execute(&mut *tx).await?; }
+    ] {
+        sqlx::query(statement).bind(c.id).execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(Json(json!({})))
 }
@@ -716,67 +1099,148 @@ async fn participant_values(db: &PgPool, c: &Conv, ids: Option<&[i64]>) -> Resul
     let users: Vec<i64> = sqlx::query_scalar("SELECT user_id FROM conversation_participants WHERE conversation_id = $1 AND account_id = $2 ORDER BY id")
         .bind(c.id).bind(c.account_id).fetch_all(db).await?;
     let mut result = Vec::new();
-    for uid in users { if ids.is_none_or(|ids| ids.contains(&uid)) { result.push(user_json(db, c.account_id, uid).await); } }
+    for uid in users {
+        if ids.is_none_or(|ids| ids.contains(&uid)) {
+            result.push(user_json(db, c.account_id, uid).await);
+        }
+    }
     Ok(json!(result))
 }
 
-async fn participants_show(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn participants_show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     Ok(Json(participant_values(&st.db, &c, None).await?))
 }
 
-async fn participants_change(st: AppState, user: CurrentUser, account_id: i64, id: i64, b: Value, mode: &str) -> ApiResult {
+async fn participants_change(
+    st: AppState,
+    user: CurrentUser,
+    account_id: i64,
+    id: i64,
+    b: Value,
+    mode: &str,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
-    let ids: Vec<i64> = b.get("user_ids").and_then(Value::as_array).ok_or_else(|| ApiError::bad("user_ids required"))?.iter().map(|v| num(v).ok_or_else(|| ApiError::bad("Invalid participant IDs"))).collect::<Result<_, _>>()?;
+    let ids: Vec<i64> = b
+        .get("user_ids")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ApiError::bad("user_ids required"))?
+        .iter()
+        .map(|v| num(v).ok_or_else(|| ApiError::bad("Invalid participant IDs")))
+        .collect::<Result<_, _>>()?;
     if mode != "delete" {
         let valid: i64 = sqlx::query_scalar("SELECT count(DISTINCT user_id) FROM inbox_members WHERE inbox_id = $1 AND user_id = ANY($2)").bind(c.inbox_id).bind(&ids).fetch_one(&st.db).await?;
         let unique: std::collections::HashSet<_> = ids.iter().collect();
-        if valid as usize != unique.len() { return Err(ApiError::bad("Invalid participant IDs")); }
+        if valid as usize != unique.len() {
+            return Err(ApiError::bad("Invalid participant IDs"));
+        }
     }
     let mut tx = st.db.begin().await?;
-    if mode == "update" { sqlx::query("DELETE FROM conversation_participants WHERE conversation_id = $1 AND account_id = $2 AND NOT (user_id = ANY($3))").bind(c.id).bind(account_id).bind(&ids).execute(&mut *tx).await?; }
-    if mode == "delete" { sqlx::query("DELETE FROM conversation_participants WHERE conversation_id = $1 AND account_id = $2 AND user_id = ANY($3)").bind(c.id).bind(account_id).bind(&ids).execute(&mut *tx).await?; }
-    else { for uid in &ids { sqlx::query("INSERT INTO conversation_participants (account_id, conversation_id, user_id, created_at, updated_at) VALUES ($1,$2,$3,now(),now()) ON CONFLICT (user_id, conversation_id) DO NOTHING").bind(account_id).bind(c.id).bind(uid).execute(&mut *tx).await?; } }
+    if mode == "update" {
+        sqlx::query("DELETE FROM conversation_participants WHERE conversation_id = $1 AND account_id = $2 AND NOT (user_id = ANY($3))").bind(c.id).bind(account_id).bind(&ids).execute(&mut *tx).await?;
+    }
+    if mode == "delete" {
+        sqlx::query("DELETE FROM conversation_participants WHERE conversation_id = $1 AND account_id = $2 AND user_id = ANY($3)").bind(c.id).bind(account_id).bind(&ids).execute(&mut *tx).await?;
+    } else {
+        for uid in &ids {
+            sqlx::query("INSERT INTO conversation_participants (account_id, conversation_id, user_id, created_at, updated_at) VALUES ($1,$2,$3,now(),now()) ON CONFLICT (user_id, conversation_id) DO NOTHING").bind(account_id).bind(c.id).bind(uid).execute(&mut *tx).await?;
+        }
+    }
     tx.commit().await?;
-    if mode == "delete" { return Ok(Json(json!({}))); }
-    Ok(Json(participant_values(&st.db, &c, if mode == "create" { Some(&ids) } else { None }).await?))
+    if mode == "delete" {
+        return Ok(Json(json!({})));
+    }
+    Ok(Json(
+        participant_values(&st.db, &c, if mode == "create" { Some(&ids) } else { None }).await?,
+    ))
 }
-async fn participants_create(State(st): State<AppState>, user: CurrentUser, Path((a,id)): Path<(i64,i64)>, Json(b): Json<Value>) -> ApiResult { participants_change(st,user,a,id,b,"create").await }
-async fn participants_update(State(st): State<AppState>, user: CurrentUser, Path((a,id)): Path<(i64,i64)>, Json(b): Json<Value>) -> ApiResult { participants_change(st,user,a,id,b,"update").await }
-async fn participants_destroy(State(st): State<AppState>, user: CurrentUser, Path((a,id)): Path<(i64,i64)>, Json(b): Json<Value>) -> ApiResult { participants_change(st,user,a,id,b,"delete").await }
+async fn participants_create(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((a, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
+    participants_change(st, user, a, id, b, "create").await
+}
+async fn participants_update(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((a, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
+    participants_change(st, user, a, id, b, "update").await
+}
+async fn participants_destroy(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((a, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
+    participants_change(st, user, a, id, b, "delete").await
+}
 
-async fn attachments_index(State(st): State<AppState>, user: CurrentUser, Path((account_id,id)): Path<(i64,i64)>, Query(q): Query<HashMap<String,String>>) -> ApiResult {
+async fn attachments_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     let total: i64 = sqlx::query_scalar("SELECT count(*) FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.conversation_id = $1 AND a.account_id = $2").bind(c.id).bind(account_id).fetch_one(&st.db).await?;
-    let page = q.get("page").and_then(|p| p.parse::<i64>().ok()).unwrap_or(1).max(1);
+    let page = q
+        .get("page")
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1);
     let rows: Vec<(i64,i64)> = sqlx::query_as("SELECT a.id::bigint, a.message_id::bigint FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.conversation_id = $1 AND a.account_id = $2 ORDER BY a.created_at DESC, a.id DESC LIMIT 100 OFFSET $3").bind(c.id).bind(account_id).bind(page.saturating_sub(1).saturating_mul(100)).fetch_all(&st.db).await?;
     let mut payload = Vec::new();
-    for (id, message_id) in rows { if let Some(a) = crate::storage::attachments_json(&st.db, message_id).await.into_iter().find(|a| a["id"].as_i64() == Some(id)) { payload.push(a); } }
-    Ok(Json(json!({"meta":{"total_count":total},"payload":payload})))
+    for (id, message_id) in rows {
+        if let Some(a) = crate::storage::attachments_json(&st.db, message_id)
+            .await
+            .into_iter()
+            .find(|a| a["id"].as_i64() == Some(id))
+        {
+            payload.push(a);
+        }
+    }
+    Ok(Json(
+        json!({"meta":{"total_count":total},"payload":payload}),
+    ))
 }
 
-
 /// POST /conversations {inbox_id, contact_id, source_id?, status?, assignee_id?, team_id?, message:{content}}
-async fn create(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Json(b): Json<Value>) -> ApiResult {
+async fn create(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let inbox_id = num(&b["inbox_id"]).ok_or_else(|| ApiError::bad("inbox_id is required"))?;
-    let ok: Option<i32> = sqlx::query_scalar("SELECT 1 FROM inboxes WHERE id = $1 AND account_id = $2")
-        .bind(inbox_id)
-        .bind(account_id)
-        .fetch_optional(&st.db)
-        .await?;
+    let ok: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM inboxes WHERE id = $1 AND account_id = $2")
+            .bind(inbox_id)
+            .bind(account_id)
+            .fetch_optional(&st.db)
+            .await?;
     if ok.is_none() || (!au.is_admin() && !is_inbox_member(&st.db, inbox_id, user.id).await?) {
         return Err(ApiError::not_found());
     }
-    let contact_id = num(&b["contact_id"]).ok_or_else(|| ApiError::bad("contact_id is required"))?;
-    let ok: Option<i32> = sqlx::query_scalar("SELECT 1 FROM contacts WHERE id = $1 AND account_id = $2")
-        .bind(contact_id)
-        .bind(account_id)
-        .fetch_optional(&st.db)
-        .await?;
+    let contact_id =
+        num(&b["contact_id"]).ok_or_else(|| ApiError::bad("contact_id is required"))?;
+    let ok: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM contacts WHERE id = $1 AND account_id = $2")
+            .bind(contact_id)
+            .bind(account_id)
+            .fetch_optional(&st.db)
+            .await?;
     ok.ok_or_else(ApiError::not_found)?;
 
     let ci: Option<i64> = sqlx::query_scalar("SELECT id FROM contact_inboxes WHERE contact_id = $1 AND inbox_id = $2 ORDER BY id LIMIT 1")
@@ -787,7 +1251,10 @@ async fn create(State(st): State<AppState>, user: CurrentUser, Path(account_id):
     let ci = match ci {
         Some(ci) => ci,
         None => {
-            let source = b["source_id"].as_str().map(str::to_string).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let source = b["source_id"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             sqlx::query_scalar(
                 "INSERT INTO contact_inboxes (contact_id, inbox_id, source_id, pubsub_token, created_at, updated_at)
                  VALUES ($1, $2, $3, $4, now(), now()) RETURNING id",
@@ -800,7 +1267,10 @@ async fn create(State(st): State<AppState>, user: CurrentUser, Path(account_id):
             .await?
         }
     };
-    let status = b["status"].as_str().and_then(|s| idx(&STATUSES, s)).unwrap_or(0);
+    let status = b["status"]
+        .as_str()
+        .and_then(|s| idx(&STATUSES, s))
+        .unwrap_or(0);
     let assignee = num(&b["assignee_id"]);
     if let Some(a) = assignee {
         require_member(&st.db, account_id, a).await?;
@@ -828,33 +1298,62 @@ async fn create(State(st): State<AppState>, user: CurrentUser, Path(account_id):
         set_labels(&st.db, id, &labels).await?;
     }
     let c = emit_conv(&st, id, "conversation.created").await?;
-    if let Some(content) = b["message"]["content"].as_str().filter(|s| !s.trim().is_empty()) {
-        insert_message(&st, &c, Some(("User", user.id)), content, 1, false, 0, json!({}), None).await?;
+    if let Some(content) = b["message"]["content"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+    {
+        insert_message(
+            &st,
+            &c,
+            Some(("User", user.id)),
+            content,
+            1,
+            false,
+            0,
+            json!({}),
+            None,
+        )
+        .await?;
     }
     let c = reload(&st.db, id).await?;
     Ok(Json(conv_json(&st.db, &c).await))
 }
 
 async fn require_member(db: &PgPool, account_id: i64, user_id: i64) -> Result<(), ApiError> {
-    let ok: Option<i32> = sqlx::query_scalar("SELECT 1 FROM account_users WHERE account_id = $1 AND user_id = $2")
-        .bind(account_id)
-        .bind(user_id)
-        .fetch_optional(db)
-        .await?;
-    ok.map(|_| ()).ok_or_else(|| ApiError::bad("Assignee is not a member of this account"))
+    let ok: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM account_users WHERE account_id = $1 AND user_id = $2")
+            .bind(account_id)
+            .bind(user_id)
+            .fetch_optional(db)
+            .await?;
+    ok.map(|_| ())
+        .ok_or_else(|| ApiError::bad("Assignee is not a member of this account"))
 }
 
 /// POST /conversations/{id}/toggle_status {status?, snoozed_until?(unix)}
-async fn toggle_status(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, body: Option<Json<Value>>) -> ApiResult {
+async fn toggle_status(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    body: Option<Json<Value>>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     let b = body.map(|b| b.0).unwrap_or_default();
     let new = match b["status"].as_str() {
         Some(s) => idx(&STATUSES, s).ok_or_else(|| ApiError::bad("Invalid status"))?,
-        None => if c.status == 0 { 1 } else { 0 },
+        None => {
+            if c.status == 0 {
+                1
+            } else {
+                0
+            }
+        }
     };
     let snooze = if new == 3 {
-        num(&b["snoozed_until"]).and_then(|t| chrono::DateTime::from_timestamp(t, 0)).map(|t| t.naive_utc())
+        num(&b["snoozed_until"])
+            .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+            .map(|t| t.naive_utc())
     } else {
         None
     };
@@ -880,18 +1379,39 @@ async fn toggle_status(State(st): State<AppState>, user: CurrentUser, Path((acco
 }
 
 /// POST /conversations/{id}/toggle_priority {priority: low|medium|high|urgent|null}
-async fn toggle_priority(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+async fn toggle_priority(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
-    let new = match b["priority"].as_str().filter(|s| !s.is_empty() && *s != "none") {
+    let new = match b["priority"]
+        .as_str()
+        .filter(|s| !s.is_empty() && *s != "none")
+    {
         Some(p) => Some(idx(&PRIORITIES, p).ok_or_else(|| ApiError::bad("Invalid priority"))?),
         None => None,
     };
-    sqlx::query("UPDATE conversations SET priority = $1, updated_at = now() WHERE id = $2").bind(new).bind(c.id).execute(&st.db).await?;
+    sqlx::query("UPDATE conversations SET priority = $1, updated_at = now() WHERE id = $2")
+        .bind(new)
+        .bind(c.id)
+        .execute(&st.db)
+        .await?;
     if new != c.priority {
         let text = match (c.priority, new) {
-            (None, Some(n)) => format!("{} set the priority to {}", user.name, name_of(&PRIORITIES, n)),
-            (Some(o), Some(n)) => format!("{} changed the priority from {} to {}", user.name, name_of(&PRIORITIES, o), name_of(&PRIORITIES, n)),
+            (None, Some(n)) => format!(
+                "{} set the priority to {}",
+                user.name,
+                name_of(&PRIORITIES, n)
+            ),
+            (Some(o), Some(n)) => format!(
+                "{} changed the priority from {} to {}",
+                user.name,
+                name_of(&PRIORITIES, o),
+                name_of(&PRIORITIES, n)
+            ),
             _ => format!("{} removed the priority", user.name),
         };
         activity(&st, &c, text).await?;
@@ -901,10 +1421,19 @@ async fn toggle_priority(State(st): State<AppState>, user: CurrentUser, Path((ac
 }
 
 /// POST /conversations/{id}/toggle_typing_status {typing_status: on|off, is_private}
-async fn toggle_typing(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+async fn toggle_typing(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
-    let event = if b["typing_status"] == "on" { "conversation.typing_on" } else { "conversation.typing_off" };
+    let event = if b["typing_status"] == "on" {
+        "conversation.typing_on"
+    } else {
+        "conversation.typing_off"
+    };
     let data = json!({
         "conversation": { "id": c.display_id, "inbox_id": c.inbox_id, "account_id": c.account_id },
         "user": user_json(&st.db, account_id, user.id).await,
@@ -915,7 +1444,12 @@ async fn toggle_typing(State(st): State<AppState>, user: CurrentUser, Path((acco
 }
 
 /// POST /conversations/{id}/assignments {assignee_id} | {team_id}
-async fn assign(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+async fn assign(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     if let Some(v) = b.get("assignee_id") {
@@ -935,7 +1469,11 @@ async fn assign(State(st): State<AppState>, user: CurrentUser, Path((account_id,
         if new != c.assignee_id {
             let text = match new {
                 Some(a) if a == user.id => format!("{} self-assigned this conversation", user.name),
-                Some(_) => format!("Assigned to {} by {}", agent["available_name"].as_str().unwrap_or_default(), user.name),
+                Some(_) => format!(
+                    "Assigned to {} by {}",
+                    agent["available_name"].as_str().unwrap_or_default(),
+                    user.name
+                ),
                 None => format!("Conversation unassigned by {}", user.name),
             };
             activity(&st, &c, text).await?;
@@ -946,21 +1484,34 @@ async fn assign(State(st): State<AppState>, user: CurrentUser, Path((account_id,
     if let Some(v) = b.get("team_id") {
         let new = num(v).filter(|t| *t > 0);
         if let Some(t) = new {
-            let ok: Option<i32> = sqlx::query_scalar("SELECT 1 FROM teams WHERE id = $1 AND account_id = $2")
-                .bind(t)
-                .bind(account_id)
-                .fetch_optional(&st.db)
-                .await?;
+            let ok: Option<i32> =
+                sqlx::query_scalar("SELECT 1 FROM teams WHERE id = $1 AND account_id = $2")
+                    .bind(t)
+                    .bind(account_id)
+                    .fetch_optional(&st.db)
+                    .await?;
             ok.ok_or_else(ApiError::not_found)?;
         }
-        sqlx::query("UPDATE conversations SET team_id = $1, updated_at = now() WHERE id = $2").bind(new).bind(c.id).execute(&st.db).await?;
+        sqlx::query("UPDATE conversations SET team_id = $1, updated_at = now() WHERE id = $2")
+            .bind(new)
+            .bind(c.id)
+            .execute(&st.db)
+            .await?;
         let team = team_json(&st.db, new).await;
         if new != c.team_id {
             let text = match new {
-                Some(_) => format!("Assigned to {} by {}", team["name"].as_str().unwrap_or_default(), user.name),
+                Some(_) => format!(
+                    "Assigned to {} by {}",
+                    team["name"].as_str().unwrap_or_default(),
+                    user.name
+                ),
                 None => {
                     let old = team_json(&st.db, c.team_id).await;
-                    format!("Unassigned from {} by {}", old["name"].as_str().unwrap_or_default(), user.name)
+                    format!(
+                        "Unassigned from {} by {}",
+                        old["name"].as_str().unwrap_or_default(),
+                        user.name
+                    )
                 }
             };
             activity(&st, &c, text).await?;
@@ -971,7 +1522,11 @@ async fn assign(State(st): State<AppState>, user: CurrentUser, Path((account_id,
     Err(ApiError::bad("assignee_id or team_id is required"))
 }
 
-async fn update_last_seen(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn update_last_seen(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     sqlx::query(
@@ -987,7 +1542,11 @@ async fn update_last_seen(State(st): State<AppState>, user: CurrentUser, Path((a
 }
 
 /// POST /conversations/{id}/unread: move last-seen to just before the latest incoming message.
-async fn unread(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn unread(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     sqlx::query(
@@ -1002,23 +1561,48 @@ async fn unread(State(st): State<AppState>, user: CurrentUser, Path((account_id,
     Ok(Json(conv_json(&st.db, &c).await))
 }
 
-async fn custom_attributes(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+async fn custom_attributes(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
-    let mut attrs = b.get("custom_attributes").filter(|v| v.is_object()).cloned().unwrap_or(json!({}));
+    let mut attrs = b
+        .get("custom_attributes")
+        .filter(|v| v.is_object())
+        .cloned()
+        .unwrap_or(json!({}));
     if b.get("merge").and_then(Value::as_bool).unwrap_or(false) {
-        let mut merged = c.custom_attributes.clone().filter(Value::is_object).unwrap_or(json!({}));
-        if let (Some(dst), Some(src)) = (merged.as_object_mut(), attrs.as_object()) { dst.extend(src.clone()); }
+        let mut merged = c
+            .custom_attributes
+            .clone()
+            .filter(Value::is_object)
+            .unwrap_or(json!({}));
+        if let (Some(dst), Some(src)) = (merged.as_object_mut(), attrs.as_object()) {
+            dst.extend(src.clone());
+        }
         attrs = merged;
     }
-    sqlx::query("UPDATE conversations SET custom_attributes = $1, updated_at = now() WHERE id = $2").bind(&attrs).bind(c.id).execute(&st.db).await?;
+    sqlx::query(
+        "UPDATE conversations SET custom_attributes = $1, updated_at = now() WHERE id = $2",
+    )
+    .bind(&attrs)
+    .bind(c.id)
+    .execute(&st.db)
+    .await?;
     emit_conv(&st, c.id, "conversation.updated").await?;
     Ok(Json(json!({ "custom_attributes": attrs })))
 }
 
 // ---------- labels ----------
 
-async fn labels_index(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn labels_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     Ok(Json(json!({ "payload": c.labels() })))
@@ -1027,7 +1611,12 @@ async fn labels_index(State(st): State<AppState>, user: CurrentUser, Path((accou
 /// Parse a `labels` array: trimmed, non-empty, duplicates removed keeping first order.
 fn parse_labels(v: &Value) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for s in v.as_array().into_iter().flatten().filter_map(|v| v.as_str()) {
+    for s in v
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+    {
         let s = s.trim().to_string();
         if !s.is_empty() && !out.contains(&s) {
             out.push(s);
@@ -1037,7 +1626,11 @@ fn parse_labels(v: &Value) -> Vec<String> {
 }
 
 /// Write the label set on an open connection (taggings + cached_label_list).
-async fn write_labels(conn: &mut sqlx::PgConnection, conv_id: i64, labels: &[String]) -> Result<(), ApiError> {
+async fn write_labels(
+    conn: &mut sqlx::PgConnection,
+    conv_id: i64,
+    labels: &[String],
+) -> Result<(), ApiError> {
     sqlx::query("DELETE FROM taggings WHERE taggable_type = 'Conversation' AND taggable_id = $1 AND context = 'labels'")
         .bind(conv_id as i32)
         .execute(&mut *conn)
@@ -1053,11 +1646,13 @@ async fn write_labels(conn: &mut sqlx::PgConnection, conv_id: i64, labels: &[Str
             .execute(&mut *conn)
             .await?;
     }
-    sqlx::query("UPDATE conversations SET cached_label_list = $1, updated_at = now() WHERE id = $2")
-        .bind(labels.join(", "))
-        .bind(conv_id)
-        .execute(&mut *conn)
-        .await?;
+    sqlx::query(
+        "UPDATE conversations SET cached_label_list = $1, updated_at = now() WHERE id = $2",
+    )
+    .bind(labels.join(", "))
+    .bind(conv_id)
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 
@@ -1082,13 +1677,24 @@ fn apply_label_patch(old: &[String], add: &[String], remove: &[String]) -> Vec<S
 }
 
 /// Add/remove labels under a row lock, so concurrent writers converge. Returns (labels, added, removed).
-async fn patch_labels(db: &PgPool, conv_id: i64, add: &[String], remove: &[String]) -> Result<(Vec<String>, Vec<String>, Vec<String>), ApiError> {
+async fn patch_labels(
+    db: &PgPool,
+    conv_id: i64,
+    add: &[String],
+    remove: &[String],
+) -> Result<(Vec<String>, Vec<String>, Vec<String>), ApiError> {
     let mut tx = db.begin().await?;
-    let cached: Option<String> = sqlx::query_scalar("SELECT cached_label_list FROM conversations WHERE id = $1 FOR UPDATE")
-        .bind(conv_id)
-        .fetch_one(&mut *tx)
-        .await?;
-    let old: Vec<String> = cached.unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let cached: Option<String> =
+        sqlx::query_scalar("SELECT cached_label_list FROM conversations WHERE id = $1 FOR UPDATE")
+            .bind(conv_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    let old: Vec<String> = cached
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     let new = apply_label_patch(&old, add, remove);
     let added: Vec<String> = new.iter().filter(|l| !old.contains(l)).cloned().collect();
     let removed: Vec<String> = old.iter().filter(|l| !new.contains(l)).cloned().collect();
@@ -1108,19 +1714,35 @@ fn labels_arg(b: &Value) -> Result<Vec<String>, ApiError> {
 
 /// Chatwoot #13918 / PR #14159: only labels defined in the account may be attached. Unknown names are
 /// dropped (case-insensitive match, stored with the account's spelling) instead of creating stray tags.
-async fn known_labels(db: &PgPool, account_id: i64, wanted: Vec<String>) -> Result<Vec<String>, ApiError> {
+async fn known_labels(
+    db: &PgPool,
+    account_id: i64,
+    wanted: Vec<String>,
+) -> Result<Vec<String>, ApiError> {
     if wanted.is_empty() {
         return Ok(wanted);
     }
-    let defined: Vec<String> = sqlx::query_scalar("SELECT title FROM labels WHERE account_id = $1 AND lower(title) = ANY($2)")
-        .bind(account_id)
-        .bind(wanted.iter().map(|l| l.to_lowercase()).collect::<Vec<_>>())
-        .fetch_all(db)
-        .await?;
-    Ok(wanted.into_iter().filter_map(|w| defined.iter().find(|d| d.eq_ignore_ascii_case(&w)).cloned()).collect())
+    let defined: Vec<String> = sqlx::query_scalar(
+        "SELECT title FROM labels WHERE account_id = $1 AND lower(title) = ANY($2)",
+    )
+    .bind(account_id)
+    .bind(wanted.iter().map(|l| l.to_lowercase()).collect::<Vec<_>>())
+    .fetch_all(db)
+    .await?;
+    Ok(wanted
+        .into_iter()
+        .filter_map(|w| defined.iter().find(|d| d.eq_ignore_ascii_case(&w)).cloned())
+        .collect())
 }
 
-async fn labels_patch(st: &AppState, user: &CurrentUser, account_id: i64, id: i64, add: Vec<String>, remove: Vec<String>) -> ApiResult {
+async fn labels_patch(
+    st: &AppState,
+    user: &CurrentUser,
+    account_id: i64,
+    id: i64,
+    add: Vec<String>,
+    remove: Vec<String>,
+) -> ApiResult {
     let au = require_account(&st.db, user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     let (labels, added, removed) = patch_labels(&st.db, c.id, &add, &remove).await?;
@@ -1128,20 +1750,35 @@ async fn labels_patch(st: &AppState, user: &CurrentUser, account_id: i64, id: i6
         activity(st, &c, format!("{} added {}", user.name, added.join(", "))).await?;
     }
     if !removed.is_empty() {
-        activity(st, &c, format!("{} removed {}", user.name, removed.join(", "))).await?;
+        activity(
+            st,
+            &c,
+            format!("{} removed {}", user.name, removed.join(", ")),
+        )
+        .await?;
     }
     emit_conv(st, c.id, "conversation.updated").await?;
     Ok(Json(json!({ "payload": labels })))
 }
 
 /// POST /conversations/{id}/labels/add {labels: [...]} adds only the given labels.
-async fn labels_add(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+async fn labels_add(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let add = known_labels(&st.db, account_id, labels_arg(&b)?).await?;
     labels_patch(&st, &user, account_id, id, add, vec![]).await
 }
 
 /// POST /conversations/{id}/labels/remove {labels: [...]} removes only the given labels.
-async fn labels_remove(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+async fn labels_remove(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let remove = labels_arg(&b)?;
     labels_patch(&st, &user, account_id, id, vec![], remove).await
 }
@@ -1156,22 +1793,36 @@ mod label_patch_tests {
 
     #[test]
     fn add_keeps_existing_and_skips_duplicates() {
-        assert_eq!(apply_label_patch(&s(&["a", "b"]), &s(&["b", "c"]), &[]), s(&["a", "b", "c"]));
+        assert_eq!(
+            apply_label_patch(&s(&["a", "b"]), &s(&["b", "c"]), &[]),
+            s(&["a", "b", "c"])
+        );
     }
 
     #[test]
     fn remove_only_given_labels() {
-        assert_eq!(apply_label_patch(&s(&["a", "b", "c"]), &[], &s(&["b", "x"])), s(&["a", "c"]));
+        assert_eq!(
+            apply_label_patch(&s(&["a", "b", "c"]), &[], &s(&["b", "x"])),
+            s(&["a", "c"])
+        );
     }
 
     #[test]
     fn add_then_remove_same_label_drops_it() {
-        assert_eq!(apply_label_patch(&s(&["a"]), &s(&["z"]), &s(&["z"])), s(&["a"]));
+        assert_eq!(
+            apply_label_patch(&s(&["a"]), &s(&["z"]), &s(&["z"])),
+            s(&["a"])
+        );
     }
 }
 
 /// POST /conversations/{id}/labels {labels: [...]} replaces the label set.
-async fn labels_create(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+async fn labels_create(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     let labels = known_labels(&st.db, account_id, parse_labels(&b["labels"])).await?;
@@ -1194,12 +1845,24 @@ async fn labels_create(State(st): State<AppState>, user: CurrentUser, Path((acco
 
 /// Message fields Chatwoot's messages/index.json.jbuilder does not render.
 const INDEX_ONLY_OMIT: &[&str] = &[
-    "account_id", "additional_attributes", "conversation", "external_source_ids", "processed_message_content",
-    "sender_id", "sender_type", "sentiment", "updated_at",
+    "account_id",
+    "additional_attributes",
+    "conversation",
+    "external_source_ids",
+    "processed_message_content",
+    "sender_id",
+    "sender_type",
+    "sentiment",
+    "updated_at",
 ];
 
 /// GET /conversations/{id}/messages?before=&after=
-async fn messages_index(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Query(p): Query<HashMap<String, String>>) -> ApiResult {
+async fn messages_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Query(p): Query<HashMap<String, String>>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     let before = p.get("before").and_then(|v| v.parse::<i64>().ok());
@@ -1230,7 +1893,14 @@ async fn messages_index(State(st): State<AppState>, user: CurrentUser, Path((acc
                 o.remove(*k);
             }
             if let Some(s) = o.get_mut("sender").and_then(Value::as_object_mut) {
-                for k in ["account_id", "auto_offline", "confirmed", "email", "provider", "role"] {
+                for k in [
+                    "account_id",
+                    "auto_offline",
+                    "confirmed",
+                    "email",
+                    "provider",
+                    "role",
+                ] {
                     s.remove(k);
                 }
             }
@@ -1262,16 +1932,25 @@ async fn messages_create_any(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("multipart/form-data"));
     if is_multipart {
-        let mp = axum::extract::Multipart::from_request(req, &st).await.map_err(|e| ApiError::bad(e.to_string()))?;
+        let mp = axum::extract::Multipart::from_request(req, &st)
+            .await
+            .map_err(|e| ApiError::bad(e.to_string()))?;
         return crate::storage::create_with_attachments(&st, &user, account_id, id, mp).await;
     }
-    let Json(b) = Json::<Value>::from_request(req, &st).await.map_err(|e| ApiError::bad(e.to_string()))?;
+    let Json(b) = Json::<Value>::from_request(req, &st)
+        .await
+        .map_err(|e| ApiError::bad(e.to_string()))?;
     messages_create(State(st), user, Path((account_id, id)), Json(b)).await
 }
 
 /// POST /conversations/{id}/messages {content, private, message_type?, content_type?, content_attributes?, echo_id?}
 /// ponytail: JSON only, no multipart attachments; API-channel webhook delivery not ported.
-async fn messages_create(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+async fn messages_create(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     let content = b["content"].as_str().unwrap_or_default();
@@ -1279,12 +1958,25 @@ async fn messages_create(State(st): State<AppState>, user: CurrentUser, Path((ac
         return Err(ApiError::bad("Message content can't be blank"));
     }
     let message_type = match &b["message_type"] {
-        Value::String(s) => idx(&MSG_TYPES, s).ok_or_else(|| ApiError::bad("Invalid message_type"))?,
-        Value::Number(n) => n.as_i64().filter(|n| (0..4).contains(n)).ok_or_else(|| ApiError::bad("Invalid message_type"))? as i32,
+        Value::String(s) => {
+            idx(&MSG_TYPES, s).ok_or_else(|| ApiError::bad("Invalid message_type"))?
+        }
+        Value::Number(n) => {
+            n.as_i64()
+                .filter(|n| (0..4).contains(n))
+                .ok_or_else(|| ApiError::bad("Invalid message_type"))? as i32
+        }
         _ => 1,
     };
-    let content_type = b["content_type"].as_str().and_then(|s| idx(&CONTENT_TYPES, s)).unwrap_or(0);
-    let mut attrs = b.get("content_attributes").filter(|v| v.is_object()).cloned().unwrap_or(json!({}));
+    let content_type = b["content_type"]
+        .as_str()
+        .and_then(|s| idx(&CONTENT_TYPES, s))
+        .unwrap_or(0);
+    let mut attrs = b
+        .get("content_attributes")
+        .filter(|v| v.is_object())
+        .cloned()
+        .unwrap_or(json!({}));
     resolve_in_reply_to(&st.db, c.id, &mut attrs).await?;
     // API channels pass the external id so later replies can reference it (Chatwoot permits source_id here).
     // Client-sent carrier keys are dropped first, so only the top-level source_id is honored.
@@ -1294,9 +1986,21 @@ async fn messages_create(State(st): State<AppState>, user: CurrentUser, Path((ac
     if let Some(sid) = b["source_id"].as_str().filter(|s| !s.is_empty()) {
         attrs[SOURCE_ID_KEY] = json!(sid);
     }
-    let sender = if message_type == 0 { c.contact_id.map(|id| ("Contact", id)) } else { Some(("User", user.id)) };
+    let sender = if message_type == 0 {
+        c.contact_id.map(|id| ("Contact", id))
+    } else {
+        Some(("User", user.id))
+    };
     let data = insert_message(
-        &st, &c, sender, content, message_type, b["private"].as_bool().unwrap_or(false), content_type, attrs, b["echo_id"].as_str(),
+        &st,
+        &c,
+        sender,
+        content,
+        message_type,
+        b["private"].as_bool().unwrap_or(false),
+        content_type,
+        attrs,
+        b["echo_id"].as_str(),
     )
     .await?;
     Ok(Json(data))
@@ -1306,8 +2010,14 @@ async fn messages_create(State(st): State<AppState>, user: CurrentUser, Path((ac
 /// `in_reply_to_external_id` (source_id) is looked up in the same conversation and both keys are set from
 /// the found message, or cleared when nothing matches.
 async fn resolve_in_reply_to(db: &PgPool, conv_id: i64, attrs: &mut Value) -> Result<(), ApiError> {
-    let id = attrs.get("in_reply_to").and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()));
-    let ext = attrs.get("in_reply_to_external_id").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+    let id = attrs
+        .get("in_reply_to")
+        .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()));
+    let ext = attrs
+        .get("in_reply_to_external_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     if id.is_none() && ext.is_none() {
         return Ok(());
     }
@@ -1325,7 +2035,11 @@ async fn resolve_in_reply_to(db: &PgPool, conv_id: i64, attrs: &mut Value) -> Re
 }
 
 /// DELETE /conversations/{id}/messages/{message_id}: soft delete like Rails.
-async fn messages_destroy(State(st): State<AppState>, user: CurrentUser, Path((account_id, id, message_id)): Path<(i64, i64, i64)>) -> ApiResult {
+async fn messages_destroy(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id, message_id)): Path<(i64, i64, i64)>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     let m: Msg = sqlx::query_as(&format!(
@@ -1346,11 +2060,19 @@ async fn messages_destroy(State(st): State<AppState>, user: CurrentUser, Path((a
 
 /// PATCH /conversations/{id}/messages/{message_id} {status, external_error}. Chatwoot
 /// messages_controller#update: only API inboxes, transitions go through StatusUpdateService.
-async fn messages_update(State(st): State<AppState>, user: CurrentUser, Path((account_id, id, message_id)): Path<(i64, i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+async fn messages_update(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id, message_id)): Path<(i64, i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     if !is_api_inbox(&st.db, c.inbox_id).await? {
-        return Err(ApiError(StatusCode::FORBIDDEN, "Message status update is only allowed for API inboxes".into()));
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "Message status update is only allowed for API inboxes".into(),
+        ));
     }
     let m = load_msg(&st.db, &c, message_id).await?;
     let status = b["status"].as_str().unwrap_or_default();
@@ -1374,7 +2096,11 @@ async fn messages_update(State(st): State<AppState>, user: CurrentUser, Path((ac
 
 /// POST /conversations/{id}/messages/{message_id}/retry (messages_controller#retry). A failed outgoing
 /// message is reset to sent and re-emitted as message.created so the channel listeners send it again.
-async fn messages_retry(State(st): State<AppState>, user: CurrentUser, Path((account_id, id, message_id)): Path<(i64, i64, i64)>) -> ApiResult {
+async fn messages_retry(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id, message_id)): Path<(i64, i64, i64)>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     let m = load_msg(&st.db, &c, message_id).await?;
@@ -1398,23 +2124,96 @@ async fn messages_retry(State(st): State<AppState>, user: CurrentUser, Path((acc
 
 /// POST /conversations/{id}/messages/{message_id}/translate. Needs a Google Translate hook that Pulsar
 /// does not ship, so it always answers with a clear 422 instead of a stub success.
-async fn messages_translate(State(st): State<AppState>, user: CurrentUser, Path((account_id, id, message_id)): Path<(i64, i64, i64)>) -> ApiResult {
+async fn messages_translate(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id, message_id)): Path<(i64, i64, i64)>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
     load_msg(&st.db, &c, message_id).await?;
     Err(ApiError::bad("translation not configured"))
 }
 
-/// POST /conversations/{id}/request_contact_info (contact_info_requests_controller#create). WhatsApp
-/// Cloud only; any other channel is refused with the eligibility reason Chatwoot reports.
-async fn request_contact_info(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+/// GET /conversations/{id}/contact_info_request (contact_info_requests_controller#show).
+async fn contact_info_request_show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
-    let channel: Option<String> = sqlx::query_scalar("SELECT channel_type FROM inboxes WHERE id = $1")
-        .bind(c.inbox_id)
-        .fetch_optional(&st.db)
-        .await?
-        .flatten();
+    let channel: Option<String> =
+        sqlx::query_scalar("SELECT channel_type FROM inboxes WHERE id = $1")
+            .bind(c.inbox_id)
+            .fetch_optional(&st.db)
+            .await?
+            .flatten();
+    if channel.as_deref() != Some("Channel::Whatsapp") {
+        return Ok(Json(
+            json!({ "available": false, "reason": "unsupported_provider" }),
+        ));
+    }
+    let window_ok: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id = $1 AND message_type = 0 AND created_at > now() - interval '24 hours')",
+    )
+    .bind(c.id as i32)
+    .fetch_one(&st.db)
+    .await?;
+    if !window_ok {
+        return Ok(Json(
+            json!({ "available": false, "reason": "outside_messaging_window" }),
+        ));
+    }
+    Ok(Json(json!({ "available": true })))
+}
+
+/// GET /conversations/{id}/reporting_events
+async fn conversation_reporting_events(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    let rows: Vec<(i64, Option<String>, Option<f64>, Option<f64>, Option<NaiveDateTime>, Option<NaiveDateTime>, Option<i32>, Option<i32>, Option<i32>, Option<i32>, NaiveDateTime, NaiveDateTime)> = sqlx::query_as(
+        "SELECT id, name, value, value_in_business_hours, event_start_time, event_end_time,
+                account_id, inbox_id, user_id, conversation_id, created_at, updated_at
+         FROM reporting_events WHERE account_id = $1 AND conversation_id = $2 ORDER BY created_at DESC",
+    )
+    .bind(account_id as i32)
+    .bind(c.id as i32)
+    .fetch_all(&st.db)
+    .await?;
+    let out: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "id": r.0, "name": r.1, "value": r.2, "value_in_business_hours": r.3,
+                "event_start_time": r.4, "event_end_time": r.5, "account_id": r.6,
+                "inbox_id": r.7, "user_id": r.8, "conversation_id": r.9,
+                "created_at": r.10, "updated_at": r.11,
+            })
+        })
+        .collect();
+    Ok(Json(Value::Array(out)))
+}
+
+/// POST /conversations/{id}/request_contact_info (contact_info_requests_controller#create). WhatsApp
+/// Cloud only; any other channel is refused with the eligibility reason Chatwoot reports.
+async fn request_contact_info(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let c = load(&st.db, &au, id).await?;
+    let channel: Option<String> =
+        sqlx::query_scalar("SELECT channel_type FROM inboxes WHERE id = $1")
+            .bind(c.inbox_id)
+            .fetch_optional(&st.db)
+            .await?
+            .flatten();
     if channel.as_deref() != Some("Channel::Whatsapp") {
         return Err(ApiError::bad("unsupported_provider"));
     }
@@ -1422,13 +2221,24 @@ async fn request_contact_info(State(st): State<AppState>, user: CurrentUser, Pat
 }
 
 async fn is_api_inbox(db: &PgPool, inbox_id: i64) -> Result<bool, ApiError> {
-    let ch: Option<String> = sqlx::query_scalar("SELECT channel_type FROM inboxes WHERE id = $1").bind(inbox_id).fetch_optional(db).await?.flatten();
+    let ch: Option<String> = sqlx::query_scalar("SELECT channel_type FROM inboxes WHERE id = $1")
+        .bind(inbox_id)
+        .fetch_optional(db)
+        .await?
+        .flatten();
     Ok(ch.as_deref() == Some("Channel::Api"))
 }
 
 async fn is_api_or_widget(db: &PgPool, inbox_id: i64) -> Result<bool, ApiError> {
-    let ch: Option<String> = sqlx::query_scalar("SELECT channel_type FROM inboxes WHERE id = $1").bind(inbox_id).fetch_optional(db).await?.flatten();
-    Ok(matches!(ch.as_deref(), Some("Channel::Api" | "Channel::WebWidget")))
+    let ch: Option<String> = sqlx::query_scalar("SELECT channel_type FROM inboxes WHERE id = $1")
+        .bind(inbox_id)
+        .fetch_optional(db)
+        .await?
+        .flatten();
+    Ok(matches!(
+        ch.as_deref(),
+        Some("Channel::Api" | "Channel::WebWidget")
+    ))
 }
 
 async fn load_msg(db: &PgPool, c: &Conv, message_id: i64) -> Result<Msg, ApiError> {
@@ -1459,12 +2269,11 @@ async fn draft_show(
 ) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let c = load(&st.db, &au, id).await?;
-    let row: Option<String> = sqlx::query_scalar(
-        "SELECT message FROM pulsar_draft_messages WHERE conversation_id = $1",
-    )
-    .bind(c.id)
-    .fetch_optional(&st.db)
-    .await?;
+    let row: Option<String> =
+        sqlx::query_scalar("SELECT message FROM pulsar_draft_messages WHERE conversation_id = $1")
+            .bind(c.id)
+            .fetch_optional(&st.db)
+            .await?;
     match row {
         Some(message) => Ok(Json(json!({ "has_draft": true, "message": message }))),
         None => Ok(Json(json!({ "has_draft": false }))),
@@ -1482,7 +2291,11 @@ async fn draft_update(
     let c = load(&st.db, &au, id).await?;
     let msg = body
         .as_ref()
-        .and_then(|b| b.0.get("draft_message").and_then(|d| d.get("message")).and_then(|v| v.as_str()))
+        .and_then(|b| {
+            b.0.get("draft_message")
+                .and_then(|d| d.get("message"))
+                .and_then(|v| v.as_str())
+        })
         .unwrap_or("");
     sqlx::query(
         "INSERT INTO pulsar_draft_messages (conversation_id, message, updated_at)
@@ -1678,13 +2491,12 @@ async fn bulk_actions_create(
                 if id == 0 {
                     Some(None)
                 } else {
-                    let exists: Option<i32> = sqlx::query_scalar(
-                        "SELECT 1 FROM teams WHERE account_id = $1 AND id = $2",
-                    )
-                    .bind(account_id)
-                    .bind(id)
-                    .fetch_optional(&st.db)
-                    .await?;
+                    let exists: Option<i32> =
+                        sqlx::query_scalar("SELECT 1 FROM teams WHERE account_id = $1 AND id = $2")
+                            .bind(account_id)
+                            .bind(id)
+                            .fetch_optional(&st.db)
+                            .await?;
                     if exists.is_none() {
                         return Err(ApiError::bad("Invalid team_id"));
                     }
@@ -1694,7 +2506,10 @@ async fn bulk_actions_create(
         };
 
         // Status if present and not null
-        let status_opt: Option<i32> = match fields.and_then(|f| f.get("status")).and_then(|v| v.as_str()) {
+        let status_opt: Option<i32> = match fields
+            .and_then(|f| f.get("status"))
+            .and_then(|v| v.as_str())
+        {
             None => None,
             Some(s) => Some(idx(&STATUSES, s).ok_or_else(|| ApiError::bad("Invalid status"))?),
         };
@@ -1715,35 +2530,59 @@ async fn bulk_actions_create(
             .filter_map(num)
             .collect();
 
-        let add_labels = body.get("labels").and_then(|l| l.get("add")).map(parse_labels).unwrap_or_default();
-        let remove_labels = body.get("labels").and_then(|l| l.get("remove")).map(parse_labels).unwrap_or_default();
+        let add_labels = body
+            .get("labels")
+            .and_then(|l| l.get("add"))
+            .map(parse_labels)
+            .unwrap_or_default();
+        let remove_labels = body
+            .get("labels")
+            .and_then(|l| l.get("remove"))
+            .map(parse_labels)
+            .unwrap_or_default();
 
         for display_id in ids {
-            let Ok(c) = load(&st.db, &au, display_id).await else { continue };
+            let Ok(c) = load(&st.db, &au, display_id).await else {
+                continue;
+            };
 
             if !add_labels.is_empty() || !remove_labels.is_empty() {
-                let (_, added, removed) = patch_labels(&st.db, c.id, &add_labels, &remove_labels).await?;
+                let (_, added, removed) =
+                    patch_labels(&st.db, c.id, &add_labels, &remove_labels).await?;
                 if !added.is_empty() {
                     activity(&st, &c, format!("{} added {}", user.name, added.join(", "))).await?;
                 }
                 if !removed.is_empty() {
-                    activity(&st, &c, format!("{} removed {}", user.name, removed.join(", "))).await?;
+                    activity(
+                        &st,
+                        &c,
+                        format!("{} removed {}", user.name, removed.join(", ")),
+                    )
+                    .await?;
                 }
                 emit_conv(&st, c.id, "conversation.updated").await?;
             }
 
             if let Some(new_assignee) = assignee_opt {
-                sqlx::query("UPDATE conversations SET assignee_id = $1, updated_at = now() WHERE id = $2")
-                    .bind(new_assignee.map(|a| a as i32))
-                    .bind(c.id)
-                    .execute(&st.db)
-                    .await?;
+                sqlx::query(
+                    "UPDATE conversations SET assignee_id = $1, updated_at = now() WHERE id = $2",
+                )
+                .bind(new_assignee.map(|a| a as i32))
+                .bind(c.id)
+                .execute(&st.db)
+                .await?;
                 if new_assignee != c.assignee_id {
                     let text = match new_assignee {
-                        Some(a) if a == user.id => format!("{} self-assigned this conversation", user.name),
+                        Some(a) if a == user.id => {
+                            format!("{} self-assigned this conversation", user.name)
+                        }
                         Some(a) => {
                             let agent = user_json(&st.db, account_id, a).await;
-                            format!("Assigned to {} by {}", agent["available_name"].as_str().unwrap_or_default(), user.name)
+                            format!(
+                                "Assigned to {} by {}",
+                                agent["available_name"].as_str().unwrap_or_default(),
+                                user.name
+                            )
                         }
                         None => format!("Conversation unassigned by {}", user.name),
                     };
@@ -1753,20 +2592,30 @@ async fn bulk_actions_create(
             }
 
             if let Some(new_team) = team_opt {
-                sqlx::query("UPDATE conversations SET team_id = $1, updated_at = now() WHERE id = $2")
-                    .bind(new_team)
-                    .bind(c.id)
-                    .execute(&st.db)
-                    .await?;
+                sqlx::query(
+                    "UPDATE conversations SET team_id = $1, updated_at = now() WHERE id = $2",
+                )
+                .bind(new_team)
+                .bind(c.id)
+                .execute(&st.db)
+                .await?;
                 if new_team != c.team_id {
                     let text = match new_team {
                         Some(_) => {
                             let team = team_json(&st.db, new_team).await;
-                            format!("Assigned to {} by {}", team["name"].as_str().unwrap_or_default(), user.name)
+                            format!(
+                                "Assigned to {} by {}",
+                                team["name"].as_str().unwrap_or_default(),
+                                user.name
+                            )
                         }
                         None => {
                             let old = team_json(&st.db, c.team_id).await;
-                            format!("Unassigned from {} by {}", old["name"].as_str().unwrap_or_default(), user.name)
+                            format!(
+                                "Unassigned from {} by {}",
+                                old["name"].as_str().unwrap_or_default(),
+                                user.name
+                            )
                         }
                     };
                     activity(&st, &c, text).await?;
@@ -1849,8 +2698,16 @@ async fn bulk_actions_create(
             return Ok(axum::http::StatusCode::OK);
         }
 
-        let add_labels = body.get("labels").and_then(|l| l.get("add")).map(parse_labels).unwrap_or_default();
-        let remove_labels = body.get("labels").and_then(|l| l.get("remove")).map(parse_labels).unwrap_or_default();
+        let add_labels = body
+            .get("labels")
+            .and_then(|l| l.get("add"))
+            .map(parse_labels)
+            .unwrap_or_default();
+        let remove_labels = body
+            .get("labels")
+            .and_then(|l| l.get("remove"))
+            .map(parse_labels)
+            .unwrap_or_default();
 
         if !add_labels.is_empty() || !remove_labels.is_empty() {
             for cid in ids {
@@ -1926,6 +2783,11 @@ mod tests {
 }
 
 /// Label patch for widget labels (widget/labels_controller). Same write path as the agent label routes.
-pub(crate) async fn patch_labels_pub(db: &PgPool, conv_id: i64, add: &[String], remove: &[String]) -> Result<(), ApiError> {
+pub(crate) async fn patch_labels_pub(
+    db: &PgPool,
+    conv_id: i64,
+    add: &[String],
+    remove: &[String],
+) -> Result<(), ApiError> {
     patch_labels(db, conv_id, add, remove).await.map(|_| ())
 }

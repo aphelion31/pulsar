@@ -1,0 +1,38 @@
+# Chatwoot -> Pulsar Full Parity Map
+
+Reference: `/Users/beyondb/Halim/Projects/CEG/prjtss/chatwoot` (`192a2488f7`)
+Target: `/Users/beyondb/Halim/Projects/CEG/prjtss/pulsar` (branch `PLR-090/feat-chatwoot-full-parity`)
+ADRs: [DECISIONS.md](DECISIONS.md) | Terms: [GLOSSARY.md](GLOSSARY.md)
+
+## Baseline (Rounds 1-6 + PLR-087 + PLR-088)
+- `done`: Core auth, conversations, messages, contacts, companies, inboxes, teams, labels, canned responses, custom attributes/filters, macros, automation rules, webhooks, notifications, reports v2, public API, widget, Telegram, LINE, Email IMAP/SMTP, Twilio SMS/WhatsApp, WhatsApp Cloud (`PLR-087`), Bandwidth SMS (`PLR-088`), Slack/Dyte/Shopify basics, Assignment Policies, Data Imports, MFA, Platform API.
+
+## Wave 1 — Core Stubs & Core UI Placeholders
+- `done` | Backend `src/sla.rs` + scheduler SLA eval (replace `/sla_policies` stub)
+- `done` | Backend `src/capacity_policies.rs` (agent capacity policies + users + inbox limits)
+- `done` | Backend `src/settings.rs` & `src/main.rs` (real `/integrations/apps`, `/working_hours`, `/profile/sessions`, `/profile/trusted_devices`, `/notification_subscriptions`, `/branded_email_layout`, `/reporting_events`)
+- `done` | Backend `src/saml.rs` (`saml_settings` + `auth/saml_login`)
+- `done` | Backend `src/contacts.rs` (`contact_merge` already present), `src/conversations.rs`, `src/inboxes.rs`, `src/inbox_actions.rs` (`contact_info_request`, `reporting_events`, `rotate_hmac_token`, `message_templates`, `whatsapp_business_management_token`, health/webhook/csat_template)
+- `done` | Backend `src/main.rs` public routes (`/survey/responses/{id}`, `/robots.txt`, `/api`, `/.well-known/*`)
+- `done` | UI `inbox-view.tsx`, `survey.responses.tsx`, `auth.signup.tsx`, `auth.confirmation.tsx`, `auth.verify-email.tsx`, `login.sso.tsx`, `reports.sla.tsx`, `settings/capacity-policy.tsx`, `settings/templates.tsx`, SAML/sessions/MFA in `security.tsx`
+- Gate: `cargo test` 46/46 passed, `pnpm typecheck && pnpm build` passed, `tools/wave1-parity.sh` (incl. `tools/smoke.sh`) passed against PostgreSQL 18.
+
+## Wave 2 — Full Help Center + Remaining Messaging Channels
+- `open` | Backend `src/channels/facebook.rs`, `src/channels/instagram.rs` + outbound listeners
+- `open` | Backend `src/channels/social_oauth.rs` (TikTok, Twitter/X, Google & Microsoft email OAuth)
+- `open` | Backend `src/channels/whatsapp.rs` & `src/bots.rs` & `src/scheduler.rs` (WA manual setup, campaign analytics & scheduled dispatch)
+- `open` | Backend `src/help_center.rs` (sitemap.xml, `.md`, `.png` tracking pixel, public categories/articles/search)
+- `open` | UI Help Center dashboard (`portals/*`), `campaigns.whatsapp.tsx`, channel setup wizard (`inbox-new.tsx`)
+
+## Wave 3 — All Remaining Integrations
+- `open` | Backend `src/integrations/linear.rs`, `notion.rs`, `stripe.rs`, `shopify.rs` custom app & callbacks, `conversations` Google Translate + `dialogflow` listener + Slack webhook intake
+- `open` | UI `shopify.select-account.tsx`, `settings/integrations/{slack,linear,stripe,notion,shopify,hook-detail}.tsx`, ConversationSidebar cards
+
+## Wave 4 — Captain AI, Conversation Monitors, Voice/Calls
+- `open` | Backend `src/captain.rs`, `src/monitors.rs`, `src/voice.rs`, enterprise helpers
+- `open` | UI `captain/*`, `reports.monitors.tsx`, `reports.monitor-detail.tsx`, `calls.tsx`
+
+## Wave 5 — Super Admin, Onboarding & Final Release Gate
+- `open` | Backend `src/super_admin.rs`, `src/platform.rs` (`email_channel_migrations`)
+- `open` | UI `installation.onboarding.tsx`, `super-admin/*`, delete `placeholder.tsx` (zero `ph()` routes)
+- `open` | `rust-anything` pure-Ruby unit verification + full HTTP/Playwright acceptance + `cutover.sh`

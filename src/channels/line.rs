@@ -3,16 +3,16 @@
 //! app/jobs/webhooks/line_events_job.rb, and app/services/line/incoming_message_service.rb.
 
 use axum::{
+    Json, Router,
     body::Bytes,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::post,
-    Json, Router,
 };
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use hmac::{Hmac, Mac};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use crate::{
@@ -55,12 +55,11 @@ pub(crate) async fn create_channel(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| ApiError::bad("Line channel token can't be blank"))?;
 
-    let dup: Option<i32> = sqlx::query_scalar(
-        "SELECT 1 FROM channel_line WHERE line_channel_id = $1 LIMIT 1",
-    )
-    .bind(line_channel_id)
-    .fetch_optional(&mut **tx)
-    .await?;
+    let dup: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM channel_line WHERE line_channel_id = $1 LIMIT 1")
+            .bind(line_channel_id)
+            .fetch_optional(&mut **tx)
+            .await?;
     if dup.is_some() {
         return Err(ApiError::bad("Line channel has already been taken"));
     }
@@ -113,24 +112,36 @@ async fn webhook(
     .await?;
 
     let Some(inbox_row) = inbox_row else {
-        return Ok((StatusCode::NOT_FOUND, Json(json!({ "error": "Inbox not found" }))).into_response());
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Inbox not found" })),
+        )
+            .into_response());
     };
 
     let secret: String = inbox_row.try_get("line_channel_secret")?;
-    let sig = headers.get("x-line-signature").and_then(|v| v.to_str().ok());
+    let sig = headers
+        .get("x-line-signature")
+        .and_then(|v| v.to_str().ok());
     if !verify_signature(&secret, &body, sig) {
-        return Ok((StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid signature" }))).into_response());
+        return Ok((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "Invalid signature" })),
+        )
+            .into_response());
     }
 
-    let payload: Value = serde_json::from_slice(&body)
-        .map_err(|_| ApiError::bad("Invalid JSON payload"))?;
+    let payload: Value =
+        serde_json::from_slice(&body).map_err(|_| ApiError::bad("Invalid JSON payload"))?;
 
     let inbox_id: i64 = inbox_row.try_get("inbox_id")?;
     let account_id: i64 = inbox_row.try_get("account_id")?;
     let lock_to_single: bool = inbox_row.try_get("lock_to_single_conversation")?;
     let token: String = inbox_row.try_get("line_channel_token")?;
 
-    if let Err(e) = process_events(&st, account_id, inbox_id, lock_to_single, &token, &payload).await {
+    if let Err(e) =
+        process_events(&st, account_id, inbox_id, lock_to_single, &token, &payload).await
+    {
         tracing::warn!(inbox_id, error = ?e, "line inbound processing failed");
     }
 
@@ -183,14 +194,8 @@ async fn process_events(
 
         let display_name = fetch_profile_name(&client, &base, channel_token, user_id).await;
 
-        let (contact_id, contact_inbox_id) = find_or_create_contact(
-            &st.db,
-            account_id,
-            inbox_id,
-            user_id,
-            &display_name,
-        )
-        .await?;
+        let (contact_id, contact_inbox_id) =
+            find_or_create_contact(&st.db, account_id, inbox_id, user_id, &display_name).await?;
 
         let conv = find_or_create_conversation(
             &st.db,

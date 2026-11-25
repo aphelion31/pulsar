@@ -11,18 +11,26 @@ pub fn routes() -> Router<AppState> {
         .route("/webhooks", get(webhooks_index).post(webhooks_create))
         .route(
             "/webhooks/{id}",
-            axum::routing::patch(webhooks_update).put(webhooks_update).delete(webhooks_delete),
+            axum::routing::patch(webhooks_update)
+                .put(webhooks_update)
+                .delete(webhooks_delete),
         )
         .route("/macros", get(macros_index).post(macros_create))
         .route(
             "/macros/{id}",
-            get(macros_show).patch(macros_update).put(macros_update).delete(macros_delete),
+            get(macros_show)
+                .patch(macros_update)
+                .put(macros_update)
+                .delete(macros_delete),
         )
         .route("/macros/{id}/execute", post(macros_execute))
         .route("/automation_rules", get(rules_index).post(rules_create))
         .route(
             "/automation_rules/{id}",
-            get(rules_show).patch(rules_update).put(rules_update).delete(rules_delete),
+            get(rules_show)
+                .patch(rules_update)
+                .put(rules_update)
+                .delete(rules_delete),
         )
         .route("/automation_rules/{id}/clone", post(rules_clone))
 }
@@ -90,7 +98,10 @@ async fn webhooks_index(
 ) -> ApiResult {
     require_account(&st.db, &u, a).await?.require_admin()?;
     let rows: Vec<Value> = sqlx::query_scalar(&format!("SELECT {WEBHOOK} FROM webhooks w LEFT JOIN inboxes i ON i.id=w.inbox_id AND i.account_id=w.account_id WHERE w.account_id=$1 ORDER BY w.id")).bind(a).fetch_all(&st.db).await?;
-    let rows: Vec<Value> = rows.into_iter().map(crate::ar_encryption::reveal_secret).collect();
+    let rows: Vec<Value> = rows
+        .into_iter()
+        .map(crate::ar_encryption::reveal_secret)
+        .collect();
     Ok(Json(json!({"payload":{"webhooks":rows}})))
 }
 async fn webhooks_create(
@@ -402,11 +413,13 @@ async fn macros_execute(
         .await?;
         // agents may only act on conversations in inboxes they belong to (same rule as conversations.rs)
         if !au.is_admin() {
-            let member: Option<i32> = sqlx::query_scalar("SELECT 1 FROM inbox_members WHERE inbox_id = $1 AND user_id = $2")
-                .bind(conv.inbox_id)
-                .bind(u.id)
-                .fetch_optional(&st.db)
-                .await?;
+            let member: Option<i32> = sqlx::query_scalar(
+                "SELECT 1 FROM inbox_members WHERE inbox_id = $1 AND user_id = $2",
+            )
+            .bind(conv.inbox_id)
+            .bind(u.id)
+            .fetch_optional(&st.db)
+            .await?;
             member.ok_or_else(ApiError::not_found)?;
         }
         for action in mac["actions"]
@@ -441,12 +454,21 @@ async fn macros_execute(
                 // mirrors chatwoot/app/services/action_service.rb + macros/execution_service.rb
                 "mute_conversation" => {
                     if let Some(cid) = conv.contact_id {
-                        sqlx::query("UPDATE contacts SET blocked=true,updated_at=now() WHERE id=$1").bind(cid).execute(&st.db).await?;
+                        sqlx::query(
+                            "UPDATE contacts SET blocked=true,updated_at=now() WHERE id=$1",
+                        )
+                        .bind(cid)
+                        .execute(&st.db)
+                        .await?;
                     }
                     sqlx::query("UPDATE conversations SET status=1,status_changed_at=now(),updated_at=now() WHERE account_id=$1 AND id=$2").bind(a).bind(conv.id).execute(&st.db).await?;
                 }
                 "remove_assigned_agent" | "remove_assigned_team" => {
-                    let col = if action["action_name"] == "remove_assigned_agent" { "assignee_id" } else { "team_id" };
+                    let col = if action["action_name"] == "remove_assigned_agent" {
+                        "assignee_id"
+                    } else {
+                        "team_id"
+                    };
                     sqlx::query(&format!("UPDATE conversations SET {col}=NULL,updated_at=now() WHERE account_id=$1 AND id=$2")).bind(a).bind(conv.id).execute(&st.db).await?;
                 }
                 "send_webhook_event" => {
@@ -454,10 +476,17 @@ async fn macros_execute(
                         let mut payload = crate::conversations::conv_json(&st.db, &conv).await;
                         payload["event"] = json!("macro.executed");
                         let url = text.to_string();
-                        tokio::spawn(async move { let _ = crate::listeners::automation::send_webhook(&url, &payload).await; });
+                        tokio::spawn(async move {
+                            let _ =
+                                crate::listeners::automation::send_webhook(&url, &payload).await;
+                        });
                     }
                 }
-                "change_status" | "resolve_conversation" | "snooze_conversation" | "open_conversation" | "pending_conversation" => {
+                "change_status"
+                | "resolve_conversation"
+                | "snooze_conversation"
+                | "open_conversation"
+                | "pending_conversation" => {
                     let status = match action["action_name"].as_str().unwrap() {
                         "resolve_conversation" => 1,
                         "snooze_conversation" => 3,

@@ -79,7 +79,10 @@ pub fn public_routes() -> Router<AppState> {
         .route("/hc/{portal}", get(public_redirect))
         .route("/hc/{portal}/{locale}", get(public_portal))
         .route("/hc/{portal}/{locale}/categories", get(public_categories))
-        .route("/hc/{portal}/{locale}/categories.json", get(public_categories))
+        .route(
+            "/hc/{portal}/{locale}/categories.json",
+            get(public_categories),
+        )
         .route("/hc/{portal}/{locale}/articles", get(public_articles))
         .route("/hc/{portal}/{locale}/articles.json", get(public_articles))
         .route(
@@ -582,7 +585,12 @@ async fn portal_send_instructions(
     let html = format!(
         "<p>Add the following CNAME record to your DNS provider to finish setting up <strong>{custom_domain}</strong>:</p><pre>{cname_record}</pre>"
     );
-    tracing::info!(to = email, custom_domain, cname_record, "portal CNAME instructions");
+    tracing::info!(
+        to = email,
+        custom_domain,
+        cname_record,
+        "portal CNAME instructions"
+    );
     if let Err(e) = crate::mailer::send_html(email, &subject, html).await {
         tracing::warn!(to = email, error = %e, "failed to send portal CNAME instructions");
     }
@@ -1080,7 +1088,10 @@ fn article_ids(body: &Value) -> Vec<i64> {
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                .filter_map(|v| {
+                    v.as_i64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -1112,7 +1123,8 @@ async fn articles_bulk_update_status(
         .get("status")
         .and_then(Value::as_str)
         .ok_or_else(|| ApiError::bad("Invalid status value"))?;
-    let status_num = status_number(status_str).map_err(|_| ApiError::bad("Invalid status value"))?;
+    let status_num =
+        status_number(status_str).map_err(|_| ApiError::bad("Invalid status value"))?;
     if status_num == 1
         && matched
             .iter()
@@ -1121,12 +1133,14 @@ async fn articles_bulk_update_status(
         return Err(ApiError::bad("Content can't be blank"));
     }
     let matched_ids: Vec<i64> = matched.into_iter().map(|(aid, _)| aid).collect();
-    sqlx::query("UPDATE articles SET status=$1, updated_at=now() WHERE portal_id=$2 AND id = ANY($3)")
-        .bind(status_num)
-        .bind(id(&p))
-        .bind(&matched_ids)
-        .execute(&st.db)
-        .await?;
+    sqlx::query(
+        "UPDATE articles SET status=$1, updated_at=now() WHERE portal_id=$2 AND id = ANY($3)",
+    )
+    .bind(status_num)
+    .bind(id(&p))
+    .bind(&matched_ids)
+    .execute(&st.db)
+    .await?;
     Ok(Json(json!({})))
 }
 async fn articles_bulk_update_category(
@@ -1154,7 +1168,10 @@ async fn articles_bulk_update_category(
     }
     let cid = body
         .get("category_id")
-        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
         .ok_or_else(|| ApiError::bad("Category not found in this portal"))?;
     let cat_ok: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM categories WHERE id=$1 AND portal_id=$2)")

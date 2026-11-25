@@ -11,7 +11,10 @@ use crate::{common::AppState, conversations};
 const BULK_LIMIT: i64 = 100; // Limits::BULK_ACTIONS_LIMIT
 
 pub fn spawn(st: AppState) {
-    let secs = std::env::var("PULSAR_SCHEDULER_INTERVAL_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(300);
+    let secs = std::env::var("PULSAR_SCHEDULER_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(secs));
         loop {
@@ -27,6 +30,7 @@ pub async fn run_once(st: &AppState) -> anyhow::Result<()> {
     reopen_snoozed_conversations(st).await?;
     reopen_snoozed_notifications(st).await?;
     auto_resolve(st).await?;
+    crate::sla::evaluate_open_slas(st).await?;
     Ok(())
 }
 
@@ -38,7 +42,9 @@ async fn reopen_snoozed_conversations(st: &AppState) -> anyhow::Result<()> {
     .fetch_all(&st.db)
     .await?;
     for id in ids {
-        conversations::emit_conv(st, id, "conversation.status_changed").await.ok();
+        conversations::emit_conv(st, id, "conversation.status_changed")
+            .await
+            .ok();
     }
     Ok(())
 }
@@ -90,18 +96,36 @@ async fn auto_resolve(st: &AppState) -> anyhow::Result<()> {
         .fetch_all(&st.db)
         .await?;
         for id in ids {
-            let c = conversations::reload(&st.db, id).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            let c = conversations::reload(&st.db, id)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e:?}"))?;
             if let Some(m) = &message {
                 // ponytail: messaging-window check (can_reply?) skipped; only matters for WhatsApp/Facebook-style 24h windows.
-                conversations::insert_message(st, &c, None, m, 3, false, 0, json!({}), None).await.ok();
+                conversations::insert_message(st, &c, None, m, 3, false, 0, json!({}), None)
+                    .await
+                    .ok();
             }
             sqlx::query("UPDATE conversations SET status = 1, status_changed_at = now(), updated_at = now() WHERE id = $1 AND status = 0")
                 .bind(id)
                 .execute(&st.db)
                 .await?;
             let content_attributes = json!({ "activity": { "type": "conversation_status_changed", "status": "resolved" } });
-            conversations::insert_message(st, &c, None, &auto_resolved_text(minutes), 2, false, 0, content_attributes, None).await.ok();
-            conversations::emit_conv(st, id, "conversation.status_changed").await.ok();
+            conversations::insert_message(
+                st,
+                &c,
+                None,
+                &auto_resolved_text(minutes),
+                2,
+                false,
+                0,
+                content_attributes,
+                None,
+            )
+            .await
+            .ok();
+            conversations::emit_conv(st, id, "conversation.status_changed")
+                .await
+                .ok();
         }
         // ponytail: auto_resolve_label not applied; add when the label setting is exposed in account settings UI.
     }
@@ -112,8 +136,17 @@ async fn auto_resolve(st: &AppState) -> anyhow::Result<()> {
 mod tests {
     #[test]
     fn auto_resolved_text_units() {
-        assert_eq!(super::auto_resolved_text(2880), "Conversation was marked resolved by system due to 2 days of inactivity");
-        assert_eq!(super::auto_resolved_text(120), "Conversation was marked resolved by system due to 2 hours of inactivity");
-        assert_eq!(super::auto_resolved_text(90), "Conversation was marked resolved by system due to 90 minutes of inactivity");
+        assert_eq!(
+            super::auto_resolved_text(2880),
+            "Conversation was marked resolved by system due to 2 days of inactivity"
+        );
+        assert_eq!(
+            super::auto_resolved_text(120),
+            "Conversation was marked resolved by system due to 2 hours of inactivity"
+        );
+        assert_eq!(
+            super::auto_resolved_text(90),
+            "Conversation was marked resolved by system due to 90 minutes of inactivity"
+        );
     }
 }

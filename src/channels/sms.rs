@@ -7,24 +7,32 @@
 use std::time::Duration;
 
 use axum::{
+    Router,
     body::Bytes,
     extract::{Path, State},
     http::StatusCode,
     routing::post,
-    Router,
 };
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use crate::{
     common::{ApiError, AppState},
-    conversations::{insert_message, reload, Conv},
+    conversations::{Conv, insert_message, reload},
 };
 
-const INVALID_CONFIG: &str = "Provide a valid Bandwidth account ID, application ID, client ID, and client secret.";
+const INVALID_CONFIG: &str =
+    "Provide a valid Bandwidth account ID, application ID, client ID, and client secret.";
 const AUTH_FAILED: &str = "Unable to authenticate with Bandwidth. Check your client ID and client secret, then try again.";
 const TOKEN_FAILED: &str = "Unable to reach Bandwidth authentication. Please try again later.";
-const CONFIG_KEYS: [&str; 6] = ["account_id", "application_id", "api_key", "api_secret", "client_id", "client_secret"];
+const CONFIG_KEYS: [&str; 6] = [
+    "account_id",
+    "application_id",
+    "api_key",
+    "api_secret",
+    "client_id",
+    "client_secret",
+];
 const OAUTH_KEYS: [&str; 4] = ["account_id", "application_id", "client_id", "client_secret"];
 const LEGACY_KEYS: [&str; 4] = ["account_id", "application_id", "api_key", "api_secret"];
 
@@ -51,18 +59,30 @@ fn cfg_str<'a>(cfg: &'a Map<String, Value>, key: &str) -> &'a str {
 
 /// Sms model validation: required keys for the auth mode, no unknown keys, every value a non-blank string.
 fn valid_config(cfg: &Map<String, Value>) -> bool {
-    let required: &[&str] = if is_oauth(cfg) { &OAUTH_KEYS } else { &LEGACY_KEYS };
+    let required: &[&str] = if is_oauth(cfg) {
+        &OAUTH_KEYS
+    } else {
+        &LEGACY_KEYS
+    };
     required.iter().all(|k| cfg.contains_key(*k))
         && cfg.keys().all(|k| CONFIG_KEYS.contains(&k.as_str()))
-        && cfg.values().all(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))
+        && cfg
+            .values()
+            .all(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))
 }
 
 /// OAuth2 client credentials. Not cached: one token request per send (ponytail: add a cache when volume needs it).
 async fn fetch_token(cfg: &Map<String, Value>) -> Result<String, ApiError> {
     let resp = reqwest::Client::new()
-        .post(format!("{}/api/v1/oauth2/token", base("https://api.bandwidth.com")))
+        .post(format!(
+            "{}/api/v1/oauth2/token",
+            base("https://api.bandwidth.com")
+        ))
         .timeout(Duration::from_secs(15))
-        .basic_auth(cfg_str(cfg, "client_id"), Some(cfg_str(cfg, "client_secret")))
+        .basic_auth(
+            cfg_str(cfg, "client_id"),
+            Some(cfg_str(cfg, "client_secret")),
+        )
         .header("content-type", "application/x-www-form-urlencoded")
         .body("grant_type=client_credentials")
         .send()
@@ -74,9 +94,13 @@ async fn fetch_token(cfg: &Map<String, Value>) -> Result<String, ApiError> {
         return Err(ApiError::bad(AUTH_FAILED));
     }
     if !status.is_success() {
-        return Err(ApiError(StatusCode::SERVICE_UNAVAILABLE, TOKEN_FAILED.into()));
+        return Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            TOKEN_FAILED.into(),
+        ));
     }
-    let body: Value = serde_json::from_slice(&resp.bytes().await.unwrap_or_default()).unwrap_or(Value::Null);
+    let body: Value =
+        serde_json::from_slice(&resp.bytes().await.unwrap_or_default()).unwrap_or(Value::Null);
     body["access_token"]
         .as_str()
         .map(str::to_string)
@@ -84,8 +108,17 @@ async fn fetch_token(cfg: &Map<String, Value>) -> Result<String, ApiError> {
 }
 
 /// Sends one text. Ok(provider id, empty when absent) or Err(provider description), like Sms::SendOnSmsService.
-pub async fn send_text(cfg: &Map<String, Value>, from: &str, to: &str, text: &str) -> Result<String, String> {
-    let url = format!("{}/api/v2/users/{}/messages", base("https://messaging.bandwidth.com"), cfg_str(cfg, "account_id"));
+pub async fn send_text(
+    cfg: &Map<String, Value>,
+    from: &str,
+    to: &str,
+    text: &str,
+) -> Result<String, String> {
+    let url = format!(
+        "{}/api/v2/users/{}/messages",
+        base("https://messaging.bandwidth.com"),
+        cfg_str(cfg, "account_id")
+    );
     let body = json!({ "to": to, "from": from, "text": text, "applicationId": cfg_str(cfg, "application_id") });
     let req = reqwest::Client::new()
         .post(&url)
@@ -102,7 +135,8 @@ pub async fn send_text(cfg: &Map<String, Value>, from: &str, to: &str, text: &st
         .await
         .map_err(|e| format!("Bandwidth request error: {e}"))?;
     let status = resp.status();
-    let parsed: Value = serde_json::from_slice(&resp.bytes().await.unwrap_or_default()).unwrap_or(Value::Null);
+    let parsed: Value =
+        serde_json::from_slice(&resp.bytes().await.unwrap_or_default()).unwrap_or(Value::Null);
     if status.is_success() {
         Ok(parsed["id"].as_str().unwrap_or_default().to_string())
     } else {
@@ -126,15 +160,18 @@ pub(crate) async fn create_channel(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| ApiError::bad("Phone number can't be blank"))?
         .to_string();
-    let taken: Option<i32> = sqlx::query_scalar("SELECT 1 FROM channel_sms WHERE phone_number = $1 LIMIT 1")
-        .bind(&phone)
-        .fetch_optional(&mut **tx)
-        .await?;
+    let taken: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM channel_sms WHERE phone_number = $1 LIMIT 1")
+            .bind(&phone)
+            .fetch_optional(&mut **tx)
+            .await?;
     if taken.is_some() {
         return Err(ApiError::bad("Phone number has already been taken"));
     }
 
-    let cfg = ch["provider_config"].as_object().ok_or_else(|| ApiError::bad(INVALID_CONFIG))?;
+    let cfg = ch["provider_config"]
+        .as_object()
+        .ok_or_else(|| ApiError::bad(INVALID_CONFIG))?;
     if !valid_config(cfg) || !is_oauth(cfg) {
         return Err(ApiError::bad(INVALID_CONFIG));
     }
@@ -160,7 +197,11 @@ struct SmsChannel {
 
 /// POST /webhooks/sms/{phone_number}. Always 200 like Chatwoot's `head :ok`, so the provider does not retry.
 /// The path phone is unused; the channel is looked up by the payload `to`, as Chatwoot's SmsEventsJob does.
-async fn webhook(State(st): State<AppState>, Path(_phone): Path<String>, body: Bytes) -> StatusCode {
+async fn webhook(
+    State(st): State<AppState>,
+    Path(_phone): Path<String>,
+    body: Bytes,
+) -> StatusCode {
     let payload: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     // Chatwoot reads params['_json'].first: the provider posts an array of events.
     let event = payload.get(0).cloned().unwrap_or(Value::Null);
@@ -172,7 +213,10 @@ async fn webhook(State(st): State<AppState>, Path(_phone): Path<String>, body: B
 
 async fn process(st: &AppState, event: &Value) -> Result<(), ApiError> {
     let kind = event["type"].as_str().unwrap_or_default();
-    if !matches!(kind, "message-received" | "message-delivered" | "message-failed") {
+    if !matches!(
+        kind,
+        "message-received" | "message-delivered" | "message-failed"
+    ) {
         return Ok(());
     }
     let Some(to) = event["to"].as_str().filter(|s| !s.is_empty()) else {
@@ -216,11 +260,13 @@ async fn incoming(st: &AppState, ch: &SmsChannel, msg: &Value) -> Result<(), Api
         .ok_or_else(|| ApiError::bad("From is required"))?;
     let source_id = msg["id"].as_str().unwrap_or_default();
     if !source_id.is_empty() {
-        let dup: Option<i32> = sqlx::query_scalar("SELECT 1 FROM messages WHERE inbox_id = $1 AND source_id = $2 LIMIT 1")
-            .bind(ch.inbox_id as i32)
-            .bind(source_id)
-            .fetch_optional(&st.db)
-            .await?;
+        let dup: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM messages WHERE inbox_id = $1 AND source_id = $2 LIMIT 1",
+        )
+        .bind(ch.inbox_id as i32)
+        .bind(source_id)
+        .fetch_optional(&st.db)
+        .await?;
         if dup.is_some() {
             return Ok(());
         }
@@ -229,12 +275,31 @@ async fn incoming(st: &AppState, ch: &SmsChannel, msg: &Value) -> Result<(), Api
     let text = msg["text"].as_str().unwrap_or_default().replace('\0', "");
     let (contact_id, contact_inbox_id) = find_or_create_contact(&st.db, ch, from).await?;
     let conv = find_or_create_conversation(&st.db, ch, contact_id, contact_inbox_id).await?;
-    let attrs = if source_id.is_empty() { json!({}) } else { json!({ "__pulsar_source_id": source_id }) };
-    insert_message(st, &conv, Some(("Contact", contact_id)), &text, 0, false, 0, attrs, None).await?;
+    let attrs = if source_id.is_empty() {
+        json!({})
+    } else {
+        json!({ "__pulsar_source_id": source_id })
+    };
+    insert_message(
+        st,
+        &conv,
+        Some(("Contact", contact_id)),
+        &text,
+        0,
+        false,
+        0,
+        attrs,
+        None,
+    )
+    .await?;
     Ok(())
 }
 
-async fn find_or_create_contact(db: &PgPool, ch: &SmsChannel, phone: &str) -> Result<(i64, i64), ApiError> {
+async fn find_or_create_contact(
+    db: &PgPool,
+    ch: &SmsChannel,
+    phone: &str,
+) -> Result<(i64, i64), ApiError> {
     if let Some(r) = sqlx::query(
         "SELECT id::bigint AS ci_id, contact_id::bigint AS contact_id
          FROM contact_inboxes WHERE inbox_id = $1 AND source_id = $2 LIMIT 1",
@@ -333,7 +398,12 @@ async fn find_or_create_conversation(
 }
 
 /// Sms::DeliveryStatusService. message-failed carries errorCode/description at the top level.
-async fn delivery_status(db: &PgPool, ch: &SmsChannel, kind: &str, event: &Value) -> Result<(), ApiError> {
+async fn delivery_status(
+    db: &PgPool,
+    ch: &SmsChannel,
+    kind: &str,
+    event: &Value,
+) -> Result<(), ApiError> {
     let Some(msg_id) = event["message"]["id"].as_str().filter(|s| !s.is_empty()) else {
         return Ok(());
     };
@@ -346,7 +416,15 @@ async fn delivery_status(db: &PgPool, ch: &SmsChannel, kind: &str, event: &Value
             Value::String(s) if !s.is_empty() => Some(s.clone()),
             _ => None,
         };
-        (3, code.map(|c| format!("{c} - {}", event["description"].as_str().unwrap_or_default())))
+        (
+            3,
+            code.map(|c| {
+                format!(
+                    "{c} - {}",
+                    event["description"].as_str().unwrap_or_default()
+                )
+            }),
+        )
     };
 
     match external_error {
@@ -384,12 +462,21 @@ mod tests {
     #[test]
     fn validates_bandwidth_provider_config() {
         let oauth = json!({"account_id": "a", "application_id": "b", "client_id": "c", "client_secret": "d"});
-        let legacy = json!({"account_id": "a", "application_id": "b", "api_key": "k", "api_secret": "s"});
+        let legacy =
+            json!({"account_id": "a", "application_id": "b", "api_key": "k", "api_secret": "s"});
         assert!(valid_config(oauth.as_object().unwrap()));
         assert!(valid_config(legacy.as_object().unwrap()));
-        assert!(!valid_config(json!({"account_id": "a", "application_id": "b", "client_id": "c"}).as_object().unwrap()));
+        assert!(!valid_config(
+            json!({"account_id": "a", "application_id": "b", "client_id": "c"})
+                .as_object()
+                .unwrap()
+        ));
         assert!(!valid_config(json!({"account_id": "a", "application_id": "b", "client_id": "c", "client_secret": "d", "x": "y"}).as_object().unwrap()));
         assert!(!valid_config(json!({"account_id": "a", "application_id": " ", "client_id": "c", "client_secret": "d"}).as_object().unwrap()));
-        assert!(!valid_config(json!({"account_id": 1, "application_id": "b", "client_id": "c", "client_secret": "d"}).as_object().unwrap()));
+        assert!(!valid_config(
+            json!({"account_id": 1, "application_id": "b", "client_id": "c", "client_secret": "d"})
+                .as_object()
+                .unwrap()
+        ));
     }
 }

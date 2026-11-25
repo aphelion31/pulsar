@@ -1,13 +1,13 @@
 //! OWNED BY A WORKER. See WORKERS.md for the contract.
 //! Inboxes, inbox members, agents, assignable agents, teams. Relative to /api/v1/accounts/{account_id}.
+use axum::http::StatusCode;
 use axum::{
+    Json, Router,
     extract::{Path, RawQuery, State},
     routing::{delete, get, patch, post},
-    Json, Router,
 };
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sqlx::{PgPool, Row};
-use axum::http::StatusCode;
 
 use crate::{auth, cable, common::*};
 
@@ -22,22 +22,39 @@ const FEATURE_BITS: [(&str, i64); 4] = [
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/inboxes", get(inbox_index).post(inbox_create))
-        .route("/inboxes/{id}", get(inbox_show).patch(inbox_update).put(inbox_update).delete(inbox_destroy))
+        .route(
+            "/inboxes/{id}",
+            get(inbox_show)
+                .patch(inbox_update)
+                .put(inbox_update)
+                .delete(inbox_destroy),
+        )
         .route("/inboxes/{id}/assignable_agents", get(inbox_assignable))
         .route("/inboxes/{id}/avatar", delete(inbox_avatar_destroy))
         .route("/inboxes/{id}/campaigns", get(inbox_campaigns))
         .route("/assignable_agents", get(assignable_index))
         .route(
             "/inbox_members",
-            post(members_replace).patch(members_replace).delete(members_remove),
+            post(members_replace)
+                .patch(members_replace)
+                .delete(members_remove),
         )
         .route("/inbox_members/destroy", delete(members_remove))
         .route("/inbox_members/{inbox_id}", get(members_show))
         .route("/agents", get(agents_index).post(agent_create))
         .route("/agents/bulk_create", post(agents_bulk_create))
-        .route("/agents/{id}", patch(agent_update).put(agent_update).delete(agent_destroy))
+        .route(
+            "/agents/{id}",
+            patch(agent_update).put(agent_update).delete(agent_destroy),
+        )
         .route("/teams", get(teams_index).post(team_create))
-        .route("/teams/{id}", get(team_show).patch(team_update).put(team_update).delete(team_destroy))
+        .route(
+            "/teams/{id}",
+            get(team_show)
+                .patch(team_update)
+                .put(team_update)
+                .delete(team_destroy),
+        )
         .route(
             "/teams/{id}/team_members",
             get(team_members_index)
@@ -95,7 +112,11 @@ fn reply_time_name(i: i64) -> &'static str {
 }
 
 fn flags_to_names(f: i64) -> Vec<&'static str> {
-    FEATURE_BITS.iter().filter(|(_, b)| f & b != 0).map(|(n, _)| *n).collect()
+    FEATURE_BITS
+        .iter()
+        .filter(|(_, b)| f & b != 0)
+        .map(|(n, _)| *n)
+        .collect()
 }
 
 fn names_to_flags(v: &Value) -> i64 {
@@ -115,8 +136,13 @@ fn widget_script(base: &str, token: &str) -> String {
 
 /// Rails `ids` array param: `user_ids` in body must be an array of integers.
 fn user_ids_of(b: &Value, key: &str) -> Result<Vec<i64>, ApiError> {
-    let arr = b[key].as_array().ok_or_else(|| ApiError::bad("Invalid User IDs"))?;
-    let ids: Vec<i64> = arr.iter().map(|v| v.as_i64().ok_or_else(|| ApiError::bad("Invalid User IDs"))).collect::<Result<_, _>>()?;
+    let arr = b[key]
+        .as_array()
+        .ok_or_else(|| ApiError::bad("Invalid User IDs"))?;
+    let ids: Vec<i64> = arr
+        .iter()
+        .map(|v| v.as_i64().ok_or_else(|| ApiError::bad("Invalid User IDs")))
+        .collect::<Result<_, _>>()?;
     Ok(ids)
 }
 
@@ -139,7 +165,11 @@ async fn check_users(db: &PgPool, account_id: i64, ids: &[i64]) -> Result<(), Ap
 }
 
 /// Mirrors api/v1/models/_agent.json.jbuilder. `ids = None` lists all account agents.
-async fn agents_for(db: &PgPool, account_id: i64, ids: Option<Vec<i64>>) -> Result<Vec<Value>, ApiError> {
+async fn agents_for(
+    db: &PgPool,
+    account_id: i64,
+    ids: Option<Vec<i64>>,
+) -> Result<Vec<Value>, ApiError> {
     let rows = sqlx::query(
         "SELECT u.id::bigint AS id, u.email, u.name, u.display_name,
                 u.confirmed_at IS NOT NULL AS confirmed, COALESCE(au.role, 0)::int AS role, au.auto_offline
@@ -177,11 +207,13 @@ async fn agents_for(db: &PgPool, account_id: i64, ids: Option<Vec<i64>>) -> Resu
 }
 
 async fn inbox_in_account(db: &PgPool, account_id: i64, inbox_id: i64) -> Result<(), ApiError> {
-    let found: Option<i32> = sqlx::query_scalar("SELECT 1 FROM inboxes WHERE id::bigint = $1 AND account_id::bigint = $2")
-        .bind(inbox_id)
-        .bind(account_id)
-        .fetch_optional(db)
-        .await?;
+    let found: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM inboxes WHERE id::bigint = $1 AND account_id::bigint = $2",
+    )
+    .bind(inbox_id)
+    .bind(account_id)
+    .fetch_optional(db)
+    .await?;
     found.map(|_| ()).ok_or_else(ApiError::not_found)
 }
 
@@ -198,18 +230,28 @@ async fn can_see_inbox(db: &PgPool, au: &AccountUser, inbox_id: i64) -> Result<(
     .bind(inbox_id)
     .fetch_one(db)
     .await?;
-    if member { Ok(()) } else { Err(ApiError::forbidden()) }
+    if member {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden())
+    }
 }
 
 async fn member_ids(db: &PgPool, inbox_id: i64) -> Result<Vec<i64>, ApiError> {
-    Ok(sqlx::query_scalar("SELECT user_id::bigint FROM inbox_members WHERE inbox_id::bigint = $1")
-        .bind(inbox_id)
-        .fetch_all(db)
-        .await?)
+    Ok(
+        sqlx::query_scalar("SELECT user_id::bigint FROM inbox_members WHERE inbox_id::bigint = $1")
+            .bind(inbox_id)
+            .fetch_all(db)
+            .await?,
+    )
 }
 
 /// Mirrors Inbox#assignable_agents: intersection of member sets, plus account administrators.
-async fn assignable(db: &PgPool, account_id: i64, inbox_ids: &[i64]) -> Result<Vec<Value>, ApiError> {
+async fn assignable(
+    db: &PgPool,
+    account_id: i64,
+    inbox_ids: &[i64],
+) -> Result<Vec<Value>, ApiError> {
     let mut uniq = inbox_ids.to_vec();
     uniq.sort_unstable();
     uniq.dedup();
@@ -237,29 +279,81 @@ fn parse_inbox_ids(raw: Option<String>) -> Vec<i64> {
         .filter_map(|kv| {
             let (k, v) = kv.split_once('=')?;
             let k = k.replace("%5B", "[").replace("%5D", "]");
-            (k == "inbox_ids[]" || k == "inbox_ids").then(|| v.parse::<i64>().ok()).flatten()
+            (k == "inbox_ids[]" || k == "inbox_ids")
+                .then(|| v.parse::<i64>().ok())
+                .flatten()
         })
         .collect()
 }
 
 // ---------- inboxes ----------
 
-async fn update_email_channel(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, account_id: i64, id: i64, ch: &Value) -> Result<(), ApiError> {
+async fn update_email_channel(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    account_id: i64,
+    id: i64,
+    ch: &Value,
+) -> Result<(), ApiError> {
     if let Some(email) = ch.get("email") {
-        if !email.as_str().is_some_and(|v| v.parse::<lettre::Address>().is_ok()) {
+        if !email
+            .as_str()
+            .is_some_and(|v| v.parse::<lettre::Address>().is_ok())
+        {
             return Err(ApiError::bad("Email is invalid"));
         }
     }
-    let keys = ["email", "imap_enabled", "imap_address", "imap_port", "imap_login", "imap_password", "imap_enable_ssl", "imap_authentication", "smtp_enabled", "smtp_address", "smtp_port", "smtp_login", "smtp_password", "smtp_domain", "smtp_enable_starttls_auto", "smtp_authentication", "smtp_openssl_verify_mode", "smtp_enable_ssl_tls"];
+    let keys = [
+        "email",
+        "imap_enabled",
+        "imap_address",
+        "imap_port",
+        "imap_login",
+        "imap_password",
+        "imap_enable_ssl",
+        "imap_authentication",
+        "smtp_enabled",
+        "smtp_address",
+        "smtp_port",
+        "smtp_login",
+        "smtp_password",
+        "smtp_domain",
+        "smtp_enable_starttls_auto",
+        "smtp_authentication",
+        "smtp_openssl_verify_mode",
+        "smtp_enable_ssl_tls",
+    ];
     // Passwords are never sent back to the client, so a blank password field means "keep the stored one".
-    let fields: serde_json::Map<String, Value> = keys.iter().filter_map(|key| ch.get(*key).filter(|v| !v.is_null() && !(key.ends_with("_password") && v.as_str() == Some(""))).map(|v| ((*key).to_owned(), if key.ends_with("_password") { v.as_str().map(|s| Value::String(crate::ar_encryption::encrypt(s))).unwrap_or_else(|| v.clone()) } else { v.clone() }))).collect();
+    let fields: serde_json::Map<String, Value> = keys
+        .iter()
+        .filter_map(|key| {
+            ch.get(*key)
+                .filter(|v| !v.is_null() && !(key.ends_with("_password") && v.as_str() == Some("")))
+                .map(|v| {
+                    (
+                        (*key).to_owned(),
+                        if key.ends_with("_password") {
+                            v.as_str()
+                                .map(|s| Value::String(crate::ar_encryption::encrypt(s)))
+                                .unwrap_or_else(|| v.clone())
+                        } else {
+                            v.clone()
+                        },
+                    )
+                })
+        })
+        .collect();
     sqlx::query("UPDATE channel_email c SET (email, imap_enabled, imap_address, imap_port, imap_login, imap_password, imap_enable_ssl, imap_authentication, smtp_enabled, smtp_address, smtp_port, smtp_login, smtp_password, smtp_domain, smtp_enable_starttls_auto, smtp_authentication, smtp_openssl_verify_mode, smtp_enable_ssl_tls, updated_at) = (SELECT x.email, x.imap_enabled, x.imap_address, x.imap_port, x.imap_login, x.imap_password, x.imap_enable_ssl, x.imap_authentication, x.smtp_enabled, x.smtp_address, x.smtp_port, x.smtp_login, x.smtp_password, x.smtp_domain, x.smtp_enable_starttls_auto, x.smtp_authentication, x.smtp_openssl_verify_mode, x.smtp_enable_ssl_tls, now() FROM jsonb_populate_record(c, $3::jsonb) x) WHERE c.id = $1 AND c.account_id::bigint = $2")
         .bind(id).bind(account_id).bind(Value::Object(fields)).execute(&mut **tx).await?;
     Ok(())
 }
 
 /// Mirrors api/v1/models/_inbox.json.jbuilder (+ channel-specific attrs).
-pub(crate) async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admin: bool) -> Result<Value, ApiError> {
+pub(crate) async fn inbox_json(
+    db: &PgPool,
+    account_id: i64,
+    inbox_id: i64,
+    admin: bool,
+) -> Result<Value, ApiError> {
     let r = sqlx::query(
         "SELECT channel_id::bigint AS channel_id, name, channel_type, greeting_enabled, greeting_message,
                 working_hours_enabled, enable_email_collect, csat_survey_enabled, csat_config,
@@ -279,6 +373,55 @@ pub(crate) async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admi
     let sender: i32 = r.try_get("sender_name_type")?;
     let sender_name = if sender == 1 { "external" } else { "friendly" };
 
+    let mut working_hours: Vec<Value> = sqlx::query_as::<
+        _,
+        (
+            i32,
+            bool,
+            bool,
+            Option<i32>,
+            Option<i32>,
+            Option<i32>,
+            Option<i32>,
+        ),
+    >(
+        "SELECT day_of_week, COALESCE(closed_all_day, false), COALESCE(open_all_day, false),
+                open_hour, open_minutes, close_hour, close_minutes
+         FROM working_hours WHERE inbox_id::bigint = $1 ORDER BY day_of_week",
+    )
+    .bind(inbox_id)
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(|wh| {
+        json!({
+            "day_of_week": wh.0,
+            "closed_all_day": wh.1,
+            "open_all_day": wh.2,
+            "open_hour": wh.3,
+            "open_minutes": wh.4,
+            "close_hour": wh.5,
+            "close_minutes": wh.6,
+        })
+    })
+    .collect();
+    if working_hours.is_empty() {
+        working_hours = Vec::new();
+    }
+
+    let branded_email_layout: Option<String> = if admin {
+        sqlx::query_scalar(
+            "SELECT body FROM email_templates
+             WHERE inbox_id = $1 AND name = 'base' AND template_type = 0 AND locale = 0
+             LIMIT 1",
+        )
+        .bind(inbox_id as i32)
+        .fetch_optional(db)
+        .await?
+    } else {
+        None
+    };
+
     let mut out = json!({
         "id": inbox_id,
         "avatar_url": "",
@@ -294,7 +437,7 @@ pub(crate) async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admi
         "enable_auto_assignment": r.try_get::<Option<bool>, _>("enable_auto_assignment")?,
         "auto_assignment_config": r.try_get::<Option<Value>, _>("auto_assignment_config")?,
         "out_of_office_message": r.try_get::<Option<String>, _>("out_of_office_message")?,
-        "working_hours": [],
+        "working_hours": working_hours,
         "timezone": r.try_get::<Option<String>, _>("timezone")?,
         "callback_webhook_url": null,
         "allow_messages_after_resolved": r.try_get::<Option<bool>, _>("allow_messages_after_resolved")?,
@@ -302,6 +445,9 @@ pub(crate) async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admi
         "sender_name_type": sender_name,
         "business_name": r.try_get::<Option<String>, _>("business_name")?,
     });
+    if admin && let Some(layout) = branded_email_layout {
+        out["branded_email_layout"] = json!(layout);
+    }
     let obj = out.as_object_mut().expect("object");
 
     match ct.as_str() {
@@ -310,11 +456,19 @@ pub(crate) async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admi
                 .bind(channel_id).bind(account_id).fetch_optional(db).await?;
             if let Some(Value::Object(fields)) = c {
                 for (key, value) in fields {
-                    if key == "email" || key == "forward_to_email" || (admin && (key.starts_with("imap_") || key.starts_with("smtp_"))) {
+                    if key == "email"
+                        || key == "forward_to_email"
+                        || (admin && (key.starts_with("imap_") || key.starts_with("smtp_")))
+                    {
                         obj.insert(key, value);
                     }
                 }
-                obj.insert("forwarding_enabled".into(), json!(std::env::var("MAILER_INBOUND_EMAIL_DOMAIN").is_ok_and(|v| !v.is_empty())));
+                obj.insert(
+                    "forwarding_enabled".into(),
+                    json!(
+                        std::env::var("MAILER_INBOUND_EMAIL_DOMAIN").is_ok_and(|v| !v.is_empty())
+                    ),
+                );
             }
         }
         "Channel::TwilioSms" => {
@@ -328,15 +482,40 @@ pub(crate) async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admi
             .fetch_optional(db)
             .await?;
             if let Some(c) = c {
-                let medium = if c.try_get::<Option<i32>, _>("medium")?.unwrap_or(0) == 1 { "whatsapp" } else { "sms" };
+                let medium = if c.try_get::<Option<i32>, _>("medium")?.unwrap_or(0) == 1 {
+                    "whatsapp"
+                } else {
+                    "sms"
+                };
                 obj.insert("medium".into(), json!(medium));
-                obj.insert("phone_number".into(), c.try_get::<Option<String>, _>("phone_number")?.into());
-                obj.insert("messaging_service_sid".into(), c.try_get::<Option<String>, _>("messaging_service_sid")?.into());
-                obj.insert("content_templates".into(), c.try_get::<Option<Value>, _>("content_templates")?.into());
+                obj.insert(
+                    "phone_number".into(),
+                    c.try_get::<Option<String>, _>("phone_number")?.into(),
+                );
+                obj.insert(
+                    "messaging_service_sid".into(),
+                    c.try_get::<Option<String>, _>("messaging_service_sid")?
+                        .into(),
+                );
+                obj.insert(
+                    "content_templates".into(),
+                    c.try_get::<Option<Value>, _>("content_templates")?.into(),
+                );
                 if admin {
-                    obj.insert("account_sid".into(), c.try_get::<Option<String>, _>("account_sid")?.into());
-                    obj.insert("auth_token".into(), c.try_get::<Option<String>, _>("auth_token")?.map(|s| crate::ar_encryption::decrypt(&s)).into());
-                    obj.insert("api_key_sid".into(), c.try_get::<Option<String>, _>("api_key_sid")?.into());
+                    obj.insert(
+                        "account_sid".into(),
+                        c.try_get::<Option<String>, _>("account_sid")?.into(),
+                    );
+                    obj.insert(
+                        "auth_token".into(),
+                        c.try_get::<Option<String>, _>("auth_token")?
+                            .map(|s| crate::ar_encryption::decrypt(&s))
+                            .into(),
+                    );
+                    obj.insert(
+                        "api_key_sid".into(),
+                        c.try_get::<Option<String>, _>("api_key_sid")?.into(),
+                    );
                 }
             }
         }
@@ -350,13 +529,34 @@ pub(crate) async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admi
             .fetch_optional(db)
             .await?;
             if let Some(c) = c {
-                obj.insert("webhook_url".into(), c.try_get::<Option<String>, _>("webhook_url")?.into());
-                obj.insert("inbox_identifier".into(), c.try_get::<Option<String>, _>("identifier")?.into());
-                obj.insert("hmac_mandatory".into(), c.try_get::<Option<bool>, _>("hmac_mandatory")?.into());
-                obj.insert("additional_attributes".into(), c.try_get::<Option<Value>, _>("additional_attributes")?.into());
+                obj.insert(
+                    "webhook_url".into(),
+                    c.try_get::<Option<String>, _>("webhook_url")?.into(),
+                );
+                obj.insert(
+                    "inbox_identifier".into(),
+                    c.try_get::<Option<String>, _>("identifier")?.into(),
+                );
+                obj.insert(
+                    "hmac_mandatory".into(),
+                    c.try_get::<Option<bool>, _>("hmac_mandatory")?.into(),
+                );
+                obj.insert(
+                    "additional_attributes".into(),
+                    c.try_get::<Option<Value>, _>("additional_attributes")?
+                        .into(),
+                );
                 if admin {
-                    obj.insert("hmac_token".into(), c.try_get::<Option<String>, _>("hmac_token")?.into());
-                    obj.insert("secret".into(), c.try_get::<Option<String>, _>("secret")?.map(|s| crate::ar_encryption::decrypt(&s)).into());
+                    obj.insert(
+                        "hmac_token".into(),
+                        c.try_get::<Option<String>, _>("hmac_token")?.into(),
+                    );
+                    obj.insert(
+                        "secret".into(),
+                        c.try_get::<Option<String>, _>("secret")?
+                            .map(|s| crate::ar_encryption::decrypt(&s))
+                            .into(),
+                    );
                 }
             }
         }
@@ -368,10 +568,15 @@ pub(crate) async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admi
                 .fetch_optional(db)
                 .await?;
             if let Some(c) = c {
-                obj.insert("phone_number".into(), c.try_get::<Option<String>, _>("phone_number")?.into());
+                obj.insert(
+                    "phone_number".into(),
+                    c.try_get::<Option<String>, _>("phone_number")?.into(),
+                );
                 obj.insert("messaging_service_sid".into(), Value::Null);
                 if admin {
-                    let cfg: Value = c.try_get::<Option<Value>, _>("provider_config")?.unwrap_or(json!({}));
+                    let cfg: Value = c
+                        .try_get::<Option<Value>, _>("provider_config")?
+                        .unwrap_or(json!({}));
                     let sliced: Map<String, Value> = ["account_id", "application_id", "client_id"]
                         .iter()
                         .filter_map(|k| cfg.get(*k).map(|v| (k.to_string(), v.clone())))
@@ -395,22 +600,64 @@ pub(crate) async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admi
                 let token: Option<String> = c.try_get("website_token")?;
                 let rt: Option<i32> = c.try_get("reply_time")?;
                 let flags: i64 = c.try_get("feature_flags")?;
-                obj.insert("website_url".into(), c.try_get::<Option<String>, _>("website_url")?.into());
-                obj.insert("widget_color".into(), c.try_get::<Option<String>, _>("widget_color")?.into());
+                obj.insert(
+                    "website_url".into(),
+                    c.try_get::<Option<String>, _>("website_url")?.into(),
+                );
+                obj.insert(
+                    "widget_color".into(),
+                    c.try_get::<Option<String>, _>("widget_color")?.into(),
+                );
                 obj.insert("website_token".into(), token.clone().into());
-                obj.insert("welcome_title".into(), c.try_get::<Option<String>, _>("welcome_title")?.into());
-                obj.insert("welcome_tagline".into(), c.try_get::<Option<String>, _>("welcome_tagline")?.into());
-                let base = std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:3000".into());
-                obj.insert("web_widget_script".into(), json!(widget_script(&base, &token.clone().unwrap_or_default())));
-                obj.insert("pre_chat_form_enabled".into(), c.try_get::<Option<bool>, _>("pre_chat_form_enabled")?.into());
-                obj.insert("pre_chat_form_options".into(), c.try_get::<Option<Value>, _>("pre_chat_form_options")?.into());
-                obj.insert("reply_time".into(), json!(reply_time_name(rt.unwrap_or(0) as i64)));
-                obj.insert("selected_feature_flags".into(), json!(flags_to_names(flags)));
-                obj.insert("continuity_via_email".into(), c.try_get::<Option<bool>, _>("continuity_via_email")?.into());
-                obj.insert("allowed_domains".into(), c.try_get::<Option<String>, _>("allowed_domains")?.into());
-                obj.insert("hmac_mandatory".into(), c.try_get::<Option<bool>, _>("hmac_mandatory")?.into());
+                obj.insert(
+                    "welcome_title".into(),
+                    c.try_get::<Option<String>, _>("welcome_title")?.into(),
+                );
+                obj.insert(
+                    "welcome_tagline".into(),
+                    c.try_get::<Option<String>, _>("welcome_tagline")?.into(),
+                );
+                let base = std::env::var("FRONTEND_URL")
+                    .unwrap_or_else(|_| "http://localhost:3000".into());
+                obj.insert(
+                    "web_widget_script".into(),
+                    json!(widget_script(&base, &token.clone().unwrap_or_default())),
+                );
+                obj.insert(
+                    "pre_chat_form_enabled".into(),
+                    c.try_get::<Option<bool>, _>("pre_chat_form_enabled")?
+                        .into(),
+                );
+                obj.insert(
+                    "pre_chat_form_options".into(),
+                    c.try_get::<Option<Value>, _>("pre_chat_form_options")?
+                        .into(),
+                );
+                obj.insert(
+                    "reply_time".into(),
+                    json!(reply_time_name(rt.unwrap_or(0) as i64)),
+                );
+                obj.insert(
+                    "selected_feature_flags".into(),
+                    json!(flags_to_names(flags)),
+                );
+                obj.insert(
+                    "continuity_via_email".into(),
+                    c.try_get::<Option<bool>, _>("continuity_via_email")?.into(),
+                );
+                obj.insert(
+                    "allowed_domains".into(),
+                    c.try_get::<Option<String>, _>("allowed_domains")?.into(),
+                );
+                obj.insert(
+                    "hmac_mandatory".into(),
+                    c.try_get::<Option<bool>, _>("hmac_mandatory")?.into(),
+                );
                 if admin {
-                    obj.insert("hmac_token".into(), c.try_get::<Option<String>, _>("hmac_token")?.into());
+                    obj.insert(
+                        "hmac_token".into(),
+                        c.try_get::<Option<String>, _>("hmac_token")?.into(),
+                    );
                 }
             }
         }
@@ -419,7 +666,11 @@ pub(crate) async fn inbox_json(db: &PgPool, account_id: i64, inbox_id: i64, admi
     Ok(out)
 }
 
-async fn inbox_index(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>) -> ApiResult {
+async fn inbox_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let ids: Vec<i64> = sqlx::query_scalar(
         "SELECT id::bigint FROM inboxes WHERE account_id::bigint = $1
@@ -445,11 +696,17 @@ async fn inbox_show(
 ) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     can_see_inbox(&st.db, &au, id).await?;
-    Ok(Json(inbox_json(&st.db, account_id, id, au.is_admin()).await?))
+    Ok(Json(
+        inbox_json(&st.db, account_id, id, au.is_admin()).await?,
+    ))
 }
 
 /// DELETE /inboxes/{id}/avatar (inboxes_controller#avatar). Admin only, like Chatwoot check_authorization.
-async fn inbox_avatar_destroy(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn inbox_avatar_destroy(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     au.require_admin()?;
     inbox_in_account(&st.db, account_id, id).await?;
@@ -462,15 +719,21 @@ const INBOX_CAMPAIGN_SELECT: &str = "SELECT jsonb_build_object('id',c.display_id
 
 /// GET /inboxes/{id}/campaigns (inboxes_controller#campaigns + campaigns.json.jbuilder). Admin only, as in
 /// Chatwoot's InboxPolicy#campaigns. Same row shape as GET /campaigns.
-async fn inbox_campaigns(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn inbox_campaigns(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     au.require_admin()?;
     inbox_in_account(&st.db, account_id, id).await?;
-    let rows: Vec<Value> = sqlx::query_scalar(&format!("{INBOX_CAMPAIGN_SELECT} AND c.inbox_id=$2 ORDER BY c.id"))
-        .bind(account_id)
-        .bind(id)
-        .fetch_all(&st.db)
-        .await?;
+    let rows: Vec<Value> = sqlx::query_scalar(&format!(
+        "{INBOX_CAMPAIGN_SELECT} AND c.inbox_id=$2 ORDER BY c.id"
+    ))
+    .bind(account_id)
+    .bind(id)
+    .fetch_all(&st.db)
+    .await?;
     Ok(Json(json!(rows)))
 }
 
@@ -482,14 +745,21 @@ async fn inbox_create(
 ) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     au.require_admin()?;
-    let name = ostr(&body, "name").filter(|s| !s.trim().is_empty()).ok_or_else(|| ApiError::bad("Name can't be blank"))?;
+    let name = ostr(&body, "name")
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| ApiError::bad("Name can't be blank"))?;
     let ch = &body["channel"];
 
     let mut tx = st.db.begin().await?;
     let (channel_id, channel_type): (i64, &str) = match ch["type"].as_str() {
         Some("email") => {
-            let email = ostr(ch, "email").filter(|s| s.parse::<lettre::Address>().is_ok()).ok_or_else(|| ApiError::bad("Email is invalid"))?;
-            let domain = std::env::var("MAILER_INBOUND_EMAIL_DOMAIN").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "localhost".into());
+            let email = ostr(ch, "email")
+                .filter(|s| s.parse::<lettre::Address>().is_ok())
+                .ok_or_else(|| ApiError::bad("Email is invalid"))?;
+            let domain = std::env::var("MAILER_INBOUND_EMAIL_DOMAIN")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "localhost".into());
             let id: i64 = sqlx::query_scalar("INSERT INTO channel_email (account_id, email, forward_to_email, created_at, updated_at) VALUES ($1, $2, $3, now(), now()) RETURNING id")
                 .bind(account_id as i32).bind(email).bind(format!("{}@{}", token(), domain)).fetch_one(&mut *tx).await?;
             update_email_channel(&mut tx, account_id, id, ch).await?;
@@ -510,7 +780,9 @@ async fn inbox_create(
             (id, "Channel::Api")
         }
         Some("web_widget") => {
-            let website_url = ostr(ch, "website_url").filter(|s| !s.is_empty()).ok_or_else(|| ApiError::bad("Website url can't be blank"))?;
+            let website_url = ostr(ch, "website_url")
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| ApiError::bad("Website url can't be blank"))?;
             let id: i64 = sqlx::query_scalar(
                 "INSERT INTO channel_web_widgets (account_id, website_url, widget_color, welcome_title, welcome_tagline,
                     website_token, hmac_token, reply_time, created_at, updated_at)
@@ -528,9 +800,14 @@ async fn inbox_create(
             .await?;
             (id, "Channel::WebWidget")
         }
-        Some("telegram") => crate::channels::telegram::create_channel(&mut tx, account_id, ch, &st.frontend_url).await?,
+        Some("telegram") => {
+            crate::channels::telegram::create_channel(&mut tx, account_id, ch, &st.frontend_url)
+                .await?
+        }
         Some("line") => crate::channels::line::create_channel(&mut tx, account_id, ch).await?,
-        Some("twilio") | Some("twilio_sms") => crate::channels::twilio::create_channel(&mut tx, account_id, ch).await?,
+        Some("twilio") | Some("twilio_sms") => {
+            crate::channels::twilio::create_channel(&mut tx, account_id, ch).await?
+        }
         Some("sms") => crate::channels::sms::create_channel(&mut tx, account_id, ch).await?,
         _ => return Err(ApiError::bad("Invalid channel type")),
     };
@@ -554,6 +831,30 @@ async fn inbox_create(
     .bind(inbox_id)
     .execute(&mut *tx)
     .await?;
+
+    // Default 7-day working hours (Sun/Sat closed, Mon-Fri 09:00-17:00), matching OutOfOffisable.
+    for day in 0..7i32 {
+        let closed = day == 0 || day == 6;
+        let (oh, om, ch_hr, cm) = if closed {
+            (None, None, None, None)
+        } else {
+            (Some(9), Some(0), Some(17), Some(0))
+        };
+        sqlx::query(
+            "INSERT INTO working_hours (inbox_id, account_id, day_of_week, closed_all_day, open_all_day, open_hour, open_minutes, close_hour, close_minutes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8, now(), now())",
+        )
+        .bind(inbox_id)
+        .bind(account_id)
+        .bind(day)
+        .bind(closed)
+        .bind(oh)
+        .bind(om)
+        .bind(ch_hr)
+        .bind(cm)
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
 
     st.hub.invalidate_cache(account_id, "inbox");
@@ -617,7 +918,9 @@ async fn inbox_update(
         .await?;
         if let Some((channel_id, Some(ct))) = row {
             match ct.as_str() {
-                "Channel::Email" => update_email_channel(&mut tx, account_id, channel_id, ch).await?,
+                "Channel::Email" => {
+                    update_email_channel(&mut tx, account_id, channel_id, ch).await?
+                }
                 "Channel::Api" => {
                     sqlx::query(
                         "UPDATE channel_api SET webhook_url = COALESCE($3, webhook_url),
@@ -632,9 +935,14 @@ async fn inbox_update(
                     .await?;
                 }
                 "Channel::WebWidget" => {
-                    let flags: Option<i64> = ch["selected_feature_flags"].is_array().then(|| names_to_flags(&ch["selected_feature_flags"]));
+                    let flags: Option<i64> = ch["selected_feature_flags"]
+                        .is_array()
+                        .then(|| names_to_flags(&ch["selected_feature_flags"]));
                     let reply: Option<i64> = reply_time_to_int(&ch["reply_time"]);
-                    let pre_chat: Option<Value> = ch.get("pre_chat_form_options").filter(|v| v.is_object()).cloned();
+                    let pre_chat: Option<Value> = ch
+                        .get("pre_chat_form_options")
+                        .filter(|v| v.is_object())
+                        .cloned();
                     sqlx::query(
                         "UPDATE channel_web_widgets SET
                             website_url = COALESCE($3, website_url),
@@ -665,6 +973,104 @@ async fn inbox_update(
                 }
                 _ => {}
             }
+        }
+    }
+
+    if let Some(hours) = body["working_hours"].as_array() {
+        for wh in hours {
+            let Some(dow) = wh["day_of_week"].as_i64() else {
+                continue;
+            };
+            let closed = wh["closed_all_day"].as_bool().unwrap_or(false);
+            let open_all = wh["open_all_day"].as_bool().unwrap_or(false);
+            let oh = wh["open_hour"].as_i64().map(|v| v as i32);
+            let om = wh["open_minutes"].as_i64().map(|v| v as i32);
+            let ch_hr = wh["close_hour"].as_i64().map(|v| v as i32);
+            let cm = wh["close_minutes"].as_i64().map(|v| v as i32);
+            let updated = sqlx::query(
+                "UPDATE working_hours
+                 SET closed_all_day = $3, open_all_day = $4, open_hour = $5, open_minutes = $6,
+                     close_hour = $7, close_minutes = $8, updated_at = now()
+                 WHERE inbox_id = $1 AND day_of_week = $2",
+            )
+            .bind(id)
+            .bind(dow as i32)
+            .bind(closed)
+            .bind(open_all)
+            .bind(oh)
+            .bind(om)
+            .bind(ch_hr)
+            .bind(cm)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if updated == 0 {
+                sqlx::query(
+                    "INSERT INTO working_hours (inbox_id, account_id, day_of_week, closed_all_day, open_all_day, open_hour, open_minutes, close_hour, close_minutes, created_at, updated_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now())",
+                )
+                .bind(id)
+                .bind(account_id)
+                .bind(dow as i32)
+                .bind(closed)
+                .bind(open_all)
+                .bind(oh)
+                .bind(om)
+                .bind(ch_hr)
+                .bind(cm)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+    }
+
+    if body.get("branded_email_layout").is_some() {
+        let layout_val = match &body["branded_email_layout"] {
+            Value::Null => None,
+            Value::String(s) if s == "null" || s.trim().is_empty() => None,
+            Value::String(s) => Some(s.clone()),
+            _ => {
+                return Err(ApiError::bad(
+                    "branded_email_layout must be a string or null",
+                ));
+            }
+        };
+        if let Some(ref html) = layout_val {
+            if !html.contains("content_for_layout") {
+                return Err(ApiError::bad("Body must include {{ content_for_layout }}"));
+            }
+            let existing: Option<i64> = sqlx::query_scalar(
+                "SELECT id FROM email_templates WHERE inbox_id = $1 AND name = 'base' AND template_type = 0 AND locale = 0",
+            )
+            .bind(id as i32)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if let Some(eid) = existing {
+                sqlx::query(
+                    "UPDATE email_templates SET body = $2, updated_at = now() WHERE id = $1",
+                )
+                .bind(eid)
+                .bind(html)
+                .execute(&mut *tx)
+                .await?;
+            } else {
+                sqlx::query(
+                    "INSERT INTO email_templates (account_id, inbox_id, name, body, template_type, locale, created_at, updated_at)
+                     VALUES ($1, $2, 'base', $3, 0, 0, now(), now())",
+                )
+                .bind(account_id as i32)
+                .bind(id as i32)
+                .bind(html)
+                .execute(&mut *tx)
+                .await?;
+            }
+        } else {
+            sqlx::query(
+                "DELETE FROM email_templates WHERE inbox_id = $1 AND name = 'base' AND template_type = 0 AND locale = 0",
+            )
+            .bind(id as i32)
+            .execute(&mut *tx)
+            .await?;
         }
     }
     tx.commit().await?;
@@ -703,27 +1109,39 @@ async fn inbox_destroy(
     .fetch_one(&mut *tx)
     .await?;
 
-    sqlx::query("DELETE FROM contact_inboxes WHERE inbox_id::bigint = $1").bind(id).execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM inbox_members WHERE inbox_id::bigint = $1").bind(id).execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM working_hours WHERE inbox_id::bigint = $1 AND account_id::bigint = $2")
+    sqlx::query("DELETE FROM contact_inboxes WHERE inbox_id::bigint = $1")
         .bind(id)
-        .bind(account_id)
         .execute(&mut *tx)
         .await?;
+    sqlx::query("DELETE FROM inbox_members WHERE inbox_id::bigint = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "DELETE FROM working_hours WHERE inbox_id::bigint = $1 AND account_id::bigint = $2",
+    )
+    .bind(id)
+    .bind(account_id)
+    .execute(&mut *tx)
+    .await?;
     match channel_type.as_deref() {
         Some("Channel::Api") => {
-            sqlx::query("DELETE FROM channel_api WHERE id::bigint = $1 AND account_id::bigint = $2")
-                .bind(channel_id)
-                .bind(account_id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "DELETE FROM channel_api WHERE id::bigint = $1 AND account_id::bigint = $2",
+            )
+            .bind(channel_id)
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
         }
         Some("Channel::WebWidget") => {
-            sqlx::query("DELETE FROM channel_web_widgets WHERE id::bigint = $1 AND account_id::bigint = $2")
-                .bind(channel_id)
-                .bind(account_id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "DELETE FROM channel_web_widgets WHERE id::bigint = $1 AND account_id::bigint = $2",
+            )
+            .bind(channel_id)
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
         }
         _ => {}
     }
@@ -774,7 +1192,9 @@ async fn members_show(
     let au = require_account(&st.db, &user, account_id).await?;
     can_see_inbox(&st.db, &au, inbox_id).await?;
     let ids = member_ids(&st.db, inbox_id).await?;
-    Ok(Json(json!({ "payload": agents_for(&st.db, account_id, Some(ids)).await? })))
+    Ok(Json(
+        json!({ "payload": agents_for(&st.db, account_id, Some(ids)).await? }),
+    ))
 }
 
 /// POST/PATCH /inbox_members {inbox_id, user_ids}: replace the member set.
@@ -786,7 +1206,9 @@ async fn members_replace(
 ) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     au.require_admin()?;
-    let inbox_id = body["inbox_id"].as_i64().ok_or_else(|| ApiError::bad("Invalid inbox"))?;
+    let inbox_id = body["inbox_id"]
+        .as_i64()
+        .ok_or_else(|| ApiError::bad("Invalid inbox"))?;
     inbox_in_account(&st.db, account_id, inbox_id).await?;
     let ids = user_ids_of(&body, "user_ids")?;
     check_users(&st.db, account_id, &ids).await?;
@@ -810,7 +1232,12 @@ async fn members_replace(
     tx.commit().await?;
     st.hub.invalidate_cache(account_id, "inbox");
 
-    let agents = agents_for(&st.db, account_id, Some(member_ids(&st.db, inbox_id).await?)).await?;
+    let agents = agents_for(
+        &st.db,
+        account_id,
+        Some(member_ids(&st.db, inbox_id).await?),
+    )
+    .await?;
     Ok(Json(json!({ "payload": agents })))
 }
 
@@ -823,7 +1250,9 @@ async fn members_remove(
 ) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     au.require_admin()?;
-    let inbox_id = body["inbox_id"].as_i64().ok_or_else(|| ApiError::bad("Invalid inbox"))?;
+    let inbox_id = body["inbox_id"]
+        .as_i64()
+        .ok_or_else(|| ApiError::bad("Invalid inbox"))?;
     inbox_in_account(&st.db, account_id, inbox_id).await?;
     let ids = user_ids_of(&body, "user_ids")?;
 
@@ -834,13 +1263,22 @@ async fn members_remove(
         .await?;
     st.hub.invalidate_cache(account_id, "inbox");
 
-    let agents = agents_for(&st.db, account_id, Some(member_ids(&st.db, inbox_id).await?)).await?;
+    let agents = agents_for(
+        &st.db,
+        account_id,
+        Some(member_ids(&st.db, inbox_id).await?),
+    )
+    .await?;
     Ok(Json(json!({ "payload": agents })))
 }
 
 // ---------- agents ----------
 
-async fn agents_index(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>) -> ApiResult {
+async fn agents_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
     Ok(Json(json!(agents_for(&st.db, account_id, None).await?)))
 }
@@ -861,7 +1299,11 @@ async fn agent_create(
     let name = ostr(b, "name")
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| email.split('@').next().unwrap_or("agent").to_string());
-    let role: i64 = if b["role"].as_str() == Some("administrator") { 1 } else { 0 };
+    let role: i64 = if b["role"].as_str() == Some("administrator") {
+        1
+    } else {
+        0
+    };
 
     let mut tx = st.db.begin().await?;
     let uid = find_or_create_user(&mut tx, &email, &name).await?;
@@ -871,13 +1313,21 @@ async fn agent_create(
     insert_account_user(&mut tx, account_id, uid, role).await?;
     tx.commit().await?;
 
-    let agent = agents_for(&st.db, account_id, Some(vec![uid])).await?.pop().ok_or_else(ApiError::not_found)?;
+    let agent = agents_for(&st.db, account_id, Some(vec![uid]))
+        .await?
+        .pop()
+        .ok_or_else(ApiError::not_found)?;
     Ok(Json(agent))
 }
 
 /// Mirrors AgentsController#bulk_create (onboarding): one account_user per new email, existing users
 /// reused, emails already in the account skipped, then clears the onboarding_step custom attribute.
-async fn agents_bulk_create(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Json(body): Json<Value>) -> ApiResult {
+async fn agents_bulk_create(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(body): Json<Value>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     au.require_admin()?;
     let emails: Vec<String> = body["emails"]
@@ -890,13 +1340,20 @@ async fn agents_bulk_create(State(st): State<AppState>, user: CurrentUser, Path(
 
     let mut tx = st.db.begin().await?;
     // serialise per account, like Current.account.with_lock; dropping tx on error rolls everything back
-    sqlx::query("SELECT id FROM accounts WHERE id::bigint = $1 FOR UPDATE").bind(account_id).execute(&mut *tx).await?;
-    let current: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM account_users WHERE account_id::bigint = $1")
+    sqlx::query("SELECT id FROM accounts WHERE id::bigint = $1 FOR UPDATE")
         .bind(account_id)
-        .fetch_one(&mut *tx)
+        .execute(&mut *tx)
         .await?;
+    let current: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM account_users WHERE account_id::bigint = $1")
+            .bind(account_id)
+            .fetch_one(&mut *tx)
+            .await?;
     if emails.len() as i64 > AGENT_LIMIT - current {
-        return Err(ApiError(StatusCode::PAYMENT_REQUIRED, AGENT_LIMIT_MESSAGE.into()));
+        return Err(ApiError(
+            StatusCode::PAYMENT_REQUIRED,
+            AGENT_LIMIT_MESSAGE.into(),
+        ));
     }
     for email in emails.iter().filter(|e| e.contains('@')) {
         let name = email.split('@').next().unwrap_or("agent");
@@ -917,11 +1374,17 @@ async fn agents_bulk_create(State(st): State<AppState>, user: CurrentUser, Path(
 const AGENT_LIMIT: i64 = 100_000;
 const AGENT_LIMIT_MESSAGE: &str = "Account limit exceeded. Please purchase more licenses";
 
-async fn find_or_create_user(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, email: &str, name: &str) -> Result<i64, ApiError> {
-    let existing: Option<i64> = sqlx::query_scalar("SELECT id::bigint FROM users WHERE lower(email) = $1 AND provider = 'email'")
-        .bind(email)
-        .fetch_optional(&mut **tx)
-        .await?;
+async fn find_or_create_user(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    email: &str,
+    name: &str,
+) -> Result<i64, ApiError> {
+    let existing: Option<i64> = sqlx::query_scalar(
+        "SELECT id::bigint FROM users WHERE lower(email) = $1 AND provider = 'email'",
+    )
+    .bind(email)
+    .fetch_optional(&mut **tx)
+    .await?;
     if let Some(u) = existing {
         return Ok(u);
     }
@@ -940,16 +1403,27 @@ async fn find_or_create_user(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, ema
     .await?)
 }
 
-async fn account_user_exists(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, account_id: i64, uid: i64) -> Result<bool, ApiError> {
-    let found: Option<i32> = sqlx::query_scalar("SELECT 1 FROM account_users WHERE account_id::bigint = $1 AND user_id::bigint = $2")
-        .bind(account_id)
-        .bind(uid)
-        .fetch_optional(&mut **tx)
-        .await?;
+async fn account_user_exists(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    account_id: i64,
+    uid: i64,
+) -> Result<bool, ApiError> {
+    let found: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM account_users WHERE account_id::bigint = $1 AND user_id::bigint = $2",
+    )
+    .bind(account_id)
+    .bind(uid)
+    .fetch_optional(&mut **tx)
+    .await?;
     Ok(found.is_some())
 }
 
-async fn insert_account_user(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, account_id: i64, uid: i64, role: i64) -> Result<(), ApiError> {
+async fn insert_account_user(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    account_id: i64,
+    uid: i64,
+    role: i64,
+) -> Result<(), ApiError> {
     sqlx::query(
         "INSERT INTO account_users (account_id, user_id, role, created_at, updated_at)
          VALUES ($1::bigint, $2::bigint, $3::bigint, now(), now())",
@@ -1018,7 +1492,10 @@ async fn agent_update(
     if role.is_some() {
         st.hub.invalidate_cache(account_id, "inbox");
     }
-    let agent = agents_for(&st.db, account_id, Some(vec![id])).await?.pop().ok_or_else(ApiError::not_found)?;
+    let agent = agents_for(&st.db, account_id, Some(vec![id]))
+        .await?
+        .pop()
+        .ok_or_else(ApiError::not_found)?;
     Ok(Json(agent))
 }
 
@@ -1034,12 +1511,14 @@ async fn agent_destroy(
         return Err(ApiError::bad("You cannot remove yourself from the account"));
     }
     let mut tx = st.db.begin().await?;
-    let n = sqlx::query("DELETE FROM account_users WHERE account_id::bigint = $1 AND user_id::bigint = $2")
-        .bind(account_id)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+    let n = sqlx::query(
+        "DELETE FROM account_users WHERE account_id::bigint = $1 AND user_id::bigint = $2",
+    )
+    .bind(account_id)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
     if n == 0 {
         return Err(ApiError::not_found());
     }
@@ -1083,7 +1562,12 @@ async fn agent_destroy(
 
 // ---------- teams ----------
 
-async fn teams_json(db: &PgPool, account_id: i64, user_id: i64, team_id: Option<i64>) -> Result<Vec<Value>, ApiError> {
+async fn teams_json(
+    db: &PgPool,
+    account_id: i64,
+    user_id: i64,
+    team_id: Option<i64>,
+) -> Result<Vec<Value>, ApiError> {
     let rows = sqlx::query(
         "SELECT t.id::bigint AS id, t.name, t.description, t.allow_auto_assign, t.icon, t.icon_color,
                 t.account_id::bigint AS account_id,
@@ -1114,22 +1598,41 @@ async fn teams_json(db: &PgPool, account_id: i64, user_id: i64, team_id: Option<
 }
 
 async fn team_exists(db: &PgPool, account_id: i64, team_id: i64) -> Result<(), ApiError> {
-    let ok: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM teams WHERE id::bigint = $1 AND account_id::bigint = $2)")
-        .bind(team_id)
-        .bind(account_id)
-        .fetch_one(db)
-        .await?;
-    if ok { Ok(()) } else { Err(ApiError::not_found()) }
+    let ok: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM teams WHERE id::bigint = $1 AND account_id::bigint = $2)",
+    )
+    .bind(team_id)
+    .bind(account_id)
+    .fetch_one(db)
+    .await?;
+    if ok {
+        Ok(())
+    } else {
+        Err(ApiError::not_found())
+    }
 }
 
-async fn teams_index(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>) -> ApiResult {
+async fn teams_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    Ok(Json(json!(teams_json(&st.db, account_id, user.id, None).await?)))
+    Ok(Json(json!(
+        teams_json(&st.db, account_id, user.id, None).await?
+    )))
 }
 
-async fn team_show(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn team_show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    let t = teams_json(&st.db, account_id, user.id, Some(id)).await?.pop().ok_or_else(ApiError::not_found)?;
+    let t = teams_json(&st.db, account_id, user.id, Some(id))
+        .await?
+        .pop()
+        .ok_or_else(ApiError::not_found)?;
     Ok(Json(t))
 }
 
@@ -1142,7 +1645,9 @@ async fn team_create(
     let au = require_account(&st.db, &user, account_id).await?;
     au.require_admin()?;
     let b = pick(&body, "team");
-    let name = ostr(b, "name").filter(|s| !s.trim().is_empty()).ok_or_else(|| ApiError::bad("Name can't be blank"))?;
+    let name = ostr(b, "name")
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| ApiError::bad("Name can't be blank"))?;
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO teams (name, description, allow_auto_assign, icon, icon_color, account_id, created_at, updated_at)
          VALUES ($1, $2, COALESCE($3::bool, true), COALESCE($4::varchar, ''), COALESCE($5::varchar, ''), $6::bigint, now(), now())
@@ -1157,7 +1662,12 @@ async fn team_create(
     .fetch_one(&st.db)
     .await?;
     st.hub.invalidate_cache(account_id, "team");
-    Ok(Json(teams_json(&st.db, account_id, user.id, Some(id)).await?.pop().ok_or_else(ApiError::not_found)?))
+    Ok(Json(
+        teams_json(&st.db, account_id, user.id, Some(id))
+            .await?
+            .pop()
+            .ok_or_else(ApiError::not_found)?,
+    ))
 }
 
 async fn team_update(
@@ -1186,7 +1696,12 @@ async fn team_update(
     .execute(&st.db)
     .await?;
     st.hub.invalidate_cache(account_id, "team");
-    Ok(Json(teams_json(&st.db, account_id, user.id, Some(id)).await?.pop().ok_or_else(ApiError::not_found)?))
+    Ok(Json(
+        teams_json(&st.db, account_id, user.id, Some(id))
+            .await?
+            .pop()
+            .ok_or_else(ApiError::not_found)?,
+    ))
 }
 
 async fn team_destroy(
@@ -1211,7 +1726,10 @@ async fn team_destroy(
     }
 
     let mut tx = st.db.begin().await?;
-    sqlx::query("DELETE FROM team_members WHERE team_id::bigint = $1").bind(id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM team_members WHERE team_id::bigint = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM teams WHERE id::bigint = $1 AND account_id::bigint = $2")
         .bind(id)
         .bind(account_id)
@@ -1223,10 +1741,11 @@ async fn team_destroy(
 }
 
 async fn team_member_list(db: &PgPool, account_id: i64, team_id: i64) -> Result<Value, ApiError> {
-    let ids: Vec<i64> = sqlx::query_scalar("SELECT user_id::bigint FROM team_members WHERE team_id::bigint = $1")
-        .bind(team_id)
-        .fetch_all(db)
-        .await?;
+    let ids: Vec<i64> =
+        sqlx::query_scalar("SELECT user_id::bigint FROM team_members WHERE team_id::bigint = $1")
+            .bind(team_id)
+            .fetch_all(db)
+            .await?;
     Ok(json!(agents_for(db, account_id, Some(ids)).await?))
 }
 

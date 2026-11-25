@@ -7,22 +7,22 @@
 use std::collections::BTreeMap;
 
 use axum::{
+    Json, Router,
     body::Bytes,
     extract::{OriginalUri, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::post,
-    Json, Router,
 };
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use hmac::{Hmac, Mac};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha1::Sha1;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use crate::{
     ar_encryption,
-    common::{require_account, ApiError, ApiResult, AppState, CurrentUser},
+    common::{ApiError, ApiResult, AppState, CurrentUser, require_account},
     conversations::{insert_message, reload},
 };
 
@@ -46,11 +46,7 @@ pub fn account_routes() -> Router<AppState> {
 }
 
 fn pick<'a>(b: &'a Value, key: &str) -> &'a Value {
-    if b[key].is_object() {
-        &b[key]
-    } else {
-        b
-    }
+    if b[key].is_object() { &b[key] } else { b }
 }
 
 fn trim_opt(v: &Value) -> Option<String> {
@@ -83,10 +79,10 @@ pub(crate) async fn create_channel(
     account_id: i64,
     ch: &Value,
 ) -> Result<(i64, &'static str), ApiError> {
-    let account_sid = trim_opt(&ch["account_sid"])
-        .ok_or_else(|| ApiError::bad("Account sid can't be blank"))?;
-    let auth_token = trim_opt(&ch["auth_token"])
-        .ok_or_else(|| ApiError::bad("Auth token can't be blank"))?;
+    let account_sid =
+        trim_opt(&ch["account_sid"]).ok_or_else(|| ApiError::bad("Account sid can't be blank"))?;
+    let auth_token =
+        trim_opt(&ch["auth_token"]).ok_or_else(|| ApiError::bad("Auth token can't be blank"))?;
     let api_key_sid = trim_opt(&ch["api_key_sid"]);
     let medium = parse_medium(&ch["medium"])?;
     let messaging_service_sid = trim_opt(&ch["messaging_service_sid"]);
@@ -120,17 +116,18 @@ pub(crate) async fn create_channel(
         .fetch_optional(&mut **tx)
         .await?;
         if dup.is_some() {
-            return Err(ApiError::bad("Messaging service sid has already been taken"));
+            return Err(ApiError::bad(
+                "Messaging service sid has already been taken",
+            ));
         }
     }
 
     if let Some(ref phone) = phone_number {
-        let dup: Option<i32> = sqlx::query_scalar(
-            "SELECT 1 FROM channel_twilio_sms WHERE phone_number = $1 LIMIT 1",
-        )
-        .bind(phone)
-        .fetch_optional(&mut **tx)
-        .await?;
+        let dup: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM channel_twilio_sms WHERE phone_number = $1 LIMIT 1")
+                .bind(phone)
+                .fetch_optional(&mut **tx)
+                .await?;
         if dup.is_some() {
             return Err(ApiError::bad("Phone number has already been taken"));
         }
@@ -433,13 +430,23 @@ async fn callback(
     .await?;
 
     let Some(channel) = channel else {
-        return Ok((StatusCode::NOT_FOUND, Json(json!({ "error": "Channel not found" }))).into_response());
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Channel not found" })),
+        )
+            .into_response());
     };
 
     let url = request_url(&headers, &uri);
-    let sig = headers.get("x-twilio-signature").and_then(|v| v.to_str().ok());
+    let sig = headers
+        .get("x-twilio-signature")
+        .and_then(|v| v.to_str().ok());
     if !verify_twilio_signature(&channel.auth_token, &url, &params, sig) {
-        return Ok((StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid signature" }))).into_response());
+        return Ok((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "Invalid signature" })),
+        )
+            .into_response());
     }
 
     if let Err(e) = process_incoming(&st, &channel, &params).await {
@@ -472,13 +479,12 @@ async fn process_incoming(
         .map(|s| s.replace('\0', ""))
         .unwrap_or_default();
 
-    let dup: Option<i32> = sqlx::query_scalar(
-        "SELECT 1 FROM messages WHERE inbox_id = $1 AND source_id = $2 LIMIT 1",
-    )
-    .bind(channel.inbox_id as i32)
-    .bind(message_sid)
-    .fetch_optional(&st.db)
-    .await?;
+    let dup: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM messages WHERE inbox_id = $1 AND source_id = $2 LIMIT 1")
+            .bind(channel.inbox_id as i32)
+            .bind(message_sid)
+            .fetch_optional(&st.db)
+            .await?;
     if dup.is_some() {
         return Ok(());
     }
@@ -672,21 +678,28 @@ async fn delivery_status(
     .await?;
 
     if channel.is_none() {
-        channel = find_channel_by_message_sid(
-            &st.db,
-            params.get("MessageSid").map(String::as_str),
-        )
-        .await?;
+        channel = find_channel_by_message_sid(&st.db, params.get("MessageSid").map(String::as_str))
+            .await?;
     }
 
     let Some(channel) = channel else {
-        return Ok((StatusCode::NOT_FOUND, Json(json!({ "error": "Channel not found" }))).into_response());
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Channel not found" })),
+        )
+            .into_response());
     };
 
     let url = request_url(&headers, &uri);
-    let sig = headers.get("x-twilio-signature").and_then(|v| v.to_str().ok());
+    let sig = headers
+        .get("x-twilio-signature")
+        .and_then(|v| v.to_str().ok());
     if !verify_twilio_signature(&channel.auth_token, &url, &params, sig) {
-        return Ok((StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid signature" }))).into_response());
+        return Ok((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "Invalid signature" })),
+        )
+            .into_response());
     }
 
     let Some(message_sid) = params.get("MessageSid").filter(|s| !s.is_empty()) else {

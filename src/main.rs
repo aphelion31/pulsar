@@ -1,40 +1,44 @@
-mod slack; mod account_more;
+mod account_more;
 mod ar_encryption;
+mod assignment_policies;
 mod auth;
-mod mailer;
-mod mfa;
 mod automation;
 mod bots;
 mod cable;
+mod capacity_policies;
 mod channels;
 mod common;
 mod companies;
 mod contacts;
+mod conversations;
 mod data_imports;
 mod dyte;
-mod events;
-mod conversations;
 mod email_inbound;
-mod scheduler;
+mod events;
+mod help_center;
 mod inbox_actions;
 mod inboxes;
-mod help_center;
 mod listeners;
-mod public_api;
+mod mailer;
+mod mfa;
 mod platform;
+mod public_api;
 mod registration;
 mod reports;
+mod saml;
+mod scheduler;
 mod seed;
-mod assignment_policies;
 mod settings;
 mod shopify;
+mod sla;
+mod slack;
 mod storage;
 mod web;
 mod widget;
 
 use axum::{
-    routing::{any, get, post},
     Router,
+    routing::{any, get, post},
 };
 use common::AppState;
 use tower_http::services::{ServeDir, ServeFile};
@@ -47,6 +51,9 @@ fn account_routes() -> Router<AppState> {
         .merge(inboxes::routes())
         .merge(inbox_actions::routes())
         .merge(assignment_policies::routes())
+        .merge(capacity_policies::routes())
+        .merge(sla::routes())
+        .merge(saml::routes())
         .merge(slack::routes())
         .merge(settings::routes())
         .merge(help_center::routes())
@@ -70,8 +77,14 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(web::health))
         .route("/auth/sign_in", post(auth::sign_in))
         .route("/auth/confirmation", post(registration::confirm))
-        .route("/resend_confirmation", post(registration::resend_confirmation))
-        .route("/auth/password", post(auth::request_password_reset).put(auth::reset_password))
+        .route(
+            "/resend_confirmation",
+            post(registration::resend_confirmation),
+        )
+        .route(
+            "/auth/password",
+            post(auth::request_password_reset).put(auth::reset_password),
+        )
         .route("/auth/validate_token", get(auth::validate_token))
         .route("/auth/sign_out", axum::routing::delete(auth::sign_out))
         .route(
@@ -79,32 +92,122 @@ pub fn app(state: AppState) -> Router {
             get(auth::profile_show)
                 .put(auth::profile_update)
                 .patch(auth::profile_update)
-                .layer(axum::extract::DefaultBodyLimit::max(storage::MAX_BYTES + 1024 * 1024)),
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    storage::MAX_BYTES + 1024 * 1024,
+                )),
         )
-        .route("/api/v1/profile/avatar", axum::routing::delete(auth::profile_avatar_destroy))
-        .route("/api/v1/profile/resend_confirmation", post(auth::resend_confirmation))
-        .route("/api/v1/profile/reset_access_token", post(auth::reset_access_token))
-        .route("/api/v1/profile/set_active_account", axum::routing::put(auth::set_active_account))
+        .route(
+            "/api/v1/profile/avatar",
+            axum::routing::delete(auth::profile_avatar_destroy),
+        )
+        .route(
+            "/api/v1/profile/resend_confirmation",
+            post(auth::resend_confirmation),
+        )
+        .route(
+            "/api/v1/profile/reset_access_token",
+            post(auth::reset_access_token),
+        )
+        .route(
+            "/api/v1/profile/set_active_account",
+            axum::routing::put(auth::set_active_account),
+        )
         .route("/api/v1/profile/availability", post(auth::availability))
         .route("/api/v1/profile/auto_offline", post(auth::auto_offline))
-        .route("/api/v1/profile/work_preferences", post(auth::auto_offline).patch(auth::auto_offline))
+        .route(
+            "/api/v1/profile/work_preferences",
+            post(auth::auto_offline).patch(auth::auto_offline),
+        )
         .route("/api/v1/accounts", post(registration::v1_create))
         .route("/api/v2/accounts", post(registration::v2_create))
-        .route("/api/v1/accounts/{account_id}", get(auth::account_show).patch(auth::account_update).put(auth::account_update))
-        .route("/api/v1/accounts/{account_id}/onboarding", axum::routing::put(auth::onboarding_update).patch(auth::onboarding_update))
-        .route("/api/v1/accounts/{account_id}/onboarding/help_center_generation", get(auth::help_center_generation))
-        .route("/api/v1/accounts/{account_id}/", get(auth::account_show).patch(auth::account_update).put(auth::account_update))
-        .route("/api/v1/accounts/{account_id}/update_active_at", post(auth::update_active_at))
-        // ponytail: session list / push subscriptions / changelog not tracked yet; empty responses keep UI happy
-        .route("/api/v1/profile/sessions", get(|_u: common::CurrentUser| async { axum::Json(serde_json::json!([])) }))
-        .route("/api/v1/profile/sessions/{id}", axum::routing::delete(mfa::session_destroy))
-        .route("/api/v1/profile/mfa", get(mfa::show).post(mfa::create).delete(mfa::destroy))
+        .route(
+            "/api/v1/accounts/{account_id}",
+            get(auth::account_show)
+                .patch(auth::account_update)
+                .put(auth::account_update),
+        )
+        .route(
+            "/api/v1/accounts/{account_id}/onboarding",
+            axum::routing::put(auth::onboarding_update).patch(auth::onboarding_update),
+        )
+        .route(
+            "/api/v1/accounts/{account_id}/onboarding/help_center_generation",
+            get(auth::help_center_generation),
+        )
+        .route(
+            "/api/v1/accounts/{account_id}/",
+            get(auth::account_show)
+                .patch(auth::account_update)
+                .put(auth::account_update),
+        )
+        .route(
+            "/api/v1/accounts/{account_id}/update_active_at",
+            post(auth::update_active_at),
+        )
+        .route("/api/v1/profile/sessions", get(auth::sessions_index))
+        .route(
+            "/api/v1/profile/sessions/{id}",
+            axum::routing::delete(mfa::session_destroy),
+        )
+        .route(
+            "/api/v1/profile/trusted_devices",
+            axum::routing::delete(auth::trusted_devices_destroy),
+        )
+        .route(
+            "/api/v1/profile/mfa",
+            get(mfa::show).post(mfa::create).delete(mfa::destroy),
+        )
         .route("/api/v1/profile/mfa/verify", post(mfa::verify))
         .route("/api/v1/profile/mfa/backup_codes", post(mfa::backup_codes))
-        .route("/api/v1/notification_subscriptions", post(|_u: common::CurrentUser| async { axum::Json(serde_json::json!({})) }).delete(auth::notification_subscription_destroy))
-        .route("/api/v1/changelog", get(|| async { axum::Json(serde_json::json!({ "posts": [] })) }))
+        .route("/api/v1/auth/saml_login", post(saml::saml_login))
+        .route(
+            "/api/v1/notification_subscriptions",
+            post(auth::notification_subscription_create)
+                .delete(auth::notification_subscription_destroy),
+        )
+        .route(
+            "/api/v1/changelog",
+            get(|| async { axum::Json(serde_json::json!({ "posts": [] })) }),
+        )
+        .route(
+            "/api",
+            get(|| async {
+                axum::Json(
+                    serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "app": "pulsar" }),
+                )
+            }),
+        )
+        .route(
+            "/robots.txt",
+            get(|| async { "User-agent: *\nDisallow: /app\n" }),
+        )
+        .route(
+            "/.well-known/assetlinks.json",
+            get(|| async { axum::Json(serde_json::json!([])) }),
+        )
+        .route(
+            "/.well-known/apple-app-site-association",
+            get(|| async {
+                axum::Json(serde_json::json!({ "applinks": { "apps": [], "details": [] } }))
+            }),
+        )
+        .route(
+            "/.well-known/microsoft-identity-association.json",
+            get(|| async { axum::Json(serde_json::json!({ "associatedApplications": [] })) }),
+        )
+        .route(
+            "/.well-known/cf-custom-hostname-challenge/{id}",
+            get(|axum::extract::Path(id): axum::extract::Path<String>| async move { id }),
+        )
+        .route_service(
+            "/survey/responses/{id}",
+            ServeFile::new(web_dir.join("index.html")),
+        )
         .nest("/api/v1/accounts/{account_id}", account_routes())
-        .nest("/api/v2/accounts/{account_id}", reports::routes().fallback(web::not_implemented))
+        .nest(
+            "/api/v2/accounts/{account_id}",
+            reports::routes().fallback(web::not_implemented),
+        )
         .merge(widget::routes())
         .merge(dyte::widget_routes())
         .merge(shopify::public_routes())
@@ -120,7 +223,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/{*rest}", any(web::not_implemented))
         .route("/cable", get(cable::ws_handler))
         .route("/", get(|| async { axum::response::Redirect::to("/app/") }))
-        .route("/app", get(|| async { axum::response::Redirect::to("/app/") }))
+        .route(
+            "/app",
+            get(|| async { axum::response::Redirect::to("/app/") }),
+        )
         .nest_service("/app/", spa)
         .route_service("/sdk.js", ServeFile::new(web_dir.join("sdk.js")))
         // Negotiated via Accept-Encoding; skips tiny bodies, images and SSE/ws upgrades by default.
@@ -131,9 +237,15 @@ pub fn app(state: AppState) -> Router {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt().with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into())).init();
-    let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/pulsar".into());
-    let db = sqlx::postgres::PgPoolOptions::new().max_connections(10).connect(&url).await?;
+    tracing_subscriber::fmt()
+        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
+        .init();
+    let url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/pulsar".into());
+    let db = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&url)
+        .await?;
 
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("seed") {
@@ -142,7 +254,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Pulsar's queries target this Chatwoot schema version. An older Chatwoot database misses columns and some endpoints 500.
     const SCHEMA: &str = "20261103142055";
-    let db_schema: Option<String> = sqlx::query_scalar("SELECT max(version) FROM schema_migrations").fetch_one(&db).await.ok().flatten();
+    let db_schema: Option<String> =
+        sqlx::query_scalar("SELECT max(version) FROM schema_migrations")
+            .fetch_one(&db)
+            .await
+            .ok()
+            .flatten();
     if db_schema.as_deref().is_none_or(|v| v < SCHEMA) {
         tracing::warn!(
             "database schema {} is older than {SCHEMA} (Chatwoot 4.19). Upgrade Chatwoot first, or apply migrations/0001_schema.sql column additions",
@@ -160,16 +277,20 @@ async fn main() -> anyhow::Result<()> {
     .await?;
     let _ = common::HAS_WORK_PREFERENCES.set(has_wp);
     if !has_wp {
-        tracing::info!("account_users work preferences not in this schema; using Chatwoot defaults (accept all)");
+        tracing::info!(
+            "account_users work preferences not in this schema; using Chatwoot defaults (accept all)"
+        );
     }
 
     // Pulsar-owned table (same as migrations/0003). Created here too so an install that skipped the
     // migration keeps the widget working instead of failing every request. Idempotent; Chatwoot
     // tables are not touched.
-    sqlx::query(include_str!("../migrations/0003_pulsar_widget_token_floor.sql"))
-        .execute(&db)
-        .await
-        .map_err(|e| anyhow::anyhow!("creating pulsar_widget_token_floors: {e}"))?;
+    sqlx::query(include_str!(
+        "../migrations/0003_pulsar_widget_token_floor.sql"
+    ))
+    .execute(&db)
+    .await
+    .map_err(|e| anyhow::anyhow!("creating pulsar_widget_token_floors: {e}"))?;
     sqlx::query(include_str!("../migrations/0004_pulsar_draft_messages.sql"))
         .execute(&db)
         .await
@@ -182,23 +303,50 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         db,
         hub: cable::Hub::default(),
-        public_dir: std::env::var("WEB_DIR").unwrap_or_else(|_| "web/build/client".into()).into(),
-        frontend_url: std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
+        public_dir: std::env::var("WEB_DIR")
+            .unwrap_or_else(|_| "web/build/client".into())
+            .into(),
+        frontend_url: std::env::var("FRONTEND_URL")
+            .unwrap_or_else(|_| "http://localhost:3000".into()),
     };
     // Async listeners (Chatwoot AsyncDispatcher). Each lane registers its listener here.
     events::start(
         state.clone(),
         vec![
-            ("notifications", events::listener(listeners::notifications::handle)),
+            (
+                "notifications",
+                events::listener(listeners::notifications::handle),
+            ),
             ("webhooks", events::listener(listeners::webhooks::handle)),
-            ("automation", events::listener(listeners::automation::handle)),
+            (
+                "automation",
+                events::listener(listeners::automation::handle),
+            ),
             ("csat", events::listener(listeners::csat::handle)),
-            ("email_outbound", events::listener(listeners::email_outbound::handle)),
-            ("telegram_outbound", events::listener(listeners::telegram_outbound::handle)),
-            ("line_outbound", events::listener(listeners::line_outbound::handle)),
-            ("twilio_outbound", events::listener(listeners::twilio_outbound::handle)),
-            ("whatsapp_outbound", events::listener(channels::whatsapp::outbound)),
-            ("sms_outbound", events::listener(listeners::sms_outbound::handle)),
+            (
+                "email_outbound",
+                events::listener(listeners::email_outbound::handle),
+            ),
+            (
+                "telegram_outbound",
+                events::listener(listeners::telegram_outbound::handle),
+            ),
+            (
+                "line_outbound",
+                events::listener(listeners::line_outbound::handle),
+            ),
+            (
+                "twilio_outbound",
+                events::listener(listeners::twilio_outbound::handle),
+            ),
+            (
+                "whatsapp_outbound",
+                events::listener(channels::whatsapp::outbound),
+            ),
+            (
+                "sms_outbound",
+                events::listener(listeners::sms_outbound::handle),
+            ),
         ],
     );
     // Chatwoot FetchImapEmailInboxesJob: poll IMAP for Channel::Email inboxes. Errors are logged per inbox.
@@ -209,4 +357,23 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app(state)).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn router_builds_without_overlapping_routes() {
+        let db = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://localhost/pulsar")
+            .expect("lazy pool");
+        let state = AppState {
+            db,
+            hub: cable::Hub::default(),
+            public_dir: std::path::PathBuf::from("web/build/client"),
+            frontend_url: "http://localhost:3000".into(),
+        };
+        let _router = app(state);
+    }
 }

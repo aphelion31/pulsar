@@ -14,15 +14,22 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/campaigns/{id}",
             get(campaign_show)
-                .patch(campaign_update).put(campaign_update)
+                .patch(campaign_update)
+                .put(campaign_update)
                 .delete(campaign_delete),
         )
         .route("/agent_bots", get(bots).post(bot_create))
         .route(
             "/agent_bots/{id}",
-            get(bot_show).patch(bot_update).put(bot_update).delete(bot_delete),
+            get(bot_show)
+                .patch(bot_update)
+                .put(bot_update)
+                .delete(bot_delete),
         )
-        .route("/agent_bots/{id}/avatar", axum::routing::delete(bot_avatar_delete))
+        .route(
+            "/agent_bots/{id}/avatar",
+            axum::routing::delete(bot_avatar_delete),
+        )
         .route("/agent_bots/{id}/reset_access_token", post(bot_reset_token))
         .route("/agent_bots/{id}/reset_secret", post(bot_reset_secret))
         .route("/inboxes/{inbox_id}/agent_bot", get(inbox_bot))
@@ -30,7 +37,10 @@ pub fn routes() -> Router<AppState> {
         .route("/dashboard_apps", get(apps).post(app_create))
         .route(
             "/dashboard_apps/{id}",
-            get(app_show).patch(app_update).put(app_update).delete(app_delete),
+            get(app_show)
+                .patch(app_update)
+                .put(app_update)
+                .delete(app_delete),
         )
 }
 
@@ -239,7 +249,10 @@ async fn bots(State(st): State<AppState>, user: CurrentUser, Path(a): Path<i64>)
         .bind(au.is_admin())
         .fetch_all(&st.db)
         .await?;
-    let rows: Vec<Value> = rows.into_iter().map(crate::ar_encryption::reveal_secret).collect();
+    let rows: Vec<Value> = rows
+        .into_iter()
+        .map(crate::ar_encryption::reveal_secret)
+        .collect();
     Ok(Json(json!(rows)))
 }
 async fn bot_show(
@@ -460,11 +473,17 @@ mod tests {
 fn secure_token() -> String {
     const B58: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     let mut r = rand::thread_rng();
-    (0..24).map(|_| B58[r.gen_range(0..B58.len())] as char).collect()
+    (0..24)
+        .map(|_| B58[r.gen_range(0..B58.len())] as char)
+        .collect()
 }
 
 /// DELETE /agent_bots/{id}/avatar (AgentBotsController#avatar)
-async fn bot_avatar_delete(State(st): State<AppState>, user: CurrentUser, Path((a, id)): Path<(i64, i64)>) -> ApiResult {
+async fn bot_avatar_delete(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((a, id)): Path<(i64, i64)>,
+) -> ApiResult {
     require_account(&st.db, &user, a).await?.require_admin()?;
     bot_get(&st, a, id, true).await?;
     crate::storage::remove_avatar(&st.db, "AgentBot", id).await?;
@@ -472,7 +491,11 @@ async fn bot_avatar_delete(State(st): State<AppState>, user: CurrentUser, Path((
 }
 
 /// POST /agent_bots/{id}/reset_access_token
-async fn bot_reset_token(State(st): State<AppState>, user: CurrentUser, Path((a, id)): Path<(i64, i64)>) -> ApiResult {
+async fn bot_reset_token(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((a, id)): Path<(i64, i64)>,
+) -> ApiResult {
     require_account(&st.db, &user, a).await?.require_admin()?;
     bot_get(&st, a, id, true).await?;
     let token = secure_token();
@@ -494,15 +517,21 @@ async fn bot_reset_token(State(st): State<AppState>, user: CurrentUser, Path((a,
 
 /// POST /agent_bots/{id}/reset_secret (WebhookSecretable#reset_secret!)
 /// ponytail: stored plaintext like existing rows; encrypt with ar_encryption together with webhook secrets.
-async fn bot_reset_secret(State(st): State<AppState>, user: CurrentUser, Path((a, id)): Path<(i64, i64)>) -> ApiResult {
+async fn bot_reset_secret(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((a, id)): Path<(i64, i64)>,
+) -> ApiResult {
     require_account(&st.db, &user, a).await?.require_admin()?;
-    let n = sqlx::query("UPDATE agent_bots SET secret=$3, updated_at=now() WHERE account_id=$1 AND id=$2")
-        .bind(a)
-        .bind(id)
-        .bind(crate::ar_encryption::new_secret().1)
-        .execute(&st.db)
-        .await?
-        .rows_affected();
+    let n = sqlx::query(
+        "UPDATE agent_bots SET secret=$3, updated_at=now() WHERE account_id=$1 AND id=$2",
+    )
+    .bind(a)
+    .bind(id)
+    .bind(crate::ar_encryption::new_secret().1)
+    .execute(&st.db)
+    .await?
+    .rows_affected();
     if n == 0 {
         return Err(ApiError::not_found());
     }

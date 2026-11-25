@@ -4,9 +4,14 @@ const ph = (path: string, id: string) => route(path, "routes/placeholder.tsx", {
 
 export default [
   route("login", "routes/login.tsx"),
+  route("login/sso", "routes/login.sso.tsx"),
+  route("auth/signup", "routes/auth.signup.tsx"),
+  route("auth/confirmation", "routes/auth.confirmation.tsx"),
+  route("auth/verify-email", "routes/auth.verify-email.tsx"),
   route("auth/reset/password", "routes/auth.reset.tsx"),
   route("auth/password/edit", "routes/auth.password-edit.tsx"),
   route("widget", "routes/widget.tsx"),
+  route("survey/responses/:id", "routes/survey.responses.tsx"),
   ph("shopify/select-account", "shopify-select-account"),
   route("no-accounts", "routes/settings/r1/no-accounts.tsx", { id: "no-accounts" }),
   route("dev/components", "routes/dev.components.tsx"),
@@ -19,11 +24,11 @@ export default [
     route("accounts/:accountId/contacts", "routes/contacts.tsx"),
     route("accounts/:accountId/settings/:section?", "routes/settings.tsx"),
 
-    // Chatwoot dashboard routes (placeholder)
+    // Chatwoot dashboard routes
     // conversation.routes.js: `dashboard` (name: home) renders ConversationView
     route("accounts/:accountId/dashboard", "routes/inbox.tsx", { id: "cw-dashboard" }),
-    ph("accounts/:accountId/inbox-view", "cw-inbox-view"),
-    ph("accounts/:accountId/inbox-view/:type/:id", "cw-inbox-view-item"),
+    route("accounts/:accountId/inbox-view", "routes/inbox-view.tsx", { id: "cw-inbox-view" }),
+    route("accounts/:accountId/inbox-view/:type/:id", "routes/inbox-view.tsx", { id: "cw-inbox-view-item" }),
     ph("accounts/:accountId/calls", "cw-calls"),
 
     // Conversation sub-routes
@@ -84,7 +89,7 @@ export default [
     route("accounts/:accountId/reports/teams", "routes/reports.tsx", { id: "cw-reports-teams" }),
     route("accounts/:accountId/reports/teams_overview", "routes/reports.tsx", { id: "cw-reports-teams-overview" }),
     route("accounts/:accountId/reports/teams/:id", "routes/reports.tsx", { id: "cw-reports-team-detail" }),
-    ph("accounts/:accountId/reports/sla", "cw-reports-sla"),
+    route("accounts/:accountId/reports/sla", "routes/reports.sla.tsx", { id: "cw-reports-sla" }),
     route("accounts/:accountId/reports/csat", "routes/reports.tsx", { id: "cw-reports-csat" }),
     route("accounts/:accountId/reports/bot", "routes/reports.tsx", { id: "cw-reports-bot" }),
     ph("accounts/:accountId/reports/monitors", "cw-reports-monitors"),
@@ -103,9 +108,9 @@ export default [
     route("accounts/:accountId/settings/assignment-policy/assignment", "routes/r3/assignment-policy.tsx", { id: "cw-settings-assignment-policy-assignment" }),
     route("accounts/:accountId/settings/assignment-policy/assignment/create", "routes/r3/assignment-policy.tsx", { id: "cw-settings-assignment-policy-create" }),
     route("accounts/:accountId/settings/assignment-policy/assignment/edit/:id", "routes/r3/assignment-policy.tsx", { id: "cw-settings-assignment-policy-edit" }),
-    ph("accounts/:accountId/settings/assignment-policy/capacity", "cw-settings-assignment-policy-capacity"),
-    ph("accounts/:accountId/settings/assignment-policy/capacity/create", "cw-settings-assignment-policy-capacity-create"),
-    ph("accounts/:accountId/settings/assignment-policy/capacity/edit/:id", "cw-settings-assignment-policy-capacity-edit"),
+    route("accounts/:accountId/settings/assignment-policy/capacity", "routes/settings/capacity-policy.tsx", { id: "cw-settings-assignment-policy-capacity" }),
+    route("accounts/:accountId/settings/assignment-policy/capacity/create", "routes/settings/capacity-policy.tsx", { id: "cw-settings-assignment-policy-capacity-create" }),
+    route("accounts/:accountId/settings/assignment-policy/capacity/edit/:id", "routes/settings/capacity-policy.tsx", { id: "cw-settings-assignment-policy-capacity-edit" }),
     route("accounts/:accountId/settings/agent-bots", "routes/settings/agent-bots.tsx", { id: "cw-settings-agent-bots" }),
     route("accounts/:accountId/settings/custom-attributes", "routes/settings/attributes.tsx", { id: "cw-settings-custom-attributes" }),
     route("accounts/:accountId/settings/custom-attributes/list", "routes/settings/attributes.tsx"),
@@ -121,7 +126,7 @@ export default [
     route("accounts/:accountId/settings/inboxes/new/:sub_page", "routes/settings/inbox-new.tsx", { id: "cw-settings-inboxes-subpage" }),
     route("accounts/:accountId/settings/inboxes/new/:inbox_id/agents", "routes/settings/inbox-new.tsx", { id: "cw-settings-inboxes-add-agents" }),
     route("accounts/:accountId/settings/inboxes/:inboxId/:tab?", "routes/settings/inboxes.tsx", { id: "cw-settings-inboxes-show" }),
-    ph("accounts/:accountId/settings/templates", "cw-settings-templates"),
+    route("accounts/:accountId/settings/templates", "routes/settings/templates.tsx", { id: "cw-settings-templates" }),
     route("accounts/:accountId/settings/integrations", "routes/settings/r1/integrations.tsx", { id: "cw-settings-integrations" }),
     route("accounts/:accountId/settings/integrations/dashboard_apps", "routes/settings/r1/dashboard-apps.tsx", { id: "cw-settings-integrations-dashboard-apps" }),
     route("accounts/:accountId/settings/integrations/webhook", "routes/settings/webhooks.tsx"),

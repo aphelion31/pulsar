@@ -6,14 +6,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use chrono::{Duration as ChronoDuration, Utc};
 use futures::StreamExt;
 use mail_parser::{MessageParser, TextList};
 use serde_json::json;
 use sqlx::PgPool;
 use tokio::net::TcpStream;
-use tokio_rustls::{rustls, TlsConnector};
+use tokio_rustls::{TlsConnector, rustls};
 
 use crate::common::AppState;
 use crate::conversations::{self, Conv};
@@ -95,28 +95,45 @@ async fn fetch_raw_messages(ch: &EmailInbox) -> anyhow::Result<Vec<Vec<u8>>> {
     if ch.imap_enable_ssl {
         let mut roots = rustls::RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let cfg = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
-        let server = rustls::pki_types::ServerName::try_from(ch.imap_address.clone()).map_err(|e| anyhow!("bad imap host: {e}"))?;
-        let tls = TlsConnector::from(Arc::new(cfg)).connect(server, tcp).await.context("tls handshake")?;
+        let cfg = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let server = rustls::pki_types::ServerName::try_from(ch.imap_address.clone())
+            .map_err(|e| anyhow!("bad imap host: {e}"))?;
+        let tls = TlsConnector::from(Arc::new(cfg))
+            .connect(server, tcp)
+            .await
+            .context("tls handshake")?;
         session_fetch(async_imap::Client::new(tls), ch).await
     } else {
         session_fetch(async_imap::Client::new(tcp), ch).await
     }
 }
 
-async fn session_fetch<T>(client: async_imap::Client<T>, ch: &EmailInbox) -> anyhow::Result<Vec<Vec<u8>>>
+async fn session_fetch<T>(
+    client: async_imap::Client<T>,
+    ch: &EmailInbox,
+) -> anyhow::Result<Vec<Vec<u8>>>
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + std::fmt::Debug + Send,
 {
     // Plain LOGIN only. Chatwoot also allows cram-md5; add when an inbox needs it.
     // ponytail: cram-md5 not wired, add when a provider requires it.
     let mut session = client
-        .login(&ch.imap_login, &crate::ar_encryption::decrypt(&ch.imap_password))
+        .login(
+            &ch.imap_login,
+            &crate::ar_encryption::decrypt(&ch.imap_password),
+        )
         .await
         .map_err(|(e, _)| anyhow!("imap login failed: {e}"))?;
     session.select("INBOX").await.context("select INBOX")?;
-    let since = (Utc::now() - ChronoDuration::days(1)).format("%d-%b-%Y").to_string();
-    let seqs = session.search(format!("SINCE {since}")).await.context("imap search")?;
+    let since = (Utc::now() - ChronoDuration::days(1))
+        .format("%d-%b-%Y")
+        .to_string();
+    let seqs = session
+        .search(format!("SINCE {since}"))
+        .await
+        .context("imap search")?;
     let mut seq_list: Vec<u32> = seqs.into_iter().collect();
     seq_list.sort_unstable();
     seq_list.truncate(MAX_MESSAGES_PER_SYNC);
@@ -124,7 +141,10 @@ where
     let mut out = Vec::new();
     for seq in seq_list {
         // BODY.PEEK[] keeps the message unread, as Chatwoot does.
-        let mut stream = session.fetch(seq.to_string(), "BODY.PEEK[]").await.context("imap fetch")?;
+        let mut stream = session
+            .fetch(seq.to_string(), "BODY.PEEK[]")
+            .await
+            .context("imap fetch")?;
         while let Some(item) = stream.next().await {
             let fetch = item.context("imap fetch item")?;
             if let Some(body) = fetch.body() {
@@ -155,7 +175,11 @@ pub(crate) struct ParsedMail {
 
 /// Trim whitespace and angle brackets from one Message-ID token.
 pub(crate) fn clean_message_id(s: &str) -> String {
-    s.trim().trim_start_matches('<').trim_end_matches('>').trim().to_string()
+    s.trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim()
+        .to_string()
 }
 
 /// Drop the quoted reply: lines from the first `>` quote or `On ... wrote:` intro, and a `-- ` signature delimiter.
@@ -164,7 +188,11 @@ pub(crate) fn strip_quoted_reply(text: &str) -> String {
     for line in text.lines() {
         let t = line.trim_start();
         let lower = t.to_ascii_lowercase();
-        if t.starts_with('>') || (lower.starts_with("on ") && lower.ends_with("wrote:")) || t == "--" || t == "-- " {
+        if t.starts_with('>')
+            || (lower.starts_with("on ") && lower.ends_with("wrote:"))
+            || t == "--"
+            || t == "-- "
+        {
             break;
         }
         out.push(line);
@@ -173,19 +201,34 @@ pub(crate) fn strip_quoted_reply(text: &str) -> String {
 }
 
 fn text_list(l: Option<TextList<'_>>) -> Vec<String> {
-    l.map(|l| l.iter().map(clean_message_id).collect()).unwrap_or_default()
+    l.map(|l| l.iter().map(clean_message_id).collect())
+        .unwrap_or_default()
 }
 
 pub(crate) fn parse_mail(raw: &[u8]) -> anyhow::Result<ParsedMail> {
-    let msg = MessageParser::default().parse(raw).ok_or_else(|| anyhow!("unparseable email"))?;
-    let message_id = msg.message_id().map(clean_message_id).filter(|s| !s.is_empty());
+    let msg = MessageParser::default()
+        .parse(raw)
+        .ok_or_else(|| anyhow!("unparseable email"))?;
+    let message_id = msg
+        .message_id()
+        .map(clean_message_id)
+        .filter(|s| !s.is_empty());
     let in_reply_to = text_list(msg.in_reply_to()).into_iter().next();
     let references = text_list(msg.references());
     let from = msg.from().and_then(|a| a.first());
-    let from_email = from.as_ref().and_then(|m| m.address()).map(str::to_lowercase);
+    let from_email = from
+        .as_ref()
+        .and_then(|m| m.address())
+        .map(str::to_lowercase);
     let from_name = from.as_ref().and_then(|m| m.name()).map(str::to_string);
     let addrs = |list: Option<mail_parser::AddressList<'_>>| -> String {
-        list.map(|a| a.mailboxes().filter_map(|x| x.address().map(str::to_string)).collect::<Vec<_>>().join(", ")).unwrap_or_default()
+        list.map(|a| {
+            a.mailboxes()
+                .filter_map(|x| x.address().map(str::to_string))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
     };
     let text_full = msg.body_text(0).map(|b| b.into_owned()).unwrap_or_default();
     let text_reply = strip_quoted_reply(&text_full);
@@ -206,23 +249,47 @@ pub(crate) fn parse_mail(raw: &[u8]) -> anyhow::Result<ParsedMail> {
 }
 
 /// Parse one raw mail and store it in the inbox. Duplicate Message-IDs are skipped (Chatwoot email_already_present?).
-pub(crate) async fn ingest_raw(st: &AppState, account_id: i64, inbox_id: i64, raw: &[u8]) -> anyhow::Result<()> {
+pub(crate) async fn ingest_raw(
+    st: &AppState,
+    account_id: i64,
+    inbox_id: i64,
+    raw: &[u8],
+) -> anyhow::Result<()> {
     let mail = parse_mail(raw)?;
     let Some(message_id) = mail.message_id.clone() else {
         return Ok(());
     };
-    let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM messages WHERE inbox_id = $1 AND source_id = $2 LIMIT 1")
-        .bind(inbox_id as i32)
-        .bind(&message_id)
-        .fetch_optional(&st.db)
-        .await?;
+    let exists: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM messages WHERE inbox_id = $1 AND source_id = $2 LIMIT 1")
+            .bind(inbox_id as i32)
+            .bind(&message_id)
+            .fetch_optional(&st.db)
+            .await?;
     if exists.is_some() {
         return Ok(());
     }
-    let sender = mail.from_email.clone().ok_or_else(|| anyhow!("mail {message_id} has no From address"))?;
+    let sender = mail
+        .from_email
+        .clone()
+        .ok_or_else(|| anyhow!("mail {message_id} has no From address"))?;
 
-    let (contact_id, contact_inbox_id) = find_or_create_contact(&st.db, account_id, inbox_id, &sender, mail.from_name.as_deref()).await?;
-    let conv = find_or_create_conversation(&st.db, account_id, inbox_id, contact_id, contact_inbox_id, &mail).await?;
+    let (contact_id, contact_inbox_id) = find_or_create_contact(
+        &st.db,
+        account_id,
+        inbox_id,
+        &sender,
+        mail.from_name.as_deref(),
+    )
+    .await?;
+    let conv = find_or_create_conversation(
+        &st.db,
+        account_id,
+        inbox_id,
+        contact_id,
+        contact_inbox_id,
+        &mail,
+    )
+    .await?;
 
     let content_attributes = json!({
         "email": {
@@ -256,7 +323,13 @@ pub(crate) async fn ingest_raw(st: &AppState, account_id: i64, inbox_id: i64, ra
 }
 
 /// Contact lookup by lower(email) in the account, then contact_inbox keyed by sender email (Chatwoot from_email + ContactInboxWithContactBuilder).
-async fn find_or_create_contact(db: &PgPool, account_id: i64, inbox_id: i64, sender: &str, name: Option<&str>) -> anyhow::Result<(i64, i64)> {
+async fn find_or_create_contact(
+    db: &PgPool,
+    account_id: i64,
+    inbox_id: i64,
+    sender: &str,
+    name: Option<&str>,
+) -> anyhow::Result<(i64, i64)> {
     let existing: Option<(i64,)> = sqlx::query_as("SELECT id::bigint FROM contacts WHERE account_id = $1 AND lower(email) = $2 ORDER BY id LIMIT 1")
         .bind(account_id as i32)
         .bind(sender)
@@ -291,17 +364,24 @@ async fn find_or_create_contact(db: &PgPool, account_id: i64, inbox_id: i64, sen
     .bind(uuid::Uuid::new_v4().to_string())
     .execute(db)
     .await?;
-    let (ci,): (i64,) = sqlx::query_as("SELECT id::bigint FROM contact_inboxes WHERE inbox_id = $1 AND source_id = $2")
-        .bind(inbox_id as i32)
-        .bind(sender)
-        .fetch_one(db)
-        .await?;
+    let (ci,): (i64,) = sqlx::query_as(
+        "SELECT id::bigint FROM contact_inboxes WHERE inbox_id = $1 AND source_id = $2",
+    )
+    .bind(inbox_id as i32)
+    .bind(sender)
+    .fetch_one(db)
+    .await?;
     Ok((contact_id, ci))
 }
 
 /// Reply lookup: In-Reply-To / References matching an existing message source_id in this inbox reuses its conversation.
 async fn find_or_create_conversation(
-    db: &PgPool, account_id: i64, inbox_id: i64, contact_id: i64, contact_inbox_id: i64, mail: &ParsedMail,
+    db: &PgPool,
+    account_id: i64,
+    inbox_id: i64,
+    contact_id: i64,
+    contact_inbox_id: i64,
+    mail: &ParsedMail,
 ) -> anyhow::Result<Conv> {
     let mut refs: Vec<&str> = mail.in_reply_to.iter().map(String::as_str).collect();
     refs.extend(mail.references.iter().map(String::as_str));
@@ -317,7 +397,9 @@ async fn find_or_create_conversation(
         .fetch_optional(db)
         .await?;
         if let Some((cid,)) = found {
-            return conversations::reload(db, cid).await.map_err(|e| anyhow!("reload conversation: {e:?}"));
+            return conversations::reload(db, cid)
+                .await
+                .map_err(|e| anyhow!("reload conversation: {e:?}"));
         }
     }
     let attrs = json!({
@@ -338,7 +420,9 @@ async fn find_or_create_conversation(
     .bind(attrs)
     .fetch_one(db)
     .await?;
-    conversations::reload(db, cid).await.map_err(|e| anyhow!("reload conversation: {e:?}"))
+    conversations::reload(db, cid)
+        .await
+        .map_err(|e| anyhow!("reload conversation: {e:?}"))
 }
 
 #[cfg(test)]
@@ -356,13 +440,19 @@ mod tests {
         let p = parse_mail(raw).unwrap();
         assert_eq!(p.message_id.as_deref(), Some("m2@x.com"));
         assert_eq!(p.in_reply_to.as_deref(), Some("m1@x.com"));
-        assert_eq!(p.references, vec!["m0@x.com".to_string(), "m1@x.com".to_string()]);
+        assert_eq!(
+            p.references,
+            vec!["m0@x.com".to_string(), "m1@x.com".to_string()]
+        );
         assert_eq!(p.from_email.as_deref(), Some("ann@example.com"));
     }
 
     #[test]
     fn strips_quoted_reply() {
-        assert_eq!(strip_quoted_reply("Thanks\n\nOn Mon, a wrote:\n> old"), "Thanks");
+        assert_eq!(
+            strip_quoted_reply("Thanks\n\nOn Mon, a wrote:\n> old"),
+            "Thanks"
+        );
         assert_eq!(strip_quoted_reply("Ok\n> q\nmore"), "Ok");
         assert_eq!(strip_quoted_reply("Plain body"), "Plain body");
     }
@@ -378,25 +468,34 @@ mod live {
     #[tokio::test]
     #[ignore]
     async fn ingest_live() -> anyhow::Result<()> {
-        let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/pulsar".into());
+        let url =
+            std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/pulsar".into());
         let inbox_id: i64 = std::env::var("PULSAR_TEST_INBOX_ID")?.parse()?;
-        let db = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await?;
+        let db = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await?;
         let st = AppState {
             db: db.clone(),
             hub: crate::cable::Hub::default(),
             public_dir: std::path::PathBuf::new(),
             frontend_url: String::new(),
         };
-        let (account_id,): (i64,) = sqlx::query_as("SELECT account_id::bigint FROM inboxes WHERE id = $1")
-            .bind(inbox_id as i32)
-            .fetch_one(&db)
-            .await?;
+        let (account_id,): (i64,) =
+            sqlx::query_as("SELECT account_id::bigint FROM inboxes WHERE id = $1")
+                .bind(inbox_id as i32)
+                .fetch_one(&db)
+                .await?;
         let stamp = Utc::now().timestamp_millis();
         // Stored source_id is the cleaned Message-ID (no angle brackets).
         let m1 = format!("ingest-live-{stamp}-1@test.invalid");
         let m2 = format!("ingest-live-{stamp}-2@test.invalid");
-        let raw1 = format!("Message-ID: <{m1}>\r\nFrom: Live Test <live-{stamp}@test.invalid>\r\nSubject: First\r\n\r\nHello one\r\n");
-        let raw2 = format!("Message-ID: <{m2}>\r\nIn-Reply-To: <{m1}>\r\nFrom: Live Test <live-{stamp}@test.invalid>\r\nSubject: Re: First\r\n\r\nHello two\r\n");
+        let raw1 = format!(
+            "Message-ID: <{m1}>\r\nFrom: Live Test <live-{stamp}@test.invalid>\r\nSubject: First\r\n\r\nHello one\r\n"
+        );
+        let raw2 = format!(
+            "Message-ID: <{m2}>\r\nIn-Reply-To: <{m1}>\r\nFrom: Live Test <live-{stamp}@test.invalid>\r\nSubject: Re: First\r\n\r\nHello two\r\n"
+        );
 
         let result: anyhow::Result<()> = async {
             ingest_raw(&st, account_id, inbox_id, raw1.as_bytes()).await?;
@@ -425,9 +524,18 @@ mod live {
             .fetch_all(&db)
             .await?;
         let conv_ids: Vec<i64> = created.into_iter().map(|c| c.0).collect();
-        sqlx::query("DELETE FROM messages WHERE inbox_id = $1 AND source_id IN ($2, $3)").bind(inbox_id as i32).bind(&m1).bind(&m2).execute(&db).await?;
+        sqlx::query("DELETE FROM messages WHERE inbox_id = $1 AND source_id IN ($2, $3)")
+            .bind(inbox_id as i32)
+            .bind(&m1)
+            .bind(&m2)
+            .execute(&db)
+            .await?;
         sqlx::query("DELETE FROM conversations WHERE id = ANY($1) AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = conversations.id)").bind(&conv_ids).execute(&db).await?;
-        sqlx::query("DELETE FROM contact_inboxes WHERE inbox_id = $1 AND source_id = $2").bind(inbox_id as i32).bind(format!("live-{stamp}@test.invalid")).execute(&db).await?;
+        sqlx::query("DELETE FROM contact_inboxes WHERE inbox_id = $1 AND source_id = $2")
+            .bind(inbox_id as i32)
+            .bind(format!("live-{stamp}@test.invalid"))
+            .execute(&db)
+            .await?;
         sqlx::query("DELETE FROM contacts WHERE account_id = $1 AND lower(email) = $2 AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.contact_id = contacts.id)")
             .bind(account_id as i32)
             .bind(format!("live-{stamp}@test.invalid"))

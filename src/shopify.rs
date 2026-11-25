@@ -6,27 +6,27 @@
 //! chatwoot/app/services/shopify/{callback_service,shop_domain,uninstallation_service}.rb.
 
 use axum::{
+    Json, Router,
     body::Bytes,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
     routing::{delete, get, post},
-    Json, Router,
 };
 use base64::{
-    engine::general_purpose::{STANDARD as B64_STD, URL_SAFE_NO_PAD as B64_URL},
     Engine,
+    engine::general_purpose::{STANDARD as B64_STD, URL_SAFE_NO_PAD as B64_URL},
 };
 use chrono::SecondsFormat;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2_compat::Sha256;
 use sqlx::PgPool;
 
 use crate::{
     ar_encryption,
-    common::{require_account, ApiError, AppState, CurrentUser},
+    common::{ApiError, AppState, CurrentUser, require_account},
 };
 
 const REQUIRED_SCOPES: &str = "read_customers,read_orders,read_fulfillments";
@@ -74,11 +74,15 @@ async fn config_value(db: &PgPool, key: &str) -> Option<String> {
     .await
     .ok()
     .flatten();
-    row.and_then(|v| parse_config_scalar(&v)).filter(|s| !s.is_empty())
+    row.and_then(|v| parse_config_scalar(&v))
+        .filter(|s| !s.is_empty())
 }
 
 async fn shopify_enabled(db: &PgPool) -> bool {
-    match config_value(db, "ENABLE_SHOPIFY_INTEGRATION").await.as_deref() {
+    match config_value(db, "ENABLE_SHOPIFY_INTEGRATION")
+        .await
+        .as_deref()
+    {
         Some("false") | Some("0") | Some("no") => false,
         _ => true,
     }
@@ -100,7 +104,9 @@ fn valid_shop_domain(value: &str) -> bool {
     let bytes = sub.as_bytes();
     bytes.first().is_some_and(u8::is_ascii_alphanumeric)
         && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
-        && bytes.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-')
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'-')
 }
 
 fn shopify_api_base(shop_domain: &str) -> String {
@@ -165,7 +171,11 @@ fn verify_callback_hmac(params: &[(String, String)], secret: &str) -> bool {
     let Some((_, hmac_val)) = params.iter().find(|(k, _)| k == "hmac") else {
         return false;
     };
-    if hmac_val.len() != 64 || !hmac_val.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+    if hmac_val.len() != 64
+        || !hmac_val
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
         return false;
     }
     let Ok(expected_bytes) = hex::decode(hmac_val) else {
@@ -212,20 +222,37 @@ async fn auth(
     if !shopify_enabled(&st.db).await {
         return Err(ApiError::not_found());
     }
-    require_account(&st.db, &user, account_id).await?.require_admin()?;
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
 
     let Some(shop_domain) = body.get("shop_domain").and_then(|v| v.as_str()) else {
-        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "Invalid Shopify shop domain" }))).into_response());
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": "Invalid Shopify shop domain" })),
+        )
+            .into_response());
     };
     if !valid_shop_domain(shop_domain) {
-        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "Invalid Shopify shop domain" }))).into_response());
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": "Invalid Shopify shop domain" })),
+        )
+            .into_response());
     }
 
-    let client_id = config_value(&st.db, "SHOPIFY_CLIENT_ID").await.unwrap_or_default();
-    let client_secret = config_value(&st.db, "SHOPIFY_CLIENT_SECRET").await.unwrap_or_default();
+    let client_id = config_value(&st.db, "SHOPIFY_CLIENT_ID")
+        .await
+        .unwrap_or_default();
+    let client_secret = config_value(&st.db, "SHOPIFY_CLIENT_SECRET")
+        .await
+        .unwrap_or_default();
     let state = sign_state_token(account_id, &client_secret);
     if client_id.is_empty() || state.is_none() {
-        return Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR, "Shopify OAuth is not configured".into()));
+        return Err(ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Shopify OAuth is not configured".into(),
+        ));
     }
 
     let norm_shop = normalize_shop_domain(shop_domain);
@@ -266,7 +293,9 @@ async fn orders(
     .await?
     .ok_or_else(ApiError::not_found)?;
 
-    let shop = reference_id.filter(|s| !s.is_empty()).ok_or_else(ApiError::not_found)?;
+    let shop = reference_id
+        .filter(|s| !s.is_empty())
+        .ok_or_else(ApiError::not_found)?;
     let access_token = match stored_token {
         Some(t) => ar_encryption::decrypt_deterministic(&t)?,
         None => String::new(),
@@ -288,12 +317,20 @@ async fn orders(
         None => None,
     };
     let Some((email, phone)) = contact else {
-        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "Contact information missing" }))).into_response());
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": "Contact information missing" })),
+        )
+            .into_response());
     };
     let email = email.filter(|s| !s.trim().is_empty());
     let phone = phone.filter(|s| !s.trim().is_empty());
     if email.is_none() && phone.is_none() {
-        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "Contact information missing" }))).into_response());
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": "Contact information missing" })),
+        )
+            .into_response());
     }
 
     let mut query_parts = Vec::new();
@@ -311,14 +348,24 @@ async fn orders(
     let cust_resp = client
         .get(&customers_url)
         .header("X-Shopify-Access-Token", &access_token)
-        .query(&[("query", search_query.as_str()), ("fields", "id,email,phone")])
+        .query(&[
+            ("query", search_query.as_str()),
+            ("fields", "id,email,phone"),
+        ])
         .send()
         .await
         .map_err(|e| ApiError::bad(e.to_string()))?;
 
     if !cust_resp.status().is_success() {
-        let msg = cust_resp.text().await.unwrap_or_else(|_| "Shopify API error".into());
-        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": msg }))).into_response());
+        let msg = cust_resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "Shopify API error".into());
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": msg })),
+        )
+            .into_response());
     }
     let cust_body: Value = cust_resp
         .text()
@@ -348,15 +395,25 @@ async fn orders(
         .query(&[
             ("customer_id", customer_id.as_str()),
             ("status", "any"),
-            ("fields", "id,email,created_at,total_price,currency,fulfillment_status,financial_status"),
+            (
+                "fields",
+                "id,email,created_at,total_price,currency,fulfillment_status,financial_status",
+            ),
         ])
         .send()
         .await
         .map_err(|e| ApiError::bad(e.to_string()))?;
 
     if !ord_resp.status().is_success() {
-        let msg = ord_resp.text().await.unwrap_or_else(|_| "Shopify API error".into());
-        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": msg }))).into_response());
+        let msg = ord_resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "Shopify API error".into());
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": msg })),
+        )
+            .into_response());
     }
     let ord_body: Value = ord_resp
         .text()
@@ -379,7 +436,10 @@ async fn orders(
                     Some(Value::String(s)) => s.clone(),
                     _ => String::new(),
                 };
-                obj.insert("admin_url".into(), json!(format!("https://{shop}/admin/orders/{oid}")));
+                obj.insert(
+                    "admin_url".into(),
+                    json!(format!("https://{shop}/admin/orders/{oid}")),
+                );
             }
             o
         })
@@ -396,7 +456,9 @@ async fn destroy(
     if !shopify_enabled(&st.db).await {
         return Err(ApiError::not_found());
     }
-    require_account(&st.db, &user, account_id).await?.require_admin()?;
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
 
     let hook_id: Option<i64> = sqlx::query_scalar(
         "SELECT id::bigint FROM integrations_hooks WHERE account_id = $1::bigint AND app_id = 'shopify' ORDER BY id LIMIT 1",
@@ -421,12 +483,21 @@ async fn callback(
     Query(params): Query<Vec<(String, String)>>,
 ) -> Redirect {
     let frontend = st.frontend_url.trim_end_matches('/').to_string();
-    let get = |k: &str| params.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+    let get = |k: &str| {
+        params
+            .iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.as_str())
+    };
 
-    let client_secret = config_value(&st.db, "SHOPIFY_CLIENT_SECRET").await.unwrap_or_default();
+    let client_secret = config_value(&st.db, "SHOPIFY_CLIENT_SECRET")
+        .await
+        .unwrap_or_default();
     let account_id = get("state").and_then(|s| verify_state_token(s, &client_secret));
     let error_redirect = || match account_id {
-        Some(aid) => format!("{frontend}/app/accounts/{aid}/settings/integrations/shopify?error=true"),
+        Some(aid) => {
+            format!("{frontend}/app/accounts/{aid}/settings/integrations/shopify?error=true")
+        }
         None => format!("{frontend}?error=true"),
     };
 
@@ -438,11 +509,12 @@ async fn callback(
         return Redirect::to(&error_redirect());
     };
 
-    let acct_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE id = $1::bigint)")
-        .bind(aid)
-        .fetch_one(&st.db)
-        .await
-        .unwrap_or(false);
+    let acct_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE id = $1::bigint)")
+            .bind(aid)
+            .fetch_one(&st.db)
+            .await
+            .unwrap_or(false);
     if !acct_exists || !shopify_enabled(&st.db).await {
         return Redirect::to(&error_redirect());
     }
@@ -462,7 +534,9 @@ async fn callback(
         tracing::error!("Shopify callback error: Missing authorization code");
         return Redirect::to(&error_redirect());
     };
-    let client_id = config_value(&st.db, "SHOPIFY_CLIENT_ID").await.unwrap_or_default();
+    let client_id = config_value(&st.db, "SHOPIFY_CLIENT_ID")
+        .await
+        .unwrap_or_default();
     if client_id.is_empty() {
         tracing::error!("Shopify callback error: Missing SHOPIFY_CLIENT_ID");
         return Redirect::to(&error_redirect());
@@ -486,7 +560,10 @@ async fn callback(
     {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
-            tracing::error!("Shopify callback token exchange failed: HTTP {}", r.status());
+            tracing::error!(
+                "Shopify callback token exchange failed: HTTP {}",
+                r.status()
+            );
             return Redirect::to(&error_redirect());
         }
         Err(e) => {
@@ -501,11 +578,18 @@ async fn callback(
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .unwrap_or(Value::Null);
-    let Some(access_token) = token_json.get("access_token").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+    let Some(access_token) = token_json
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    else {
         tracing::error!("Shopify callback error: access_token missing from response");
         return Redirect::to(&error_redirect());
     };
-    let scope = token_json.get("scope").and_then(|v| v.as_str()).unwrap_or("");
+    let scope = token_json
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     // Integrations::Hook encrypts access_token deterministically (only when all 3 keys are set).
     let Ok(encrypted_token) = ar_encryption::encrypt_deterministic(access_token) else {
         tracing::error!("Shopify callback error: token encryption failed");
@@ -558,7 +642,9 @@ async fn callback(
         return Redirect::to(&error_redirect());
     }
 
-    Redirect::to(&format!("{frontend}/app/accounts/{aid}/settings/integrations/shopify"))
+    Redirect::to(&format!(
+        "{frontend}/app/accounts/{aid}/settings/integrations/shopify"
+    ))
 }
 
 async fn webhook_events(
@@ -578,7 +664,9 @@ async fn webhook_events(
         return Err(ApiError::not_found());
     }
 
-    let secret = config_value(&st.db, "SHOPIFY_CLIENT_SECRET").await.unwrap_or_default();
+    let secret = config_value(&st.db, "SHOPIFY_CLIENT_SECRET")
+        .await
+        .unwrap_or_default();
     let hmac_hdr = headers
         .get("x-shopify-hmac-sha256")
         .and_then(|v| v.to_str().ok())
