@@ -14,7 +14,7 @@ Fixes # (issue)
 
 ## How has this been tested?
 
-Commands run and what they showed (`cargo test`, `tools/smoke.sh`, `node tools/e2e.js`, `pnpm typecheck`).
+Commands run and what they showed (`cargo test`, `tools/smoke.sh`, `node tools/e2e.js`, `bun run typecheck`).
 
 ## Checklist
 

@@ -67,9 +67,9 @@ cargo test                                   # unit tests
 cargo run -- seed admin@example.com 'pass' Acme
 cargo run                                    # http://localhost:3000/app/login
 
-cd web && pnpm install && pnpm build         # frontend into web/build/client
-cd web && pnpm typecheck
-cd web && PULSAR_URL=http://127.0.0.1:3000 pnpm dev   # hot reload, proxies API to the binary
+cd web && bun install && bun run build       # frontend into web/build/client
+cd web && bun run typecheck
+cd web && PULSAR_URL=http://127.0.0.1:3000 bun run dev   # hot reload, proxies API to the binary
 ```
 
 ```bash
@@ -78,7 +78,7 @@ BASE=http://127.0.0.1:3000 node tools/e2e.js                 # sign in, reply, r
 BASE=... WEBSITE_TOKEN=... node tools/e2e-widget.js          # website widget end to end
 ```
 
-Verification before claiming work is done: `cargo build`, `cargo test`, `pnpm typecheck`, then exercise the
+Verification before claiming work is done: `cargo build`, `cargo test`, `bun run typecheck`, then exercise the
 change over HTTP against a running binary. A passing build is not evidence a feature works.
 
 ## Conventions
