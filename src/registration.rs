@@ -6,14 +6,14 @@
 //! - app/controllers/devise_overrides/confirmations_controller.rb#create
 //! - app/controllers/auth/resend_confirmations_controller.rb#create
 use axum::{
-    extract::{FromRef, FromRequestParts, State},
-    http::{request::Parts, HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
     Json,
+    extract::{FromRef, FromRequestParts, State},
+    http::{HeaderMap, HeaderValue, StatusCode, request::Parts},
+    response::{IntoResponse, Response},
 };
 use base64::Engine;
 use rand::Rng;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use crate::common::*;
@@ -31,7 +31,9 @@ where
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        Ok(Self(CurrentUser::from_request_parts(parts, state).await.ok()))
+        Ok(Self(
+            CurrentUser::from_request_parts(parts, state).await.ok(),
+        ))
     }
 }
 
@@ -54,7 +56,11 @@ fn auth_headers(uid: &str, client: &str, token: &str, expiry: i64) -> HeaderMap 
     h
 }
 
-async fn issue_token(db: &PgPool, user_id: i64, tokens: Option<Value>) -> Result<(String, String, i64), ApiError> {
+async fn issue_token(
+    db: &PgPool,
+    user_id: i64,
+    tokens: Option<Value>,
+) -> Result<(String, String, i64), ApiError> {
     let client = random_token(16);
     let token = random_token(16);
     let expiry = chrono::Utc::now().timestamp() + TOKEN_LIFESPAN_SECS;
@@ -63,17 +69,25 @@ async fn issue_token(db: &PgPool, user_id: i64, tokens: Option<Value>) -> Result
         .await
         .map_err(|_| ApiError::bad("hash"))?
         .map_err(|_| ApiError::bad("hash"))?;
-    let mut tokens = tokens.and_then(|t| t.as_object().cloned()).unwrap_or_default();
+    let mut tokens = tokens
+        .and_then(|t| t.as_object().cloned())
+        .unwrap_or_default();
     let now = chrono::Utc::now().timestamp();
     tokens.retain(|_, v| v["expiry"].as_i64().unwrap_or(0) > now);
     while tokens.len() >= MAX_DEVICES {
-        let oldest = tokens.iter().min_by_key(|(_, v)| v["expiry"].as_i64().unwrap_or(0)).map(|(k, _)| k.clone());
+        let oldest = tokens
+            .iter()
+            .min_by_key(|(_, v)| v["expiry"].as_i64().unwrap_or(0))
+            .map(|(k, _)| k.clone());
         match oldest {
             Some(k) => tokens.remove(&k),
             None => break,
         };
     }
-    tokens.insert(client.clone(), json!({ "token": hash, "expiry": expiry, "updated_at": chrono::Utc::now().to_rfc3339() }));
+    tokens.insert(
+        client.clone(),
+        json!({ "token": hash, "expiry": expiry, "updated_at": chrono::Utc::now().to_rfc3339() }),
+    );
     sqlx::query("UPDATE users SET tokens = $1::json, updated_at = now() WHERE id = $2")
         .bind(Value::Object(tokens))
         .bind(user_id)
@@ -118,7 +132,10 @@ async fn load_config(db: &PgPool, key: &str, default: &str) -> String {
             return s;
         }
     }
-    std::env::var(key).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| default.to_string())
+    std::env::var(key)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default.to_string())
 }
 
 async fn signup_enabled(db: &PgPool) -> (bool, String) {
@@ -143,7 +160,10 @@ async fn verify_captcha(db: &PgPool, client_response: Option<&str>) -> bool {
     let Some(token) = client_response.map(str::trim).filter(|s| !s.is_empty()) else {
         return false;
     };
-    let Ok(client) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build() else {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    else {
         return false;
     };
     let Ok(resp) = client
@@ -160,7 +180,10 @@ async fn verify_captcha(db: &PgPool, client_response: Option<&str>) -> bool {
     let Ok(bytes) = resp.bytes().await else {
         return false;
     };
-    serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| v["success"].as_bool()).unwrap_or(false)
+    serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|v| v["success"].as_bool())
+        .unwrap_or(false)
 }
 
 fn valid_email(email: &str) -> bool {
@@ -194,7 +217,10 @@ fn validate_password(pw: &str) -> Result<(), &'static str> {
     if !pw.chars().any(|c| c.is_ascii_digit()) {
         return Err("Password must contain at least 1 number");
     }
-    if !pw.chars().any(|c| !c.is_ascii_alphanumeric() && !c.is_whitespace()) {
+    if !pw
+        .chars()
+        .any(|c| !c.is_ascii_alphanumeric() && !c.is_whitespace())
+    {
         return Err("Password must contain at least 1 special character");
     }
     Ok(())
@@ -202,7 +228,10 @@ fn validate_password(pw: &str) -> Result<(), &'static str> {
 
 async fn send_confirmation_email(email: &str, name: &str, token: &str, redirect_url: Option<&str>) {
     let base = std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:3000".into());
-    let mut link = format!("{}/app/auth/confirmation?confirmation_token={token}", base.trim_end_matches('/'));
+    let mut link = format!(
+        "{}/app/auth/confirmation?confirmation_token={token}",
+        base.trim_end_matches('/')
+    );
     if let Some(r) = redirect_url.filter(|s| !s.is_empty()) {
         link.push_str("&route_url=");
         link.push_str(&url::form_urlencoded::byte_serialize(r.as_bytes()).collect::<String>());
@@ -219,7 +248,10 @@ async fn send_confirmation_email(email: &str, name: &str, token: &str, redirect_
     } else if std::env::var("PULSAR_LOG_MAIL").as_deref() == Ok("1") {
         tracing::info!(to = email, subject, link, "confirmation email");
     } else {
-        tracing::warn!(to = email, "SMTP_ADDRESS not set; confirmation email not sent");
+        tracing::warn!(
+            to = email,
+            "SMTP_ADDRESS not set; confirmation email not sent"
+        );
     }
 }
 
@@ -227,7 +259,12 @@ fn msg_err(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({ "message": msg }))).into_response()
 }
 
-async fn create_account_inner(db: &PgPool, current_user: Option<CurrentUser>, body: Value, is_v2: bool) -> ApiResult<Response> {
+async fn create_account_inner(
+    db: &PgPool,
+    current_user: Option<CurrentUser>,
+    body: Value,
+    is_v2: bool,
+) -> ApiResult<Response> {
     let (enabled, raw_cfg) = signup_enabled(db).await;
     if !enabled {
         return Ok(msg_err(StatusCode::NOT_FOUND, "Not Found"));
@@ -253,22 +290,31 @@ async fn create_account_inner(db: &PgPool, current_user: Option<CurrentUser>, bo
 
     if current_user.is_none() {
         if !valid_email(&email) {
-            return Ok(msg_err(StatusCode::FORBIDDEN, "You have entered an invalid email"));
+            return Ok(msg_err(
+                StatusCode::FORBIDDEN,
+                "You have entered an invalid email",
+            ));
         }
         let blocked = load_config(db, "BLOCKED_EMAIL_DOMAINS", "").await;
         if !blocked.is_empty() {
             let domain = email.split('@').nth(1).unwrap_or("");
-            if blocked.lines().map(str::trim).filter(|d| !d.is_empty()).any(|d| domain.contains(&d.to_lowercase())) {
+            if blocked
+                .lines()
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .any(|d| domain.contains(&d.to_lowercase()))
+            {
                 return Ok(msg_err(
                     StatusCode::FORBIDDEN,
                     "This domain is not allowed. If you believe this is a mistake, please contact support.",
                 ));
             }
         }
-        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE lower(email) = $1)")
-            .bind(&email)
-            .fetch_one(db)
-            .await?;
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE lower(email) = $1)")
+                .bind(&email)
+                .fetch_one(db)
+                .await?;
         if exists {
             return Ok(msg_err(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -285,7 +331,11 @@ async fn create_account_inner(db: &PgPool, current_user: Option<CurrentUser>, bo
         .and_then(crate::auth::locale_index)
         .unwrap_or(0);
     let (ff, ff1) = crate::auth::default_feature_flags();
-    let onboarding_step = if is_v2 { "profile_update" } else { "account_details" };
+    let onboarding_step = if is_v2 {
+        "profile_update"
+    } else {
+        "account_details"
+    };
     let custom_attrs = json!({ "onboarding_step": onboarding_step });
 
     let mut tx = db.begin().await?;
@@ -351,26 +401,39 @@ async fn create_account_inner(db: &PgPool, current_user: Option<CurrentUser>, bo
     }
 
     if is_v2 || current_user.is_some() || api_only_signup(&raw_cfg) {
-        let (uid_str, tokens): (String, Option<Value>) = sqlx::query_as("SELECT uid, tokens::jsonb FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(db)
-            .await?;
+        let (uid_str, tokens): (String, Option<Value>) =
+            sqlx::query_as("SELECT uid, tokens::jsonb FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(db)
+                .await?;
         let (client, token, expiry) = issue_token(db, user_id, tokens).await?;
         let mut data = crate::auth::user_json(db, user_id).await?;
         data["account_id"] = json!(account_id);
-        Ok((auth_headers(&uid_str, &client, &token, expiry), Json(json!({ "data": data }))).into_response())
+        Ok((
+            auth_headers(&uid_str, &client, &token, expiry),
+            Json(json!({ "data": data })),
+        )
+            .into_response())
     } else {
         Ok(Json(json!({ "email": email })).into_response())
     }
 }
 
 /// POST /api/v1/accounts
-pub async fn v1_create(State(db): State<PgPool>, OptionalUser(user): OptionalUser, Json(body): Json<Value>) -> ApiResult<Response> {
+pub async fn v1_create(
+    State(db): State<PgPool>,
+    OptionalUser(user): OptionalUser,
+    Json(body): Json<Value>,
+) -> ApiResult<Response> {
     create_account_inner(&db, user, body, false).await
 }
 
 /// POST /api/v2/accounts
-pub async fn v2_create(State(db): State<PgPool>, OptionalUser(user): OptionalUser, Json(body): Json<Value>) -> ApiResult<Response> {
+pub async fn v2_create(
+    State(db): State<PgPool>,
+    OptionalUser(user): OptionalUser,
+    Json(body): Json<Value>,
+) -> ApiResult<Response> {
     create_account_inner(&db, user, body, true).await
 }
 
@@ -406,7 +469,11 @@ pub async fn confirm(State(db): State<PgPool>, Json(body): Json<Value>) -> ApiRe
         .await?;
     let (client, auth_tok, expiry) = issue_token(&db, id, tokens).await?;
     let data = crate::auth::user_json(&db, id).await?;
-    Ok((auth_headers(&uid, &client, &auth_tok, expiry), Json(json!({ "data": data }))).into_response())
+    Ok((
+        auth_headers(&uid, &client, &auth_tok, expiry),
+        Json(json!({ "data": data })),
+    )
+        .into_response())
 }
 
 /// POST /resend_confirmation {email, h_captcha_client_response?}
@@ -469,8 +536,17 @@ mod tests {
 
     #[test]
     fn config_scalar_parsing() {
-        assert_eq!(parse_config_scalar(&json!({"value": false})).as_deref(), Some("false"));
-        assert_eq!(parse_config_scalar(&json!({"value": "api_only"})).as_deref(), Some("api_only"));
-        assert_eq!(parse_config_scalar(&json!("---\nvalue: true\n")).as_deref(), Some("true"));
+        assert_eq!(
+            parse_config_scalar(&json!({"value": false})).as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            parse_config_scalar(&json!({"value": "api_only"})).as_deref(),
+            Some("api_only")
+        );
+        assert_eq!(
+            parse_config_scalar(&json!("---\nvalue: true\n")).as_deref(),
+            Some("true")
+        );
     }
 }

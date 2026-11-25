@@ -38,6 +38,10 @@ pub fn routes() -> Router<AppState> {
                 .post(account_user_create)
                 .delete(account_user_delete),
         )
+        .route(
+            "/accounts/{id}/email_channel_migrations",
+            axum::routing::post(email_channel_migrations),
+        )
         .route("/agent_bots", get(bots).post(bot_create))
         .route(
             "/agent_bots/{id}",
@@ -525,4 +529,119 @@ async fn bot_avatar(
     // Remove the association only; blob storage may be shared, so do not delete blobs here.
     sqlx::query("DELETE FROM active_storage_attachments WHERE record_type='AgentBot' AND record_id=$1 AND name='avatar'").bind(id).execute(&db).await?;
     Ok(Json(bot_json(&db, id).await?))
+}
+
+async fn email_channel_migrations(
+    State(db): State<PgPool>,
+    Platform(app): Platform,
+    Path(account_id): Path<i64>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    permit(&db, app, "Account", account_id).await?;
+    let enabled = std::env::var("EMAIL_CHANNEL_MIGRATION")
+        .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    if !enabled {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "Email channel migration is not enabled".into(),
+        ));
+    }
+    let entries = body["migrations"]
+        .as_array()
+        .filter(|a| !a.is_empty())
+        .ok_or_else(|| ApiError::bad("Missing migrations parameter"))?;
+    if entries.len() > 25 {
+        return Err(ApiError::bad("Too many migrations (max 25)"));
+    }
+
+    let mut results = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let email = entry["email"].as_str().unwrap_or("").trim().to_string();
+        let provider = entry["provider"].as_str().unwrap_or("").trim().to_string();
+        if !matches!(provider.as_str(), "google" | "microsoft") || !email.contains('@') {
+            results.push(json!({
+                "email": email,
+                "status": "error",
+                "message": format!("Unsupported provider '{provider}'. Must be one of: google, microsoft"),
+            }));
+            continue;
+        }
+        let default_imap = if provider == "google" {
+            "imap.gmail.com"
+        } else {
+            "outlook.office365.com"
+        };
+        let imap_address = entry["imap_address"].as_str().unwrap_or(default_imap);
+        let imap_port = entry["imap_port"].as_i64().unwrap_or(993) as i32;
+        let imap_login = entry["imap_login"].as_str().unwrap_or(&email);
+        let imap_enabled = entry["imap_enabled"].as_bool().unwrap_or(true);
+        let imap_ssl = entry["imap_enable_ssl"].as_bool().unwrap_or(true);
+        let provider_cfg = entry
+            .get("provider_config")
+            .filter(|v| v.is_object())
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let inbox_name = entry["inbox_name"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("Migrated {provider}: {email}"));
+        let forward_to = format!("{}@localhost", token());
+
+        let mut tx = db.begin().await?;
+        let res: Result<(i64, i64), sqlx::Error> = async {
+            let ch_id: i64 = sqlx::query_scalar(
+                "INSERT INTO channel_email
+                    (account_id, email, forward_to_email, provider, provider_config, imap_enabled, imap_address, imap_port, imap_login, imap_enable_ssl, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), now()) RETURNING id::bigint",
+            )
+            .bind(account_id as i32)
+            .bind(&email)
+            .bind(&forward_to)
+            .bind(&provider)
+            .bind(provider_cfg)
+            .bind(imap_enabled)
+            .bind(imap_address)
+            .bind(imap_port)
+            .bind(imap_login)
+            .bind(imap_ssl)
+            .fetch_one(&mut *tx)
+            .await?;
+
+            let inbox_id: i64 = sqlx::query_scalar(
+                "INSERT INTO inboxes (channel_id, account_id, name, channel_type, created_at, updated_at)
+                 VALUES ($1, $2, $3, 'Channel::Email', now(), now()) RETURNING id::bigint",
+            )
+            .bind(ch_id as i32)
+            .bind(account_id as i32)
+            .bind(&inbox_name)
+            .fetch_one(&mut *tx)
+            .await?;
+
+            Ok((ch_id, inbox_id))
+        }
+        .await;
+
+        match res {
+            Ok((channel_id, inbox_id)) => {
+                tx.commit().await?;
+                results.push(json!({
+                    "email": email,
+                    "inbox_id": inbox_id,
+                    "channel_id": channel_id,
+                    "status": "success",
+                }));
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                results.push(json!({
+                    "email": email,
+                    "status": "error",
+                    "message": e.to_string(),
+                }));
+            }
+        }
+    }
+
+    Ok(Json(json!({ "results": results })))
 }

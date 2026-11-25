@@ -1,13 +1,26 @@
 import { type RouteConfig, index, layout, route } from "@react-router/dev/routes";
 
-const ph = (path: string, id: string) => route(path, "routes/placeholder.tsx", { id });
-
 export default [
   route("login", "routes/login.tsx"),
+  route("login/sso", "routes/login.sso.tsx"),
+  route("installation/onboarding", "routes/installation.onboarding.tsx"),
+  route("super_admin/sign_in", "routes/super-admin/sign-in.tsx"),
+  layout("routes/super-admin/layout.tsx", [
+    route("super_admin", "routes/super-admin/dashboard.tsx"),
+    route("super_admin/accounts", "routes/super-admin/accounts.tsx"),
+    route("super_admin/users", "routes/super-admin/users.tsx"),
+    route("super_admin/configs", "routes/super-admin/configs.tsx"),
+    route("super_admin/resources", "routes/super-admin/resources.tsx"),
+    route("super_admin/instance_status", "routes/super-admin/instance-status.tsx"),
+  ]),
+  route("auth/signup", "routes/auth.signup.tsx"),
+  route("auth/confirmation", "routes/auth.confirmation.tsx"),
+  route("auth/verify-email", "routes/auth.verify-email.tsx"),
   route("auth/reset/password", "routes/auth.reset.tsx"),
   route("auth/password/edit", "routes/auth.password-edit.tsx"),
   route("widget", "routes/widget.tsx"),
-  ph("shopify/select-account", "shopify-select-account"),
+  route("survey/responses/:id", "routes/survey.responses.tsx"),
+  route("shopify/select-account", "routes/shopify.select-account.tsx", { id: "shopify-select-account" }),
   route("no-accounts", "routes/settings/r1/no-accounts.tsx", { id: "no-accounts" }),
   route("dev/components", "routes/dev.components.tsx"),
 
@@ -19,12 +32,27 @@ export default [
     route("accounts/:accountId/contacts", "routes/contacts.tsx"),
     route("accounts/:accountId/settings/:section?", "routes/settings.tsx"),
 
-    // Chatwoot dashboard routes (placeholder)
+    // Chatwoot dashboard routes
     // conversation.routes.js: `dashboard` (name: home) renders ConversationView
     route("accounts/:accountId/dashboard", "routes/inbox.tsx", { id: "cw-dashboard" }),
-    ph("accounts/:accountId/inbox-view", "cw-inbox-view"),
-    ph("accounts/:accountId/inbox-view/:type/:id", "cw-inbox-view-item"),
-    ph("accounts/:accountId/calls", "cw-calls"),
+    route("accounts/:accountId/inbox-view", "routes/inbox-view.tsx", { id: "cw-inbox-view" }),
+    route("accounts/:accountId/inbox-view/:type/:id", "routes/inbox-view.tsx", { id: "cw-inbox-view-item" }),
+    route("accounts/:accountId/calls", "routes/calls.tsx", { id: "cw-calls" }),
+
+    // Captain AI
+    route("accounts/:accountId/captain", "routes/captain/assistants.tsx", { id: "cw-captain" }),
+    route("accounts/:accountId/captain/assistants", "routes/captain/assistants.tsx", { id: "cw-captain-assistants" }),
+    route("accounts/:accountId/captain/documents", "routes/captain/documents.tsx", { id: "cw-captain-documents" }),
+    route("accounts/:accountId/captain/responses", "routes/captain/responses.tsx", { id: "cw-captain-responses" }),
+    route("accounts/:accountId/captain/tools", "routes/captain/tools.tsx", { id: "cw-captain-tools" }),
+    route("accounts/:accountId/captain/preferences", "routes/captain/preferences.tsx", { id: "cw-captain-preferences" }),
+    route("accounts/:accountId/captain/toolsets/install", "routes/captain/tools.tsx", { id: "cw-captain-toolsets-install" }),
+    route("captain/toolsets/install", "routes/captain/tools.tsx", { id: "cw-captain-toolsets-install-root" }),
+    route("accounts/:accountId/captain/:assistantId/tools/:subTab?", "routes/captain/tools.tsx", { id: "cw-captain-assistant-tools" }),
+    route("accounts/:accountId/captain/:assistantId/faqs/:subTab?", "routes/captain/responses.tsx", { id: "cw-captain-assistant-faqs" }),
+    route("accounts/:accountId/captain/:assistantId/documents", "routes/captain/documents.tsx", { id: "cw-captain-assistant-docs" }),
+    route("accounts/:accountId/captain/:assistantId/settings/:subTab?", "routes/captain/assistant-detail.tsx", { id: "cw-captain-assistant-settings" }),
+    route("accounts/:accountId/captain/:assistantId/:tab?", "routes/captain/assistant-detail.tsx", { id: "cw-captain-assistant-detail" }),
 
     // Conversation sub-routes
     route("accounts/:accountId/inbox/:inbox_id", "routes/inbox.tsx", { id: "cw-inbox-item" }),
@@ -63,10 +91,23 @@ export default [
     route("accounts/:accountId/campaigns/one_off", "routes/r2/campaigns-one-off.tsx", { id: "cw-campaigns-one-off" }),
     route("accounts/:accountId/campaigns/live_chat", "routes/campaigns.tsx", { id: "cw-campaigns-live-chat" }),
     route("accounts/:accountId/campaigns/sms", "routes/r2/campaigns-one-off.tsx", { id: "cw-campaigns-sms" }),
-    ph("accounts/:accountId/campaigns/whatsapp", "cw-campaigns-whatsapp"),
-    ph("accounts/:accountId/campaigns/whatsapp/new", "cw-campaigns-whatsapp-new"),
-    ph("accounts/:accountId/campaigns/whatsapp/:campaignId/analytics", "cw-campaigns-whatsapp-analytics"),
-    ph("accounts/:accountId/campaigns/whatsapp/:campaignId", "cw-campaigns-whatsapp-edit"),
+    route("accounts/:accountId/campaigns/whatsapp", "routes/campaigns.whatsapp.tsx", { id: "cw-campaigns-whatsapp" }),
+    route("accounts/:accountId/campaigns/whatsapp/new", "routes/campaigns.whatsapp.tsx", { id: "cw-campaigns-whatsapp-new" }),
+    route("accounts/:accountId/campaigns/whatsapp/:campaignId/analytics", "routes/campaigns.whatsapp.tsx", { id: "cw-campaigns-whatsapp-analytics" }),
+    route("accounts/:accountId/campaigns/whatsapp/:campaignId", "routes/campaigns.whatsapp.tsx", { id: "cw-campaigns-whatsapp-edit" }),
+
+    // Help Center Portals
+    route("accounts/:accountId/portals", "routes/help-center/index.tsx", { id: "cw-portals-index" }),
+    route("accounts/:accountId/portals/new", "routes/help-center/index.tsx", { id: "cw-portals-new" }),
+    route("accounts/:accountId/portals/:portalSlug/settings", "routes/help-center/index.tsx", { id: "cw-portals-settings" }),
+    route("accounts/:accountId/portals/:portalSlug/locales", "routes/help-center/index.tsx", { id: "cw-portals-locales" }),
+    route("accounts/:accountId/portals/:portalSlug/:locale/categories", "routes/help-center/index.tsx", { id: "cw-portals-categories" }),
+    route("accounts/:accountId/portals/:portalSlug/:locale/articles/new", "routes/help-center/article-editor.tsx", { id: "cw-portals-articles-new" }),
+    route("accounts/:accountId/portals/:portalSlug/:locale/articles/edit/:articleSlug", "routes/help-center/article-editor.tsx", { id: "cw-portals-articles-edit" }),
+    route("accounts/:accountId/portals/:portalSlug/:locale/articles/:tab?", "routes/help-center/index.tsx", { id: "cw-portals-articles-index" }),
+    route("accounts/:accountId/portals/:portalSlug/:locale/categories/:categorySlug/articles", "routes/help-center/index.tsx", { id: "cw-portals-category-articles" }),
+    route("accounts/:accountId/portals/:portalSlug/:locale/categories/:categorySlug/articles/new", "routes/help-center/article-editor.tsx", { id: "cw-portals-category-articles-new" }),
+    route("accounts/:accountId/portals/:portalSlug/:locale/categories/:categorySlug/articles/:articleSlug", "routes/help-center/article-editor.tsx", { id: "cw-portals-category-articles-edit" }),
 
     // Reports
     route("accounts/:accountId/reports", "routes/reports.tsx", { id: "cw-reports" }),
@@ -84,11 +125,11 @@ export default [
     route("accounts/:accountId/reports/teams", "routes/reports.tsx", { id: "cw-reports-teams" }),
     route("accounts/:accountId/reports/teams_overview", "routes/reports.tsx", { id: "cw-reports-teams-overview" }),
     route("accounts/:accountId/reports/teams/:id", "routes/reports.tsx", { id: "cw-reports-team-detail" }),
-    ph("accounts/:accountId/reports/sla", "cw-reports-sla"),
+    route("accounts/:accountId/reports/sla", "routes/reports.sla.tsx", { id: "cw-reports-sla" }),
     route("accounts/:accountId/reports/csat", "routes/reports.tsx", { id: "cw-reports-csat" }),
     route("accounts/:accountId/reports/bot", "routes/reports.tsx", { id: "cw-reports-bot" }),
-    ph("accounts/:accountId/reports/monitors", "cw-reports-monitors"),
-    ph("accounts/:accountId/reports/monitors/:monitorId", "cw-reports-monitor-detail"),
+    route("accounts/:accountId/reports/monitors", "routes/reports.monitors.tsx", { id: "cw-reports-monitors" }),
+    route("accounts/:accountId/reports/monitors/:monitorId", "routes/reports.monitor-detail.tsx", { id: "cw-reports-monitor-detail" }),
 
     // Profile
     route("accounts/:accountId/profile", "routes/settings/profile.tsx", { id: "cw-profile" }),
@@ -103,9 +144,9 @@ export default [
     route("accounts/:accountId/settings/assignment-policy/assignment", "routes/r3/assignment-policy.tsx", { id: "cw-settings-assignment-policy-assignment" }),
     route("accounts/:accountId/settings/assignment-policy/assignment/create", "routes/r3/assignment-policy.tsx", { id: "cw-settings-assignment-policy-create" }),
     route("accounts/:accountId/settings/assignment-policy/assignment/edit/:id", "routes/r3/assignment-policy.tsx", { id: "cw-settings-assignment-policy-edit" }),
-    ph("accounts/:accountId/settings/assignment-policy/capacity", "cw-settings-assignment-policy-capacity"),
-    ph("accounts/:accountId/settings/assignment-policy/capacity/create", "cw-settings-assignment-policy-capacity-create"),
-    ph("accounts/:accountId/settings/assignment-policy/capacity/edit/:id", "cw-settings-assignment-policy-capacity-edit"),
+    route("accounts/:accountId/settings/assignment-policy/capacity", "routes/settings/capacity-policy.tsx", { id: "cw-settings-assignment-policy-capacity" }),
+    route("accounts/:accountId/settings/assignment-policy/capacity/create", "routes/settings/capacity-policy.tsx", { id: "cw-settings-assignment-policy-capacity-create" }),
+    route("accounts/:accountId/settings/assignment-policy/capacity/edit/:id", "routes/settings/capacity-policy.tsx", { id: "cw-settings-assignment-policy-capacity-edit" }),
     route("accounts/:accountId/settings/agent-bots", "routes/settings/agent-bots.tsx", { id: "cw-settings-agent-bots" }),
     route("accounts/:accountId/settings/custom-attributes", "routes/settings/attributes.tsx", { id: "cw-settings-custom-attributes" }),
     route("accounts/:accountId/settings/custom-attributes/list", "routes/settings/attributes.tsx"),
@@ -121,17 +162,17 @@ export default [
     route("accounts/:accountId/settings/inboxes/new/:sub_page", "routes/settings/inbox-new.tsx", { id: "cw-settings-inboxes-subpage" }),
     route("accounts/:accountId/settings/inboxes/new/:inbox_id/agents", "routes/settings/inbox-new.tsx", { id: "cw-settings-inboxes-add-agents" }),
     route("accounts/:accountId/settings/inboxes/:inboxId/:tab?", "routes/settings/inboxes.tsx", { id: "cw-settings-inboxes-show" }),
-    ph("accounts/:accountId/settings/templates", "cw-settings-templates"),
+    route("accounts/:accountId/settings/templates", "routes/settings/templates.tsx", { id: "cw-settings-templates" }),
     route("accounts/:accountId/settings/integrations", "routes/settings/r1/integrations.tsx", { id: "cw-settings-integrations" }),
     route("accounts/:accountId/settings/integrations/dashboard_apps", "routes/settings/r1/dashboard-apps.tsx", { id: "cw-settings-integrations-dashboard-apps" }),
     route("accounts/:accountId/settings/integrations/webhook", "routes/settings/webhooks.tsx"),
-    ph("accounts/:accountId/settings/integrations/slack", "cw-settings-integrations-slack"),
-    ph("accounts/:accountId/settings/integrations/linear", "cw-settings-integrations-linear"),
-    ph("accounts/:accountId/settings/integrations/stripe", "cw-settings-integrations-stripe"),
-    ph("accounts/:accountId/settings/integrations/google_translate", "cw-settings-integrations-google-translate"),
-    ph("accounts/:accountId/settings/integrations/notion", "cw-settings-integrations-notion"),
-    ph("accounts/:accountId/settings/integrations/shopify", "cw-settings-integrations-shopify"),
-    ph("accounts/:accountId/settings/integrations/:integration_id", "cw-settings-integrations-detail"),
+    route("accounts/:accountId/settings/integrations/slack", "routes/settings/integrations/slack.tsx", { id: "cw-settings-integrations-slack" }),
+    route("accounts/:accountId/settings/integrations/linear", "routes/settings/integrations/linear.tsx", { id: "cw-settings-integrations-linear" }),
+    route("accounts/:accountId/settings/integrations/stripe", "routes/settings/integrations/stripe.tsx", { id: "cw-settings-integrations-stripe" }),
+    route("accounts/:accountId/settings/integrations/google_translate", "routes/settings/integrations/google-translate.tsx", { id: "cw-settings-integrations-google-translate" }),
+    route("accounts/:accountId/settings/integrations/notion", "routes/settings/integrations/notion.tsx", { id: "cw-settings-integrations-notion" }),
+    route("accounts/:accountId/settings/integrations/shopify", "routes/settings/integrations/shopify.tsx", { id: "cw-settings-integrations-shopify" }),
+    route("accounts/:accountId/settings/integrations/:integration_id", "routes/settings/integrations/hook-detail.tsx", { id: "cw-settings-integrations-detail" }),
     route("accounts/:accountId/settings/data", "routes/r3/data-imports.tsx", { id: "cw-settings-data" }),
     route("accounts/:accountId/settings/data/:dataImportId", "routes/r3/data-import-detail.tsx", { id: "cw-settings-data-detail" }),
     route("accounts/:accountId/settings/labels/list", "routes/settings/labels.tsx"),
@@ -150,6 +191,8 @@ export default [
     route("accounts/:accountId/settings/custom-roles", "routes/settings/custom-roles.tsx", { id: "cw-settings-custom-roles" }),
     route("accounts/:accountId/settings/custom-roles/list", "routes/settings/custom-roles.tsx", { id: "cw-settings-custom-roles-list" }),
     route("accounts/:accountId/settings/security", "routes/settings/r1/security-page.tsx", { id: "cw-settings-security" }),
+    route("accounts/:accountId/settings/billing", "routes/settings/billing.tsx", { id: "cw-settings-billing" }),
+    route("accounts/:accountId/settings/captain", "routes/captain/preferences.tsx", { id: "cw-settings-captain" }),
     route("accounts/:accountId/settings/conversation-workflow", "routes/settings/r1/conversation-workflow.tsx", { id: "cw-settings-conversation-workflow" }),
 
     // Onboarding & Suspended

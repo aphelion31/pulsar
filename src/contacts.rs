@@ -2,18 +2,18 @@
 //! See WORKERS.md and ../chatwoot/app/controllers/api/v1/accounts/contacts_controller.rb.
 
 use axum::{
+    Json, Router,
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    extract::{Path, Query, State},
     routing::{delete, get, post},
-    Json, Router,
 };
 use chrono::NaiveDateTime;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 
-use crate::common::{now, require_account, ts, ApiError, ApiResult, AppState, CurrentUser};
+use crate::common::{ApiError, ApiResult, AppState, CurrentUser, now, require_account, ts};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -24,78 +24,176 @@ pub fn routes() -> Router<AppState> {
         .route("/contacts/import", post(import_contacts))
         .route("/contacts/export", post(export_contacts))
         .route("/contact_inboxes/filter", post(filter_contact_inbox))
-        .route("/contacts/{id}", get(show).patch(update).put(update).delete(destroy))
+        .route(
+            "/contacts/{id}",
+            get(show).patch(update).put(update).delete(destroy),
+        )
         .route("/contacts/{id}/conversations", get(conversations))
         .route("/contacts/{id}/attachments", get(attachments))
-        .route("/contacts/{id}/labels", get(labels_index).post(labels_create))
-        .route("/contacts/{id}/contact_inboxes", get(contact_inboxes_list).post(contact_inbox_create))
-        .route("/contacts/{id}/contactable_inboxes", get(contactable_inboxes))
-        .route("/contacts/{id}/destroy_custom_attributes", post(destroy_custom_attributes))
+        .route(
+            "/contacts/{id}/labels",
+            get(labels_index).post(labels_create),
+        )
+        .route(
+            "/contacts/{id}/contact_inboxes",
+            get(contact_inboxes_list).post(contact_inbox_create),
+        )
+        .route(
+            "/contacts/{id}/contactable_inboxes",
+            get(contactable_inboxes),
+        )
+        .route(
+            "/contacts/{id}/destroy_custom_attributes",
+            post(destroy_custom_attributes),
+        )
         .route("/contacts/{id}/avatar", delete(destroy_avatar))
         .route("/contacts/{id}/notes", get(notes_index).post(notes_create))
-        .route("/contacts/{id}/notes/{note_id}", get(notes_show).patch(notes_update).put(notes_update).delete(notes_destroy))
+        .route(
+            "/contacts/{id}/notes/{note_id}",
+            get(notes_show)
+                .patch(notes_update)
+                .put(notes_update)
+                .delete(notes_destroy),
+        )
         .route("/actions/contact_merge", post(contact_merge))
 }
 
 const RESULTS_PER_PAGE: i64 = 15;
 
 // CSV export is returned directly because the mailer cannot attach files.
-async fn export_contacts(Path(account_id): Path<i64>, user: CurrentUser, State(st): State<AppState>) -> Result<Response, ApiError> {
+async fn export_contacts(
+    Path(account_id): Path<i64>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+) -> Result<Response, ApiError> {
     require_account(&st.db, &user, account_id).await?;
     let rows: Vec<(Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as("SELECT name, email, phone_number, identifier FROM contacts WHERE account_id = $1 ORDER BY id")
         .bind(account_id).fetch_all(&st.db).await?;
     let mut csv = String::from("name,email,phone_number,identifier\r\n");
     for (name, email, phone, identifier) in rows {
-        let fields = [name, email, phone, identifier].map(|s| format!("\"{}\"", s.unwrap_or_default().replace('"', "\"\"")));
-        csv.push_str(&fields.join(",")); csv.push_str("\r\n");
+        let fields = [name, email, phone, identifier]
+            .map(|s| format!("\"{}\"", s.unwrap_or_default().replace('"', "\"\"")));
+        csv.push_str(&fields.join(","));
+        csv.push_str("\r\n");
     }
-    Ok(([(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8")], csv).into_response())
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8")],
+        csv,
+    )
+        .into_response())
 }
 
 pub(crate) fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, ApiError> {
-    let mut rows = Vec::new(); let mut row = Vec::new(); let mut field = String::new();
-    let mut chars = input.trim_start_matches('\u{feff}').chars().peekable(); let mut quoted = false; let mut closed = false;
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    let mut field = String::new();
+    let mut chars = input.trim_start_matches('\u{feff}').chars().peekable();
+    let mut quoted = false;
+    let mut closed = false;
     while let Some(c) = chars.next() {
         if quoted {
-            if c == '"' { if chars.peek() == Some(&'"') { chars.next(); field.push('"'); } else { quoted = false; closed = true; } }
-            else { field.push(c); }
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    field.push('"');
+                } else {
+                    quoted = false;
+                    closed = true;
+                }
+            } else {
+                field.push(c);
+            }
         } else {
             match c {
                 '"' if field.is_empty() && !closed => quoted = true,
-                ',' => { row.push(std::mem::take(&mut field)); closed = false; },
-                '\n' | '\r' => { if c == '\r' && chars.peek() == Some(&'\n') { chars.next(); } row.push(std::mem::take(&mut field)); rows.push(std::mem::take(&mut row)); closed = false; },
+                ',' => {
+                    row.push(std::mem::take(&mut field));
+                    closed = false;
+                }
+                '\n' | '\r' => {
+                    if c == '\r' && chars.peek() == Some(&'\n') {
+                        chars.next();
+                    }
+                    row.push(std::mem::take(&mut field));
+                    rows.push(std::mem::take(&mut row));
+                    closed = false;
+                }
                 _ if closed || c == '"' => return Err(ApiError::bad("Malformed CSV")),
                 _ => field.push(c),
             }
         }
     }
-    if quoted { return Err(ApiError::bad("Malformed CSV")); }
-    if !row.is_empty() || !field.is_empty() || closed { row.push(field); rows.push(row); }
+    if quoted {
+        return Err(ApiError::bad("Malformed CSV"));
+    }
+    if !row.is_empty() || !field.is_empty() || closed {
+        row.push(field);
+        rows.push(row);
+    }
     Ok(rows)
 }
 
-async fn import_contacts(Path(account_id): Path<i64>, user: CurrentUser, State(st): State<AppState>, mut multipart: axum::extract::Multipart) -> ApiResult {
+async fn import_contacts(
+    Path(account_id): Path<i64>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+    mut multipart: axum::extract::Multipart,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
     let mut input = None;
-    while let Some(field) = multipart.next_field().await.map_err(|_| ApiError::bad("Invalid multipart"))? {
-        if field.name() == Some("import_file") { input = Some(field.text().await.map_err(|_| ApiError::bad("Invalid CSV"))?); break; }
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| ApiError::bad("Invalid multipart"))?
+    {
+        if field.name() == Some("import_file") {
+            input = Some(
+                field
+                    .text()
+                    .await
+                    .map_err(|_| ApiError::bad("Invalid CSV"))?,
+            );
+            break;
+        }
     }
     let rows = parse_csv(&input.ok_or_else(|| ApiError::bad("import_file required"))?)?;
-    let (headers, data) = rows.split_first().ok_or_else(|| ApiError::bad("CSV header required"))?;
+    let (headers, data) = rows
+        .split_first()
+        .ok_or_else(|| ApiError::bad("CSV header required"))?;
     let mut tx = st.db.begin().await?;
     let mut count = 0;
     for row in data {
-        if row.len() != headers.len() { return Err(ApiError::bad("CSV column count mismatch")); }
+        if row.len() != headers.len() {
+            return Err(ApiError::bad("CSV column count mismatch"));
+        }
         let mut attrs = serde_json::Map::new();
-        for (key, value) in headers.iter().zip(row) { if !value.trim().is_empty() { attrs.insert(key.clone(), json!(value.trim())); } }
+        for (key, value) in headers.iter().zip(row) {
+            if !value.trim().is_empty() {
+                attrs.insert(key.clone(), json!(value.trim()));
+            }
+        }
         let get = |k: &str| attrs.get(k).and_then(Value::as_str).map(str::to_string);
-        let name = get("name"); let email = get("email"); let identifier = get("identifier");
-        let phone = get("phone_number").map(|p| if p.starts_with('+') { p } else { format!("+{p}") });
+        let name = get("name");
+        let email = get("email");
+        let identifier = get("identifier");
+        let phone = get("phone_number").map(|p| {
+            if p.starts_with('+') {
+                p
+            } else {
+                format!("+{p}")
+            }
+        });
         let id: Option<i32> = sqlx::query_scalar("SELECT id FROM contacts WHERE account_id=$1 AND (($2::text IS NOT NULL AND identifier=$2) OR ($3::text IS NOT NULL AND lower(email)=lower($3)) OR ($4::text IS NOT NULL AND phone_number=$4)) ORDER BY CASE WHEN identifier=$2 THEN 0 WHEN lower(email)=lower($3) THEN 1 ELSE 2 END LIMIT 1")
             .bind(account_id).bind(&identifier).bind(&email).bind(&phone).fetch_optional(&mut *tx).await?;
         let mut additional = serde_json::Map::new();
-        for key in ["company_name", "city", "country", "country_code"] { if let Some(v) = attrs.get(key) { additional.insert(key.into(), v.clone()); } }
-        for key in ["name", "email", "identifier", "phone_number", "labels"] { attrs.remove(key); }
+        for key in ["company_name", "city", "country", "country_code"] {
+            if let Some(v) = attrs.get(key) {
+                additional.insert(key.into(), v.clone());
+            }
+        }
+        for key in ["name", "email", "identifier", "phone_number", "labels"] {
+            attrs.remove(key);
+        }
         if let Some(id) = id {
             sqlx::query("UPDATE contacts SET name=COALESCE($1,name),email=COALESCE($2,email),phone_number=COALESCE($3,phone_number),identifier=COALESCE($4,identifier),additional_attributes=COALESCE(additional_attributes,'{}'::jsonb)||$5,custom_attributes=COALESCE(custom_attributes,'{}'::jsonb)||$6,updated_at=$7 WHERE account_id=$8 AND id=$9")
                 .bind(name).bind(email).bind(phone).bind(identifier).bind(json!(additional)).bind(json!(attrs)).bind(now()).bind(account_id).bind(id).execute(&mut *tx).await?;
@@ -116,13 +214,27 @@ async fn attachments(
     Query(params): Query<ContactsQuery>,
 ) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM contacts WHERE account_id = $1 AND id = $2)")
-        .bind(account_id).bind(id).fetch_one(&st.db).await?;
-    if !exists { return Err(ApiError::not_found()); }
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM contacts WHERE account_id = $1 AND id = $2)",
+    )
+    .bind(account_id)
+    .bind(id)
+    .fetch_one(&st.db)
+    .await?;
+    if !exists {
+        return Err(ApiError::not_found());
+    }
     let scope = au.custom_scope_sql("$3");
-    let base = format!("FROM attachments a JOIN messages m ON m.id = a.message_id JOIN conversations c ON c.id = m.conversation_id WHERE c.account_id = $1 AND c.contact_id = $2 AND ($4 OR c.inbox_id IN (SELECT inbox_id FROM inbox_members WHERE user_id = $3)) AND ({scope})");
+    let base = format!(
+        "FROM attachments a JOIN messages m ON m.id = a.message_id JOIN conversations c ON c.id = m.conversation_id WHERE c.account_id = $1 AND c.contact_id = $2 AND ($4 OR c.inbox_id IN (SELECT inbox_id FROM inbox_members WHERE user_id = $3)) AND ({scope})"
+    );
     let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) {base}"))
-        .bind(account_id).bind(id).bind(user.id).bind(au.is_admin()).fetch_one(&st.db).await?;
+        .bind(account_id)
+        .bind(id)
+        .bind(user.id)
+        .bind(au.is_admin())
+        .fetch_one(&st.db)
+        .await?;
     let rows: Vec<(i64, i64, i32, NaiveDateTime)> = sqlx::query_as(&format!("SELECT a.id::bigint, m.id::bigint, c.display_id, m.created_at {base} ORDER BY a.created_at DESC, a.id DESC LIMIT 100 OFFSET $5"))
         .bind(account_id).bind(id).bind(user.id).bind(au.is_admin())
         .bind((params.page.unwrap_or(1).max(1) - 1) * 100).fetch_all(&st.db).await?;
@@ -136,7 +248,9 @@ async fn attachments(
             }
         }
     }
-    Ok(Json(json!({"meta": {"total_count": count}, "payload": payload})))
+    Ok(Json(
+        json!({"meta": {"total_count": count}, "payload": payload}),
+    ))
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -230,17 +344,25 @@ fn contact_to_json(c: &ContactRow, inboxes: Option<Vec<Value>>) -> Value {
     });
 
     if let Some(la) = c.last_activity_at {
-        obj.as_object_mut().unwrap().insert("last_activity_at".into(), json!(ts(Some(la))));
+        obj.as_object_mut()
+            .unwrap()
+            .insert("last_activity_at".into(), json!(ts(Some(la))));
     } else {
-        obj.as_object_mut().unwrap().insert("last_activity_at".into(), Value::Null);
+        obj.as_object_mut()
+            .unwrap()
+            .insert("last_activity_at".into(), Value::Null);
     }
 
     if let Some(ci) = c.company_id {
-        obj.as_object_mut().unwrap().insert("company_id".into(), json!(ci));
+        obj.as_object_mut()
+            .unwrap()
+            .insert("company_id".into(), json!(ci));
     }
 
     if let Some(inboxes_list) = inboxes {
-        obj.as_object_mut().unwrap().insert("contact_inboxes".into(), json!(inboxes_list));
+        obj.as_object_mut()
+            .unwrap()
+            .insert("contact_inboxes".into(), json!(inboxes_list));
     }
 
     obj
@@ -297,14 +419,21 @@ async fn index(
                 .collect()
         })
         .unwrap_or_default();
-    let label_filter = if !from_raw.is_empty() { Some(from_raw) } else { match &params.labels {
-        Some(Value::String(s)) if !s.trim().is_empty() => Some(vec![s.trim().to_string()]),
-        Some(Value::Array(arr)) => {
-            let list: Vec<String> = arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-            if list.is_empty() { None } else { Some(list) }
+    let label_filter = if !from_raw.is_empty() {
+        Some(from_raw)
+    } else {
+        match &params.labels {
+            Some(Value::String(s)) if !s.trim().is_empty() => Some(vec![s.trim().to_string()]),
+            Some(Value::Array(arr)) => {
+                let list: Vec<String> = arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
+                if list.is_empty() { None } else { Some(list) }
+            }
+            _ => None,
         }
-        _ => None,
-    } };
+    };
 
     let (contacts, count): (Vec<ContactRow>, i64) = if let Some(labels) = label_filter {
         let count: (i64,) = sqlx::query_as(
@@ -459,11 +588,12 @@ async fn active(
         .bind((page - 1) * RESULTS_PER_PAGE)
         .fetch_all(&st.db)
         .await?;
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM contacts WHERE account_id = $1 AND id = ANY($2)")
-        .bind(account_id)
-        .bind(&ids)
-        .fetch_one(&st.db)
-        .await?;
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM contacts WHERE account_id = $1 AND id = ANY($2)")
+            .bind(account_id)
+            .bind(&ids)
+            .fetch_one(&st.db)
+            .await?;
     let mut payload = Vec::with_capacity(rows.len());
     for c in &rows {
         payload.push(build_contact_json(&st.db, c, include_inboxes).await);
@@ -493,20 +623,39 @@ struct FilterBody {
 }
 
 #[derive(Deserialize)]
-struct InboxFilter { inbox_id: i64, source_id: String }
+struct InboxFilter {
+    inbox_id: i64,
+    source_id: String,
+}
 
 async fn filter_contact_inbox(
-    Path(account_id): Path<i64>, user: CurrentUser, State(st): State<AppState>,
+    Path(account_id): Path<i64>,
+    user: CurrentUser,
+    State(st): State<AppState>,
     Json(body): Json<InboxFilter>,
 ) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inboxes WHERE account_id = $1 AND id = $2)")
-        .bind(account_id).bind(body.inbox_id).fetch_one(&st.db).await?;
-    if !exists { return Err(ApiError::not_found()); }
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM inboxes WHERE account_id = $1 AND id = $2)",
+    )
+    .bind(account_id)
+    .bind(body.inbox_id)
+    .fetch_one(&st.db)
+    .await?;
+    if !exists {
+        return Err(ApiError::not_found());
+    }
     if !au.is_admin() {
-        let member: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inbox_members WHERE user_id = $1 AND inbox_id = $2)")
-            .bind(user.id).bind(body.inbox_id).fetch_one(&st.db).await?;
-        if !member { return Err(ApiError::forbidden()); }
+        let member: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM inbox_members WHERE user_id = $1 AND inbox_id = $2)",
+        )
+        .bind(user.id)
+        .bind(body.inbox_id)
+        .fetch_one(&st.db)
+        .await?;
+        if !member {
+            return Err(ApiError::forbidden());
+        }
     }
     let contact: Option<ContactRow> = sqlx::query_as("SELECT c.id, c.name, c.email, c.phone_number, c.account_id, c.created_at, c.updated_at, c.additional_attributes, c.identifier, c.custom_attributes, c.last_activity_at, c.blocked, c.company_id FROM contacts c JOIN contact_inboxes ci ON ci.contact_id = c.id WHERE c.account_id = $1 AND ci.inbox_id = $2 AND ci.source_id = $3 LIMIT 1")
         .bind(account_id).bind(body.inbox_id).bind(body.source_id).fetch_optional(&st.db).await?;
@@ -545,11 +694,15 @@ async fn filter(
             "created_at" => "created_at::text",
             "last_activity_at" => "last_activity_at::text",
             "blocked" => "blocked::text",
-            "labels" => "(SELECT string_agg(t.name, ',') FROM taggings tg JOIN tags t ON t.id = tg.tag_id WHERE tg.taggable_type = 'Contact' AND tg.context = 'labels' AND tg.taggable_id = contacts.id)",
+            "labels" => {
+                "(SELECT string_agg(t.name, ',') FROM taggings tg JOIN tags t ON t.id = tg.tag_id WHERE tg.taggable_type = 'Contact' AND tg.context = 'labels' AND tg.taggable_id = contacts.id)"
+            }
             _ => {
                 let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM custom_attribute_definitions WHERE account_id = $1 AND attribute_model = 1 AND attribute_key = $2)")
                     .bind(account_id).bind(&f.attribute_key).fetch_one(&st.db).await?;
-                if !exists { return Err(ApiError::bad("Invalid attribute")); }
+                if !exists {
+                    return Err(ApiError::bad("Invalid attribute"));
+                }
                 binds.push(f.attribute_key.clone());
                 // Key is bound, never inserted into SQL.
                 "custom_attributes->>$CUSTOM_KEY"
@@ -583,13 +736,23 @@ async fn filter(
             }
             "contains" => {
                 if let Some(v) = val {
-                    binds.push(format!("%{}%", v.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
+                    binds.push(format!(
+                        "%{}%",
+                        v.replace('\\', "\\\\")
+                            .replace('%', "\\%")
+                            .replace('_', "\\_")
+                    ));
                     conditions.push(format!("{col} ILIKE ${}", binds.len() + 1));
                 }
             }
             "does_not_contain" => {
                 if let Some(v) = val {
-                    binds.push(format!("%{}%", v.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
+                    binds.push(format!(
+                        "%{}%",
+                        v.replace('\\', "\\\\")
+                            .replace('%', "\\%")
+                            .replace('_', "\\_")
+                    ));
                     conditions.push(format!("{col} NOT ILIKE ${}", binds.len() + 1));
                 }
             }
@@ -600,18 +763,38 @@ async fn filter(
                 let mut value = val.ok_or_else(|| ApiError::bad("Filter value required"))?;
                 if f.filter_operator == "days_before" {
                     let days: i64 = value.parse().map_err(|_| ApiError::bad("Invalid days"))?;
-                    let date = chrono::Utc::now().date_naive().checked_sub_signed(chrono::Duration::try_days(days).ok_or_else(|| ApiError::bad("Invalid days"))?).ok_or_else(|| ApiError::bad("Invalid days"))?;
+                    let date = chrono::Utc::now()
+                        .date_naive()
+                        .checked_sub_signed(
+                            chrono::Duration::try_days(days)
+                                .ok_or_else(|| ApiError::bad("Invalid days"))?,
+                        )
+                        .ok_or_else(|| ApiError::bad("Invalid days"))?;
                     value = date.to_string();
                 }
                 binds.push(value);
-                let op = if f.filter_operator == "is_greater_than" { ">" } else if f.filter_operator == "is_less_than" { "<" } else { "=" };
-                let expr = if f.filter_operator == "days_before" { format!("left({col}, 10)") } else { col.clone() };
+                let op = if f.filter_operator == "is_greater_than" {
+                    ">"
+                } else if f.filter_operator == "is_less_than" {
+                    "<"
+                } else {
+                    "="
+                };
+                let expr = if f.filter_operator == "days_before" {
+                    format!("left({col}, 10)")
+                } else {
+                    col.clone()
+                };
                 conditions.push(format!("{expr} {op} ${}", binds.len() + 1));
             }
             _ => return Err(ApiError::bad("Invalid operator")),
         }
-        if conditions.len() == start { return Err(ApiError::bad("Filter value required")); }
-        if start > 0 { conditions.insert(start, previous_operator.to_string()); }
+        if conditions.len() == start {
+            return Err(ApiError::bad("Filter value required"));
+        }
+        if start > 0 {
+            conditions.insert(start, previous_operator.to_string());
+        }
         previous_operator = match f.query_operator.as_deref() {
             None | Some("") | Some("AND") | Some("and") => "AND",
             Some("OR") | Some("or") => "OR",
@@ -733,10 +916,14 @@ async fn create(
         .await?;
 
     // Uniqueness per account. Lookups are scoped to account_id, so only same-account contacts are named.
-    let norm_email = body.email.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let norm_email = body
+        .email
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
     if let Some(e) = norm_email {
         let exists: Option<(i32,)> = sqlx::query_as(
-            "SELECT id FROM contacts WHERE account_id = $1 AND lower(email) = lower($2) LIMIT 1"
+            "SELECT id FROM contacts WHERE account_id = $1 AND lower(email) = lower($2) LIMIT 1",
         )
         .bind(account_id)
         .bind(e)
@@ -748,10 +935,14 @@ async fn create(
         }
     }
 
-    let norm_phone = body.phone_number.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let norm_phone = body
+        .phone_number
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     if let Some(p) = norm_phone {
         let exists: Option<(i32,)> = sqlx::query_as(
-            "SELECT id FROM contacts WHERE account_id = $1 AND phone_number = $2 LIMIT 1"
+            "SELECT id FROM contacts WHERE account_id = $1 AND phone_number = $2 LIMIT 1",
         )
         .bind(account_id)
         .bind(p)
@@ -759,14 +950,22 @@ async fn create(
         .await?;
 
         if let Some((id,)) = exists {
-            return Ok(conflict("Phone number has already been taken", "phone_number", id));
+            return Ok(conflict(
+                "Phone number has already been taken",
+                "phone_number",
+                id,
+            ));
         }
     }
 
-    let norm_identifier = body.identifier.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let norm_identifier = body
+        .identifier
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
     if let Some(ident) = norm_identifier {
         let exists: Option<(i32,)> = sqlx::query_as(
-            "SELECT id FROM contacts WHERE account_id = $1 AND identifier = $2 LIMIT 1"
+            "SELECT id FROM contacts WHERE account_id = $1 AND identifier = $2 LIMIT 1",
         )
         .bind(account_id)
         .bind(ident)
@@ -774,7 +973,11 @@ async fn create(
         .await?;
 
         if let Some((id,)) = exists {
-            return Ok(conflict("Identifier has already been taken", "identifier", id));
+            return Ok(conflict(
+                "Identifier has already been taken",
+                "identifier",
+                id,
+            ));
         }
     }
 
@@ -809,7 +1012,7 @@ async fn create(
 
     if let Some(inbox_id) = body.inbox_id {
         let inbox: Option<(i32, String, Option<String>)> = sqlx::query_as(
-            "SELECT id, name, channel_type FROM inboxes WHERE account_id = $1 AND id = $2"
+            "SELECT id, name, channel_type FROM inboxes WHERE account_id = $1 AND id = $2",
         )
         .bind(account_id)
         .bind(inbox_id)
@@ -817,7 +1020,9 @@ async fn create(
         .await?;
 
         if let Some((iid, iname, ichannel)) = inbox {
-            let source_id = body.source_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let source_id = body
+                .source_id
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let pubsub_token = uuid::Uuid::new_v4().to_string();
             let ci_now = now();
 
@@ -849,7 +1054,8 @@ async fn create(
     }
 
     let contact_json = build_contact_json(&st.db, &row, true).await;
-    st.hub.to_account(account_id, "contact.created", contact_json.clone());
+    st.hub
+        .to_account(account_id, "contact.created", contact_json.clone());
 
     Ok(Json(json!({
         "payload": {
@@ -928,7 +1134,7 @@ async fn update(
 
     if let Some(ref ident) = new_identifier {
         let conflict: Option<(i32,)> = sqlx::query_as(
-            "SELECT id FROM contacts WHERE account_id = $1 AND identifier = $2 AND id != $3"
+            "SELECT id FROM contacts WHERE account_id = $1 AND identifier = $2 AND id != $3",
         )
         .bind(account_id)
         .bind(ident)
@@ -951,7 +1157,9 @@ async fn update(
         None => existing.phone_number.clone(),
     };
 
-    let new_name = body.name.unwrap_or_else(|| existing.name.clone().unwrap_or_default());
+    let new_name = body
+        .name
+        .unwrap_or_else(|| existing.name.clone().unwrap_or_default());
     let new_blocked = body.blocked.unwrap_or(existing.blocked);
 
     // Merge additional_attributes and custom_attributes like Rails
@@ -997,7 +1205,8 @@ async fn update(
     .await?;
 
     let contact_json = build_contact_json(&st.db, &updated_row, true).await;
-    st.hub.to_account(account_id, "contact.updated", contact_json.clone());
+    st.hub
+        .to_account(account_id, "contact.updated", contact_json.clone());
 
     Ok(Json(json!({ "payload": contact_json })))
 }
@@ -1044,7 +1253,8 @@ async fn destroy(
         .execute(&st.db)
         .await?;
 
-    st.hub.to_account(account_id, "contact.deleted", contact_json);
+    st.hub
+        .to_account(account_id, "contact.deleted", contact_json);
 
     Ok(Json(json!({ "message": "Contact deleted successfully" })))
 }
@@ -1063,13 +1273,12 @@ async fn destroy_custom_attributes(
 ) -> ApiResult {
     let _au = require_account(&st.db, &user, account_id).await?;
 
-    let existing: Option<(Option<Value>,)> = sqlx::query_as(
-        "SELECT custom_attributes FROM contacts WHERE account_id = $1 AND id = $2"
-    )
-    .bind(account_id)
-    .bind(id)
-    .fetch_optional(&st.db)
-    .await?;
+    let existing: Option<(Option<Value>,)> =
+        sqlx::query_as("SELECT custom_attributes FROM contacts WHERE account_id = $1 AND id = $2")
+            .bind(account_id)
+            .bind(id)
+            .fetch_optional(&st.db)
+            .await?;
 
     let (mut cust_attr,) = existing.ok_or_else(ApiError::not_found)?;
     let mut attr_obj = cust_attr.take().unwrap_or_else(|| json!({}));
@@ -1162,7 +1371,13 @@ async fn conversations(
         let labels: Vec<String> = conv
             .cached_label_list
             .as_deref()
-            .map(|s| s.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect())
+            .map(|s| {
+                s.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
             .unwrap_or_default();
 
         let conv_obj = json!({
@@ -1196,7 +1411,7 @@ async fn labels_index(
         "SELECT t.name FROM tags t
          JOIN taggings tg ON tg.tag_id = t.id
          WHERE tg.taggable_type = 'Contact' AND tg.taggable_id = $1 AND tg.context = 'labels'
-         ORDER BY t.name ASC"
+         ORDER BY t.name ASC",
     )
     .bind(id)
     .fetch_all(&st.db)
@@ -1219,11 +1434,12 @@ async fn labels_create(
     let _au = require_account(&st.db, &user, account_id).await?;
 
     // Verify contact belongs to account
-    let exists: Option<(i32,)> = sqlx::query_as("SELECT id FROM contacts WHERE account_id = $1 AND id = $2")
-        .bind(account_id)
-        .bind(id)
-        .fetch_optional(&st.db)
-        .await?;
+    let exists: Option<(i32,)> =
+        sqlx::query_as("SELECT id FROM contacts WHERE account_id = $1 AND id = $2")
+            .bind(account_id)
+            .bind(id)
+            .fetch_optional(&st.db)
+            .await?;
     if exists.is_none() {
         return Err(ApiError::not_found());
     }
@@ -1245,7 +1461,7 @@ async fn labels_create(
         let tag_id: i32 = sqlx::query_scalar(
             "INSERT INTO tags (name, taggings_count) VALUES ($1, 0)
              ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-             RETURNING id"
+             RETURNING id",
         )
         .bind(&label)
         .fetch_one(&st.db)
@@ -1255,7 +1471,7 @@ async fn labels_create(
         let tag_now = now();
         sqlx::query(
             "INSERT INTO taggings (tag_id, taggable_type, taggable_id, context, created_at)
-             VALUES ($1, 'Contact', $2, 'labels', $3)"
+             VALUES ($1, 'Contact', $2, 'labels', $3)",
         )
         .bind(tag_id)
         .bind(id)
@@ -1298,17 +1514,18 @@ async fn contact_inbox_create(
     let _au = require_account(&st.db, &user, account_id).await?;
 
     // Verify contact belongs to account
-    let contact_exists: Option<(i32,)> = sqlx::query_as("SELECT id FROM contacts WHERE account_id = $1 AND id = $2")
-        .bind(account_id)
-        .bind(id)
-        .fetch_optional(&st.db)
-        .await?;
+    let contact_exists: Option<(i32,)> =
+        sqlx::query_as("SELECT id FROM contacts WHERE account_id = $1 AND id = $2")
+            .bind(account_id)
+            .bind(id)
+            .fetch_optional(&st.db)
+            .await?;
     if contact_exists.is_none() {
         return Err(ApiError::not_found());
     }
 
     let inbox: Option<(i32, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, name, channel_type FROM inboxes WHERE account_id = $1 AND id = $2"
+        "SELECT id, name, channel_type FROM inboxes WHERE account_id = $1 AND id = $2",
     )
     .bind(account_id)
     .bind(body.inbox_id)
@@ -1316,7 +1533,9 @@ async fn contact_inbox_create(
     .await?;
 
     let (iid, iname, ichannel) = inbox.ok_or_else(ApiError::not_found)?;
-    let source_id = body.source_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let source_id = body
+        .source_id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let pubsub_token = uuid::Uuid::new_v4().to_string();
     let ci_now = now();
 
@@ -1373,7 +1592,7 @@ async fn contactable_inboxes(
     .ok_or_else(ApiError::not_found)?;
 
     let inboxes = sqlx::query_as::<_, InboxSlimRow>(
-        "SELECT id, name, channel_type FROM inboxes WHERE account_id = $1 ORDER BY id ASC"
+        "SELECT id, name, channel_type FROM inboxes WHERE account_id = $1 ORDER BY id ASC",
     )
     .bind(account_id)
     .fetch_all(&st.db)
@@ -1390,12 +1609,8 @@ async fn contactable_inboxes(
                     None
                 }
             }
-            "Channel::TwilioSms" | "Channel::Sms" => {
-                contact.phone_number.clone()
-            }
-            "Channel::Whatsapp" => {
-                contact.phone_number.as_ref().map(|p| p.replace('+', ""))
-            }
+            "Channel::TwilioSms" | "Channel::Sms" => contact.phone_number.clone(),
+            "Channel::Whatsapp" => contact.phone_number.as_ref().map(|p| p.replace('+', "")),
             "Channel::Api" => {
                 let existing_source: Option<(String,)> = sqlx::query_as(
                     "SELECT source_id FROM contact_inboxes WHERE inbox_id = $1 AND contact_id = $2 ORDER BY id DESC LIMIT 1"
@@ -1406,14 +1621,18 @@ async fn contactable_inboxes(
                 .await
                 .unwrap_or(None);
 
-                Some(existing_source.map(|r| r.0).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
+                Some(
+                    existing_source
+                        .map(|r| r.0)
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                )
             }
             "Channel::WebWidget" => {
                 let existing_source: Option<(String,)> = sqlx::query_as(
                     "SELECT ci.source_id FROM contact_inboxes ci
                      LEFT JOIN conversations c ON c.contact_inbox_id = ci.id
                      WHERE ci.inbox_id = $1 AND ci.contact_id = $2 AND c.id IS NULL
-                     ORDER BY ci.id DESC LIMIT 1"
+                     ORDER BY ci.id DESC LIMIT 1",
                 )
                 .bind(ib.id)
                 .bind(id)
@@ -1469,13 +1688,16 @@ fn note_to_json(n: &NoteRow) -> Value {
     });
 
     if let Some(uid) = n.user_id {
-        obj.as_object_mut().unwrap().insert("user".into(), json!({
-            "id": uid,
-            "name": n.user_name.clone().unwrap_or_default(),
-            "email": n.user_email.clone().unwrap_or_default(),
-            "avatar_url": "",
-            "thumbnail": ""
-        }));
+        obj.as_object_mut().unwrap().insert(
+            "user".into(),
+            json!({
+                "id": uid,
+                "name": n.user_name.clone().unwrap_or_default(),
+                "email": n.user_email.clone().unwrap_or_default(),
+                "avatar_url": "",
+                "thumbnail": ""
+            }),
+        );
     }
 
     obj
@@ -1495,7 +1717,7 @@ async fn notes_index(
          FROM notes n
          LEFT JOIN users u ON u.id = n.user_id
          WHERE n.account_id = $1 AND n.contact_id = $2
-         ORDER BY n.created_at DESC"
+         ORDER BY n.created_at DESC",
     )
     .bind(account_id)
     .bind(id)
@@ -1520,7 +1742,9 @@ struct CreateNoteBody {
 
 impl CreateNoteBody {
     fn extract_content(&self) -> Option<String> {
-        self.content.clone().or_else(|| self.note.as_ref().map(|n| n.content.clone()))
+        self.content
+            .clone()
+            .or_else(|| self.note.as_ref().map(|n| n.content.clone()))
     }
 }
 
@@ -1538,11 +1762,12 @@ async fn notes_create(
     };
 
     // Verify contact belongs to account
-    let exists: Option<(i32,)> = sqlx::query_as("SELECT id FROM contacts WHERE account_id = $1 AND id = $2")
-        .bind(account_id)
-        .bind(id)
-        .fetch_optional(&st.db)
-        .await?;
+    let exists: Option<(i32,)> =
+        sqlx::query_as("SELECT id FROM contacts WHERE account_id = $1 AND id = $2")
+            .bind(account_id)
+            .bind(id)
+            .fetch_optional(&st.db)
+            .await?;
     if exists.is_none() {
         return Err(ApiError::not_found());
     }
@@ -1552,7 +1777,7 @@ async fn notes_create(
         "INSERT INTO notes (content, account_id, contact_id, user_id, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $5)
          RETURNING id, content, account_id, contact_id, user_id, created_at, updated_at,
-                   NULL::varchar AS user_name, NULL::varchar AS user_email"
+                   NULL::varchar AS user_name, NULL::varchar AS user_email",
     )
     .bind(&content)
     .bind(account_id)
@@ -1584,7 +1809,7 @@ async fn notes_show(
                 u.name AS user_name, u.email AS user_email
          FROM notes n
          LEFT JOIN users u ON u.id = n.user_id
-         WHERE n.account_id = $1 AND n.contact_id = $2 AND n.id = $3"
+         WHERE n.account_id = $1 AND n.contact_id = $2 AND n.id = $3",
     )
     .bind(account_id)
     .bind(id)
@@ -1614,7 +1839,7 @@ async fn notes_update(
          SET content = $1, updated_at = $2
          WHERE account_id = $3 AND contact_id = $4 AND id = $5
          RETURNING id, content, account_id, contact_id, user_id, created_at, updated_at,
-                   NULL::varchar AS user_name, NULL::varchar AS user_email"
+                   NULL::varchar AS user_name, NULL::varchar AS user_email",
     )
     .bind(&content)
     .bind(now())
@@ -1653,12 +1878,13 @@ async fn notes_destroy(
 ) -> ApiResult {
     let _au = require_account(&st.db, &user, account_id).await?;
 
-    let res = sqlx::query("DELETE FROM notes WHERE account_id = $1 AND contact_id = $2 AND id = $3")
-        .bind(account_id)
-        .bind(id)
-        .bind(note_id)
-        .execute(&st.db)
-        .await?;
+    let res =
+        sqlx::query("DELETE FROM notes WHERE account_id = $1 AND contact_id = $2 AND id = $3")
+            .bind(account_id)
+            .bind(id)
+            .bind(note_id)
+            .execute(&st.db)
+            .await?;
 
     if res.rows_affected() == 0 {
         return Err(ApiError::not_found());
@@ -1689,11 +1915,19 @@ async fn contact_merge(
 
     let base_id = body["base_contact_id"]
         .as_i64()
-        .or_else(|| body["base_contact_id"].as_str().and_then(|s| s.parse().ok()))
+        .or_else(|| {
+            body["base_contact_id"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+        })
         .ok_or_else(|| ApiError::bad("base_contact_id is required"))?;
     let mergee_id = body["mergee_contact_id"]
         .as_i64()
-        .or_else(|| body["mergee_contact_id"].as_str().and_then(|s| s.parse().ok()))
+        .or_else(|| {
+            body["mergee_contact_id"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+        })
         .ok_or_else(|| ApiError::bad("mergee_contact_id is required"))?;
 
     let base: ContactRow = sqlx::query_as::<_, ContactRow>(
@@ -1726,12 +1960,14 @@ async fn contact_merge(
     let mut tx = st.db.begin().await?;
 
     // 1. Reassign conversations
-    sqlx::query("UPDATE conversations SET contact_id = $1 WHERE account_id = $2 AND contact_id = $3")
-        .bind(base_id)
-        .bind(account_id)
-        .bind(mergee_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE conversations SET contact_id = $1 WHERE account_id = $2 AND contact_id = $3",
+    )
+    .bind(base_id)
+    .bind(account_id)
+    .bind(mergee_id)
+    .execute(&mut *tx)
+    .await?;
 
     // 2. Reassign notes
     sqlx::query("UPDATE notes SET contact_id = $1 WHERE account_id = $2 AND contact_id = $3")
@@ -1769,11 +2005,13 @@ async fn contact_merge(
         if exists_on_base.is_some() {
             // Base contact already has an inbox link for this inbox; re-point conversations using this CI to base CI if any, then delete mergee CI
             let base_ci_id = exists_on_base.unwrap();
-            sqlx::query("UPDATE conversations SET contact_inbox_id = $1 WHERE contact_inbox_id = $2")
-                .bind(base_ci_id)
-                .bind(ci_id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "UPDATE conversations SET contact_inbox_id = $1 WHERE contact_inbox_id = $2",
+            )
+            .bind(base_ci_id)
+            .bind(ci_id)
+            .execute(&mut *tx)
+            .await?;
             sqlx::query("DELETE FROM contact_inboxes WHERE id = $1")
                 .bind(ci_id)
                 .execute(&mut *tx)
@@ -1812,12 +2050,18 @@ async fn contact_merge(
         base.identifier.clone()
     };
 
-    let mut merged_additional = mergee.additional_attributes.clone().unwrap_or_else(|| json!({}));
+    let mut merged_additional = mergee
+        .additional_attributes
+        .clone()
+        .unwrap_or_else(|| json!({}));
     if let Some(ref base_add) = base.additional_attributes {
         json_merge(&mut merged_additional, base_add);
     }
 
-    let mut merged_custom = mergee.custom_attributes.clone().unwrap_or_else(|| json!({}));
+    let mut merged_custom = mergee
+        .custom_attributes
+        .clone()
+        .unwrap_or_else(|| json!({}));
     if let Some(ref base_cust) = base.custom_attributes {
         json_merge(&mut merged_custom, base_cust);
     }
@@ -1860,6 +2104,7 @@ async fn contact_merge(
     .await?;
 
     let payload = build_contact_json(&st.db, &updated_base, true).await;
-    st.hub.to_account(account_id, "contact.updated", payload.clone());
+    st.hub
+        .to_account(account_id, "contact.updated", payload.clone());
     Ok(Json(payload))
 }

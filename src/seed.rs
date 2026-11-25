@@ -2,8 +2,13 @@
 use sqlx::PgPool;
 
 pub async fn run(db: &PgPool, args: &[String]) -> anyhow::Result<()> {
-    let email = args.first().map(|s| s.to_lowercase()).ok_or_else(|| anyhow::anyhow!("usage: seed <email> <password> [account]"))?;
-    let password = args.get(1).ok_or_else(|| anyhow::anyhow!("password required"))?;
+    let email = args
+        .first()
+        .map(|s| s.to_lowercase())
+        .ok_or_else(|| anyhow::anyhow!("usage: seed <email> <password> [account]"))?;
+    let password = args
+        .get(1)
+        .ok_or_else(|| anyhow::anyhow!("password required"))?;
     anyhow::ensure!(password.len() >= 6, "password must be >= 6 chars");
     let account_name = args.get(2).cloned().unwrap_or_else(|| "Acme".into());
     let hash = bcrypt::hash(password, 11)?;
@@ -20,10 +25,11 @@ pub async fn run(db: &PgPool, args: &[String]) -> anyhow::Result<()> {
     .bind(uuid::Uuid::new_v4().simple().to_string())
     .fetch_one(&mut *tx)
     .await?;
-    let existing: Option<i64> = sqlx::query_scalar("SELECT account_id FROM account_users WHERE user_id=$1 LIMIT 1")
-        .bind(uid)
-        .fetch_optional(&mut *tx)
-        .await?;
+    let existing: Option<i64> =
+        sqlx::query_scalar("SELECT account_id FROM account_users WHERE user_id=$1 LIMIT 1")
+            .bind(uid)
+            .fetch_optional(&mut *tx)
+            .await?;
     let aid = match existing {
         Some(a) => a,
         None => {

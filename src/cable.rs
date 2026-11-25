@@ -8,15 +8,15 @@ use std::{
 
 use axum::{
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     response::Response,
 };
 use futures::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::common::AppState;
 
@@ -34,23 +34,37 @@ const PRESENCE_TTL: Duration = Duration::from_secs(20);
 const CONTACT_PRESENCE_TTL: Duration = Duration::from_secs(90);
 
 /// account_id -> model -> cache key (epoch ms). Bumped by `Hub::invalidate_cache`.
-static CACHE_KEYS: LazyLock<Mutex<HashMap<i64, HashMap<String, i64>>>> = LazyLock::new(Default::default);
+static CACHE_KEYS: LazyLock<Mutex<HashMap<i64, HashMap<String, i64>>>> =
+    LazyLock::new(Default::default);
 static BOOT_MS: LazyLock<i64> = LazyLock::new(|| chrono::Utc::now().timestamp_millis());
 
 pub fn cache_keys(account_id: i64) -> Value {
     let m = CACHE_KEYS.lock().unwrap();
-    let get = |k: &str| m.get(&account_id).and_then(|h| h.get(k)).copied().unwrap_or(*BOOT_MS);
+    let get = |k: &str| {
+        m.get(&account_id)
+            .and_then(|h| h.get(k))
+            .copied()
+            .unwrap_or(*BOOT_MS)
+    };
     json!({ "label": get("label"), "inbox": get("inbox"), "team": get("team") })
 }
 
 pub struct PresenceSnapshot(HashMap<(i64, i64), Instant>);
 impl PresenceSnapshot {
     pub fn is_online(&self, account_id: i64, user_id: i64) -> bool {
-        self.0.get(&(account_id, user_id)).is_some_and(|t| t.elapsed() < PRESENCE_TTL)
+        self.0
+            .get(&(account_id, user_id))
+            .is_some_and(|t| t.elapsed() < PRESENCE_TTL)
     }
     /// Contacts with a live widget session (OnlineStatusTracker.get_available_contact_ids). Contacts are keyed by negative id.
     pub fn online_contact_ids(&self, account_id: i64) -> Vec<i64> {
-        self.0.iter().filter(|((a, id), t)| *a == account_id && *id < 0 && t.elapsed() < CONTACT_PRESENCE_TTL).map(|((_, id), _)| -id).collect()
+        self.0
+            .iter()
+            .filter(|((a, id), t)| {
+                *a == account_id && *id < 0 && t.elapsed() < CONTACT_PRESENCE_TTL
+            })
+            .map(|((_, id), _)| -id)
+            .collect()
     }
 }
 pub fn presence_snapshot() -> PresenceSnapshot {
@@ -65,7 +79,8 @@ impl Hub {
         for s in streams {
             for (cid, tx, ident) in map.get(s).into_iter().flatten() {
                 if seen.insert((*cid, ident.clone())) {
-                    let msg = json!({ "identifier": ident, "message": { "event": event, "data": data } });
+                    let msg =
+                        json!({ "identifier": ident, "message": { "event": event, "data": data } });
                     let _ = tx.send(msg.to_string());
                 }
             }
@@ -89,7 +104,11 @@ impl Hub {
             .entry(account_id)
             .or_default()
             .insert(model.to_string(), chrono::Utc::now().timestamp_millis());
-        self.to_account(account_id, "account.cache_invalidated", json!({ "cache_keys": cache_keys(account_id) }));
+        self.to_account(
+            account_id,
+            "account.cache_invalidated",
+            json!({ "cache_keys": cache_keys(account_id) }),
+        );
     }
 
     /// Pubsub tokens of agents that are members of the inbox, plus account admins.
@@ -108,13 +127,23 @@ impl Hub {
     }
 
     /// Conversation/message event to inbox agents + the contact's widget session.
-    pub async fn to_inbox(&self, db: &PgPool, account_id: i64, inbox_id: i64, contact_inbox_id: Option<i64>, event: &str, data: Value) {
+    pub async fn to_inbox(
+        &self,
+        db: &PgPool,
+        account_id: i64,
+        inbox_id: i64,
+        contact_inbox_id: Option<i64>,
+        event: &str,
+        data: Value,
+    ) {
         let mut tokens = self.inbox_tokens(db, account_id, inbox_id).await;
         if let Some(ci) = contact_inbox_id {
-            if let Ok(Some(t)) = sqlx::query_scalar::<_, Option<String>>("SELECT pubsub_token FROM contact_inboxes WHERE id=$1")
-                .bind(ci)
-                .fetch_one(db)
-                .await
+            if let Ok(Some(t)) = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT pubsub_token FROM contact_inboxes WHERE id=$1",
+            )
+            .bind(ci)
+            .fetch_one(db)
+            .await
             {
                 tokens.push(t);
             }
@@ -124,13 +153,12 @@ impl Hub {
 
     pub async fn presence_payload(db: &PgPool, account_id: i64) -> Value {
         let snap = presence_snapshot();
-        let rows: Vec<(i64, i32)> = sqlx::query_as(
-            "SELECT user_id, availability FROM account_users WHERE account_id = $1",
-        )
-        .bind(account_id)
-        .fetch_all(db)
-        .await
-        .unwrap_or_default();
+        let rows: Vec<(i64, i32)> =
+            sqlx::query_as("SELECT user_id, availability FROM account_users WHERE account_id = $1")
+                .bind(account_id)
+                .fetch_all(db)
+                .await
+                .unwrap_or_default();
         let users: serde_json::Map<String, Value> = rows
             .into_iter()
             .filter(|(uid, _)| snap.is_online(account_id, *uid))
@@ -139,7 +167,9 @@ impl Hub {
         let contacts: serde_json::Map<String, Value> = snap
             .0
             .iter()
-            .filter(|((a, id), t)| *a == account_id && *id < 0 && t.elapsed() < CONTACT_PRESENCE_TTL)
+            .filter(|((a, id), t)| {
+                *a == account_id && *id < 0 && t.elapsed() < CONTACT_PRESENCE_TTL
+            })
             .map(|((_, id), _)| ((-id).to_string(), json!("online")))
             .collect();
         json!({ "account_id": account_id, "users": users, "contacts": contacts })
@@ -151,7 +181,12 @@ impl Hub {
     }
 
     fn subscribe(&self, stream: String, cid: u64, tx: Tx, ident: String) {
-        self.streams.lock().unwrap().entry(stream).or_default().push((cid, tx, ident));
+        self.streams
+            .lock()
+            .unwrap()
+            .entry(stream)
+            .or_default()
+            .push((cid, tx, ident));
     }
 
     fn drop_conn(&self, cid: u64) {
@@ -190,7 +225,13 @@ async fn conn(st: AppState, socket: WebSocket) {
     let pinger = tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            if ping_tx.send(json!({ "type": "ping", "message": chrono::Utc::now().timestamp() }).to_string()).is_err() {
+            if ping_tx
+                .send(
+                    json!({ "type": "ping", "message": chrono::Utc::now().timestamp() })
+                        .to_string(),
+                )
+                .is_err()
+            {
                 break;
             }
         }
@@ -199,28 +240,42 @@ async fn conn(st: AppState, socket: WebSocket) {
     let mut subs: HashMap<String, Who> = HashMap::new();
     while let Some(Ok(msg)) = stream.next().await {
         let Message::Text(text) = msg else { continue };
-        let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
         let ident = v["identifier"].as_str().unwrap_or_default().to_string();
         let params: Value = serde_json::from_str(&ident).unwrap_or_default();
         match v["command"].as_str() {
             Some("subscribe") => match resolve(&st.db, &params).await {
                 Some(who) => {
-                    let token = params["pubsub_token"].as_str().unwrap_or_default().to_string();
+                    let token = params["pubsub_token"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
                     st.hub.subscribe(token, cid, tx.clone(), ident.clone());
-                    if let Who::User { account: Some(a), .. } = who {
-                        st.hub.subscribe(format!("account_{a}"), cid, tx.clone(), ident.clone());
+                    if let Who::User {
+                        account: Some(a), ..
+                    } = who
+                    {
+                        st.hub
+                            .subscribe(format!("account_{a}"), cid, tx.clone(), ident.clone());
                     }
-                    let _ = tx.send(json!({ "identifier": ident, "type": "confirm_subscription" }).to_string());
+                    let _ = tx.send(
+                        json!({ "identifier": ident, "type": "confirm_subscription" }).to_string(),
+                    );
                     heartbeat(&st, &who, &params).await;
                     subs.insert(ident, who);
                 }
                 None => {
-                    let _ = tx.send(json!({ "identifier": ident, "type": "reject_subscription" }).to_string());
+                    let _ = tx.send(
+                        json!({ "identifier": ident, "type": "reject_subscription" }).to_string(),
+                    );
                 }
             },
             Some("message") => {
                 if let Some(who) = subs.get(&ident) {
-                    let data: Value = serde_json::from_str(v["data"].as_str().unwrap_or("{}")).unwrap_or_default();
+                    let data: Value = serde_json::from_str(v["data"].as_str().unwrap_or("{}"))
+                        .unwrap_or_default();
                     if data["action"] == "update_presence" {
                         heartbeat(&st, who, &params).await;
                     }
@@ -239,22 +294,28 @@ async fn conn(st: AppState, socket: WebSocket) {
 
 async fn resolve(db: &PgPool, p: &Value) -> Option<Who> {
     let token = p["pubsub_token"].as_str()?;
-    let as_i64 = |v: &Value| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()));
+    let as_i64 = |v: &Value| {
+        v.as_i64()
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    };
     if let Some(uid) = as_i64(&p["user_id"]) {
-        let ok: Option<i64> = sqlx::query_scalar("SELECT id::bigint FROM users WHERE pubsub_token=$1 AND id=$2")
-            .bind(token)
-            .bind(uid)
-            .fetch_optional(db)
-            .await
-            .ok()??;
-        ok?;
-        let account = match as_i64(&p["account_id"]) {
-            Some(a) => sqlx::query_scalar::<_, i64>("SELECT account_id FROM account_users WHERE user_id=$1 AND account_id=$2")
+        let ok: Option<i64> =
+            sqlx::query_scalar("SELECT id::bigint FROM users WHERE pubsub_token=$1 AND id=$2")
+                .bind(token)
                 .bind(uid)
-                .bind(a)
                 .fetch_optional(db)
                 .await
-                .ok()?,
+                .ok()??;
+        ok?;
+        let account = match as_i64(&p["account_id"]) {
+            Some(a) => sqlx::query_scalar::<_, i64>(
+                "SELECT account_id FROM account_users WHERE user_id=$1 AND account_id=$2",
+            )
+            .bind(uid)
+            .bind(a)
+            .fetch_optional(db)
+            .await
+            .ok()?,
             None => None,
         };
         Some(Who::User { id: uid, account })
@@ -272,7 +333,10 @@ async fn resolve(db: &PgPool, p: &Value) -> Option<Who> {
 
 async fn heartbeat(st: &AppState, who: &Who, params: &Value) {
     let (key, account) = match who {
-        Who::User { id, account: Some(a) } => ((*a, *id), *a),
+        Who::User {
+            id,
+            account: Some(a),
+        } => ((*a, *id), *a),
         Who::Contact { id, account } => ((*account, -*id), *account),
         _ => return,
     };
@@ -295,6 +359,9 @@ async fn heartbeat(st: &AppState, who: &Who, params: &Value) {
     } else {
         data.as_object_mut().unwrap().remove("contacts");
     }
-    let token = params["pubsub_token"].as_str().unwrap_or_default().to_string();
+    let token = params["pubsub_token"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     st.hub.broadcast(&[token], "presence.update", data);
 }

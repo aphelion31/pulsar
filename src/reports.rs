@@ -1,17 +1,17 @@
 //! OWNED BY A WORKER. See WORKERS.md for the contract.
 //! Routes here are mounted at /api/v2/accounts/{account_id} (reports), see main.rs.
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     response::IntoResponse,
     routing::get,
-    Json, Router,
 };
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::{PgPool, Row};
 
-use crate::common::{require_account, ApiError, ApiResult, AppState, CurrentUser};
+use crate::common::{ApiError, ApiResult, AppState, CurrentUser, require_account};
 
 #[derive(Debug, Deserialize, Default)]
 #[allow(dead_code)]
@@ -38,17 +38,32 @@ pub fn routes() -> Router<AppState> {
         .route("/reports/summary", get(reports_summary))
         .route("/reports/bot_summary", get(reports_bot_summary))
         .route("/reports/conversations", get(reports_conversations))
-        .route("/reports/conversation_traffic", get(reports_conversation_traffic))
-        .route("/reports/conversations_summary", get(reports_conversations_summary))
+        .route(
+            "/reports/conversation_traffic",
+            get(reports_conversation_traffic),
+        )
+        .route(
+            "/reports/conversations_summary",
+            get(reports_conversations_summary),
+        )
         .route("/reports/agents", get(reports_agents))
         .route("/reports/inboxes", get(reports_inboxes))
         .route("/reports/labels", get(reports_labels))
         .route("/reports/teams", get(reports_teams))
         .route("/reports/drilldown", get(reports_drilldown))
         .route("/reports/bot_metrics", get(reports_bot_metrics))
-        .route("/reports/inbox_label_matrix", get(reports_inbox_label_matrix))
-        .route("/reports/first_response_time_distribution", get(reports_first_response_time_distribution))
-        .route("/reports/outgoing_messages_count", get(reports_outgoing_messages_count))
+        .route(
+            "/reports/inbox_label_matrix",
+            get(reports_inbox_label_matrix),
+        )
+        .route(
+            "/reports/first_response_time_distribution",
+            get(reports_first_response_time_distribution),
+        )
+        .route(
+            "/reports/outgoing_messages_count",
+            get(reports_outgoing_messages_count),
+        )
         // summary_reports API matches dashboard summary_reports Vue store
         .route("/summary_reports/agent", get(summary_reports_agent))
         .route("/summary_reports/team", get(summary_reports_team))
@@ -56,8 +71,14 @@ pub fn routes() -> Router<AppState> {
         .route("/summary_reports/label", get(summary_reports_label))
         .route("/summary_reports/channel", get(summary_reports_channel))
         // live_reports
-        .route("/live_reports/conversation_metrics", get(live_conversation_metrics))
-        .route("/live_reports/grouped_conversation_metrics", get(live_grouped_conversation_metrics))
+        .route(
+            "/live_reports/conversation_metrics",
+            get(live_conversation_metrics),
+        )
+        .route(
+            "/live_reports/grouped_conversation_metrics",
+            get(live_grouped_conversation_metrics),
+        )
         // ReportPolicy#view?: every report handler above calls `require_report_viewer`.
         // year_in_review is per-user (YearInReviewsController has no report check)
         .route("/year_in_review", get(year_in_review_show))
@@ -65,9 +86,18 @@ pub fn routes() -> Router<AppState> {
 
 /// Chatwoot gates reports, summary_reports and live_reports with `authorize :report, :view?`:
 /// administrators, or custom roles with report_manage.
-async fn require_report_viewer(db: &sqlx::PgPool, user: &CurrentUser, account_id: i64) -> Result<crate::common::AccountUser, ApiError> {
+async fn require_report_viewer(
+    db: &sqlx::PgPool,
+    user: &CurrentUser,
+    account_id: i64,
+) -> Result<crate::common::AccountUser, ApiError> {
     let au = require_account(db, user, account_id).await?;
-    if au.is_admin() || au.custom_perms.as_ref().is_some_and(|p| p.iter().any(|x| x == "report_manage")) {
+    if au.is_admin()
+        || au
+            .custom_perms
+            .as_ref()
+            .is_some_and(|p| p.iter().any(|x| x == "report_manage"))
+    {
         Ok(au)
     } else {
         Err(ApiError::unauthorized())
@@ -116,25 +146,40 @@ async fn reports_index(
 
     let series = match metric {
         "conversations_count" => {
-            query_conversations_timeseries(&st.db, account_id, dim_type, dim_id, since, until, trunc).await?
+            query_conversations_timeseries(
+                &st.db, account_id, dim_type, dim_id, since, until, trunc,
+            )
+            .await?
         }
         "incoming_messages_count" => {
-            query_messages_timeseries(&st.db, account_id, 0, dim_type, dim_id, since, until, trunc).await?
+            query_messages_timeseries(&st.db, account_id, 0, dim_type, dim_id, since, until, trunc)
+                .await?
         }
         "outgoing_messages_count" => {
-            query_messages_timeseries(&st.db, account_id, 1, dim_type, dim_id, since, until, trunc).await?
+            query_messages_timeseries(&st.db, account_id, 1, dim_type, dim_id, since, until, trunc)
+                .await?
         }
         "avg_first_response_time" => {
-            query_avg_first_response_timeseries(&st.db, account_id, dim_type, dim_id, since, until, trunc).await?
+            query_avg_first_response_timeseries(
+                &st.db, account_id, dim_type, dim_id, since, until, trunc,
+            )
+            .await?
         }
         "avg_resolution_time" => {
-            query_avg_resolution_timeseries(&st.db, account_id, dim_type, dim_id, since, until, trunc).await?
+            query_avg_resolution_timeseries(
+                &st.db, account_id, dim_type, dim_id, since, until, trunc,
+            )
+            .await?
         }
         "resolutions_count" => {
-            query_resolutions_count_timeseries(&st.db, account_id, dim_type, dim_id, since, until, trunc).await?
+            query_resolutions_count_timeseries(
+                &st.db, account_id, dim_type, dim_id, since, until, trunc,
+            )
+            .await?
         }
         "reply_time" => {
-            query_reply_time_timeseries(&st.db, account_id, dim_type, dim_id, since, until, trunc).await?
+            query_reply_time_timeseries(&st.db, account_id, dim_type, dim_id, since, until, trunc)
+                .await?
         }
         "bot_resolutions_count" | "bot_handoffs_count" => {
             // ponytail: bot resolutions not tracked; return empty buckets
@@ -657,7 +702,8 @@ async fn reports_summary(
     let since = since_raw.and_then(|s| DateTime::from_timestamp(s, 0).map(|dt| dt.naive_utc()));
     let until = until_raw.and_then(|s| DateTime::from_timestamp(s, 0).map(|dt| dt.naive_utc()));
 
-    let mut current = calculate_summary_metrics(&st.db, account_id, dim_type, dim_id, since, until).await?;
+    let mut current =
+        calculate_summary_metrics(&st.db, account_id, dim_type, dim_id, since, until).await?;
 
     let prev_metrics = if let (Some(s), Some(u)) = (since_raw, until_raw) {
         let diff = u - s;
@@ -665,7 +711,8 @@ async fn reports_summary(
         let prev_u = s;
         let prev_since = DateTime::from_timestamp(prev_s, 0).map(|dt| dt.naive_utc());
         let prev_until = DateTime::from_timestamp(prev_u, 0).map(|dt| dt.naive_utc());
-        calculate_summary_metrics(&st.db, account_id, dim_type, dim_id, prev_since, prev_until).await?
+        calculate_summary_metrics(&st.db, account_id, dim_type, dim_id, prev_since, prev_until)
+            .await?
     } else {
         json!({
             "conversations_count": 0,
@@ -895,10 +942,11 @@ async fn reports_conversations_summary(
     let since = parse_ts(params.since.as_deref());
     let until = parse_ts(params.r#until.as_deref());
 
-    let summary = match calculate_summary_metrics(&st.db, account_id, "account", None, since, until).await {
-        Ok(s) => s,
-        Err(e) => return e.into_response(),
-    };
+    let summary =
+        match calculate_summary_metrics(&st.db, account_id, "account", None, since, until).await {
+            Ok(s) => s,
+            Err(e) => return e.into_response(),
+        };
 
     // Chatwoot PR #15686: BOM so Excel opens the file as UTF-8 instead of the system codepage.
     let csv_content = format!(
@@ -915,7 +963,10 @@ async fn reports_conversations_summary(
     (
         [
             ("content-type", "text/csv"),
-            ("content-disposition", "attachment; filename=conversations_summary.csv"),
+            (
+                "content-disposition",
+                "attachment; filename=conversations_summary.csv",
+            ),
         ],
         csv_content,
     )
@@ -1400,7 +1451,9 @@ async fn reports_drilldown(
     Query(params): Query<ReportParams>,
 ) -> ApiResult {
     let _au = require_report_viewer(&st.db, &user, account_id).await?;
-    let metric = params.metric.unwrap_or_else(|| "conversations_count".into());
+    let metric = params
+        .metric
+        .unwrap_or_else(|| "conversations_count".into());
     Ok(Json(json!({
         "meta": {
             "metric": metric,
@@ -1441,7 +1494,13 @@ async fn reports_bot_metrics(
     .bind(until)
     .fetch_one(&st.db)
     .await?;
-    let rate = |n: i64| if convs == 0 { 0 } else { (n as f64 / convs as f64 * 100.0) as i64 };
+    let rate = |n: i64| {
+        if convs == 0 {
+            0
+        } else {
+            (n as f64 / convs as f64 * 100.0) as i64
+        }
+    };
     Ok(Json(json!({
         "conversation_count": convs,
         "message_count": msgs,
@@ -1490,16 +1549,23 @@ async fn year_in_review_show(
     // Chatwoot api/v2/accounts/year_in_reviews_controller.rb: year defaults to 2025, result cached in user.ui_settings.
     let year: i32 = q.get("year").and_then(|y| y.parse().ok()).unwrap_or(2025);
     let cache_key = format!("year_in_review_{account_id}_{year}");
-    let cached: Option<Value> = sqlx::query_scalar("SELECT ui_settings -> $1 FROM users WHERE id = $2")
-        .bind(&cache_key)
-        .bind(user.id)
-        .fetch_one(&st.db)
-        .await?;
+    let cached: Option<Value> =
+        sqlx::query_scalar("SELECT ui_settings -> $1 FROM users WHERE id = $2")
+            .bind(&cache_key)
+            .bind(user.id)
+            .fetch_one(&st.db)
+            .await?;
     if let Some(c) = cached.filter(|v| !v.is_null()) {
         return Ok(Json(c));
     }
-    let start = chrono::NaiveDate::from_ymd_opt(year, 1, 1).ok_or_else(|| ApiError::bad("invalid year"))?.and_hms_opt(0, 0, 0).unwrap();
-    let end = chrono::NaiveDate::from_ymd_opt(year, 12, 31).ok_or_else(|| ApiError::bad("invalid year"))?.and_hms_opt(23, 59, 59).unwrap();
+    let start = chrono::NaiveDate::from_ymd_opt(year, 1, 1)
+        .ok_or_else(|| ApiError::bad("invalid year"))?
+        .and_hms_opt(0, 0, 0)
+        .unwrap();
+    let end = chrono::NaiveDate::from_ymd_opt(year, 12, 31)
+        .ok_or_else(|| ApiError::bad("invalid year"))?
+        .and_hms_opt(23, 59, 59)
+        .unwrap();
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*)::bigint FROM conversations WHERE account_id = $1 AND assignee_id = $2 AND created_at BETWEEN $3 AND $4")
         .bind(account_id as i32)
         .bind(user.id as i32)

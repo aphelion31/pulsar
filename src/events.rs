@@ -12,7 +12,7 @@
 
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::common::AppState;
 
@@ -28,7 +28,8 @@ pub struct Event {
     pub changed: Option<Value>,
 }
 
-type Handler = Arc<dyn Fn(AppState, Event) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+type Handler =
+    Arc<dyn Fn(AppState, Event) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
 
 static TX: OnceLock<UnboundedSender<Event>> = OnceLock::new();
 
@@ -78,7 +79,10 @@ pub fn start(st: AppState, listeners: Vec<(&'static str, Handler)>) {
                 let db = st.db.clone();
                 tokio::spawn(async move {
                     futures::future::join_all(tasks).await;
-                    let _ = sqlx::query("DELETE FROM pulsar_events WHERE id = $1").bind(id).execute(&db).await;
+                    let _ = sqlx::query("DELETE FROM pulsar_events WHERE id = $1")
+                        .bind(id)
+                        .execute(&db)
+                        .await;
                 });
             }
         }
@@ -87,9 +91,17 @@ pub fn start(st: AppState, listeners: Vec<(&'static str, Handler)>) {
 
 /// Re-dispatch events a previous process left behind (crash or restart mid-delivery).
 async fn replay(db: &sqlx::PgPool, out: &UnboundedSender<(i64, Event)>) {
-    let dropped = sqlx::query("DELETE FROM pulsar_events WHERE attempts >= $1").bind(MAX_ATTEMPTS).execute(db).await.map(|r| r.rows_affected()).unwrap_or(0);
+    let dropped = sqlx::query("DELETE FROM pulsar_events WHERE attempts >= $1")
+        .bind(MAX_ATTEMPTS)
+        .execute(db)
+        .await
+        .map(|r| r.rows_affected())
+        .unwrap_or(0);
     if dropped > 0 {
-        tracing::error!(dropped, "dropped events that failed to complete {MAX_ATTEMPTS} times");
+        tracing::error!(
+            dropped,
+            "dropped events that failed to complete {MAX_ATTEMPTS} times"
+        );
     }
     let mut rows: Vec<(i64, String, i64, Value, Option<Value>)> = sqlx::query_as(
         "UPDATE pulsar_events SET attempts = attempts + 1 RETURNING id, name, account_id, data, changed",
@@ -102,14 +114,27 @@ async fn replay(db: &sqlx::PgPool, out: &UnboundedSender<(i64, Event)>) {
         tracing::info!(count = rows.len(), "replaying undelivered events");
     }
     for (id, name, account_id, data, changed) in rows {
-        let _ = out.send((id, Event { name, account_id, data, changed }));
+        let _ = out.send((
+            id,
+            Event {
+                name,
+                account_id,
+                data,
+                changed,
+            },
+        ));
     }
 }
 
 /// Queue an event for the async listeners. Never blocks, never fails the caller.
 pub fn publish(name: &str, account_id: i64, data: Value, changed: Option<Value>) {
     if let Some(tx) = TX.get() {
-        let _ = tx.send(Event { name: name.to_string(), account_id, data, changed });
+        let _ = tx.send(Event {
+            name: name.to_string(),
+            account_id,
+            data,
+            changed,
+        });
     }
 }
 

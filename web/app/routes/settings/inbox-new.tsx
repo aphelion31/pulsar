@@ -83,6 +83,34 @@ export default function InboxNewWizard() {
   const [greetingMessage, setGreetingMessage] = useState("");
   const [webhookUrl, setWebhookUrl] = useState("");
   const [emailAddress, setEmailAddress] = useState("");
+  const [botToken, setBotToken] = useState("");
+  const [lineChannelId, setLineChannelId] = useState("");
+  const [lineChannelSecret, setLineChannelSecret] = useState("");
+  const [lineChannelToken, setLineChannelToken] = useState("");
+  const [smsProvider, setSmsProvider] = useState<"twilio" | "bandwidth">("twilio");
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [accountSid, setAccountSid] = useState("");
+  const [authToken, setAuthToken] = useState("");
+  const [messagingServiceSid, setMessagingServiceSid] = useState("");
+  const [bwAccountId, setBwAccountId] = useState("");
+  const [bwApplicationId, setBwApplicationId] = useState("");
+  const [bwApiKey, setBwApiKey] = useState("");
+  const [bwApiSecret, setBwApiSecret] = useState("");
+  const [waMode, setWaMode] = useState<"manual" | "embedded">("manual");
+  const [waPhoneId, setWaPhoneId] = useState("");
+  const [waWabaId, setWaWabaId] = useState("");
+  const [waAccessToken, setWaAccessToken] = useState("");
+  const [waAppSecret, setWaAppSecret] = useState("");
+  const [waCode, setWaCode] = useState("");
+  const [waPreview, setWaPreview] = useState<{ suggested_inbox_name?: string; display_phone_number?: string } | null>(null);
+  const [fbUserToken, setFbUserToken] = useState("");
+  const [fbPages, setFbPages] = useState<Array<{ id: string; name: string; access_token: string }>>([]);
+  const [fbPageId, setFbPageId] = useState("");
+  const [voiceTwimlAppSid, setVoiceTwimlAppSid] = useState("");
+  const [voiceApiKeySid, setVoiceApiKeySid] = useState("");
+  const [voiceApiKeySecret, setVoiceApiKeySecret] = useState("");
+  const [waInboxId, setWaInboxId] = useState("");
+  const [waInboxes, setWaInboxes] = useState<Inbox[]>([]);
 
   // Step 3 agents state
   const [allAgents, setAllAgents] = useState<Agent[]>([]);
@@ -120,7 +148,14 @@ export default function InboxNewWizard() {
     },
   ];
 
-  const channelCards = [
+  const channelCards: Array<{
+    key: string;
+    title: string;
+    description: string;
+    icon: typeof Globe;
+    active: boolean;
+    beta?: boolean;
+  }> = [
     {
       key: "website",
       title: t("INBOX_MGMT.ADD.AUTH.CHANNEL.WEBSITE.TITLE"),
@@ -133,21 +168,21 @@ export default function InboxNewWizard() {
       title: t("INBOX_MGMT.ADD.AUTH.CHANNEL.FACEBOOK.TITLE"),
       description: t("INBOX_MGMT.ADD.AUTH.CHANNEL.FACEBOOK.DESCRIPTION"),
       icon: MessageCircle,
-      active: false,
+      active: true,
     },
     {
       key: "whatsapp",
       title: t("INBOX_MGMT.ADD.AUTH.CHANNEL.WHATSAPP.TITLE"),
       description: t("INBOX_MGMT.ADD.AUTH.CHANNEL.WHATSAPP.DESCRIPTION"),
       icon: Phone,
-      active: false,
+      active: true,
     },
     {
       key: "sms",
       title: t("INBOX_MGMT.ADD.AUTH.CHANNEL.SMS.TITLE"),
       description: t("INBOX_MGMT.ADD.AUTH.CHANNEL.SMS.DESCRIPTION"),
       icon: Smartphone,
-      active: false,
+      active: true,
     },
     {
       key: "email",
@@ -168,37 +203,49 @@ export default function InboxNewWizard() {
       title: t("INBOX_MGMT.ADD.AUTH.CHANNEL.TELEGRAM.TITLE"),
       description: t("INBOX_MGMT.ADD.AUTH.CHANNEL.TELEGRAM.DESCRIPTION"),
       icon: Send,
-      active: false,
+      active: true,
     },
     {
       key: "line",
       title: t("INBOX_MGMT.ADD.AUTH.CHANNEL.LINE.TITLE"),
       description: t("INBOX_MGMT.ADD.AUTH.CHANNEL.LINE.DESCRIPTION"),
       icon: MessageSquare,
-      active: false,
+      active: true,
     },
     {
       key: "instagram",
       title: t("INBOX_MGMT.ADD.AUTH.CHANNEL.INSTAGRAM.TITLE"),
       description: t("INBOX_MGMT.ADD.AUTH.CHANNEL.INSTAGRAM.DESCRIPTION"),
       icon: Camera,
-      active: false,
+      active: true,
+    },
+    {
+      key: "tiktok",
+      title: "TikTok",
+      description: "Connect your TikTok Business account for direct messages.",
+      icon: MessageSquare,
+      active: true,
+    },
+    {
+      key: "twitter",
+      title: "X (Twitter)",
+      description: "Connect your X account for direct messages and replies.",
+      icon: MessageCircle,
+      active: true,
     },
     {
       key: "voice",
       title: t("INBOX_MGMT.ADD.AUTH.CHANNEL.VOICE.TITLE"),
       description: t("INBOX_MGMT.ADD.AUTH.CHANNEL.VOICE.DESCRIPTION"),
       icon: PhoneCall,
-      active: false,
-      beta: true,
+      active: true,
     },
     {
       key: "whatsapp_call",
       title: t("INBOX_MGMT.ADD.AUTH.CHANNEL.WHATSAPP_CALL.TITLE"),
       description: t("INBOX_MGMT.ADD.AUTH.CHANNEL.WHATSAPP_CALL.DESCRIPTION"),
       icon: PhoneForwarded,
-      active: false,
-      beta: true,
+      active: true,
     },
   ];
 
@@ -301,6 +348,113 @@ export default function InboxNewWizard() {
             email: emailAddress.trim(),
           },
         };
+      } else if (sub_page === "telegram") {
+        payload = {
+          name: inboxName.trim() || "Telegram Bot",
+          channel: { type: "telegram", bot_token: botToken.trim() },
+        };
+      } else if (sub_page === "line") {
+        payload = {
+          name: inboxName.trim(),
+          channel: {
+            type: "line",
+            line_channel_id: lineChannelId.trim(),
+            line_channel_secret: lineChannelSecret.trim(),
+            line_channel_token: lineChannelToken.trim(),
+          },
+        };
+      } else if (sub_page === "sms") {
+        if (smsProvider === "twilio") {
+          const res = await api<Inbox>(`${acct(accountId)}/channels/twilio_channel`, {
+            method: "POST",
+            json: {
+              twilio_channel: {
+                name: inboxName.trim(),
+                medium: "sms",
+                account_sid: accountSid.trim(),
+                auth_token: authToken.trim(),
+                phone_number: phoneNumber.trim() || undefined,
+                messaging_service_sid: messagingServiceSid.trim() || undefined,
+              },
+            },
+          });
+          navigate(`/accounts/${accountId}/settings/inboxes/new/${res.id}/agents`, { replace: true });
+          return;
+        }
+        payload = {
+          name: inboxName.trim(),
+          channel: {
+            type: "sms",
+            phone_number: phoneNumber.trim(),
+            provider: "bandwidth",
+            provider_config: {
+              account_id: bwAccountId.trim(),
+              application_id: bwApplicationId.trim(),
+              api_key: bwApiKey.trim(),
+              api_secret: bwApiSecret.trim(),
+            },
+          },
+        };
+      } else if (sub_page === "whatsapp") {
+        if (waMode === "embedded") {
+          const res = await api<Inbox>(`${acct(accountId)}/whatsapp/authorization`, {
+            method: "POST",
+            json: {
+              code: waCode.trim(),
+              waba_id: waWabaId.trim(),
+              phone_number_id: waPhoneId.trim() || undefined,
+            },
+          });
+          navigate(`/accounts/${accountId}/settings/inboxes/new/${res.id}/agents`, { replace: true });
+          return;
+        }
+        const res = await api<Inbox>(`${acct(accountId)}/whatsapp/manual/connect`, {
+          method: "POST",
+          json: {
+            inbox_name: inboxName.trim() || waPreview?.suggested_inbox_name || undefined,
+            waba_id: waWabaId.trim(),
+            phone_number_id: waPhoneId.trim(),
+            access_token: waAccessToken.trim(),
+            app_secret: waAppSecret.trim(),
+          },
+        });
+        navigate(`/accounts/${accountId}/settings/inboxes/new/${res.id}/agents`, { replace: true });
+        return;
+      } else if (sub_page === "facebook") {
+        const page = fbPages.find((p) => p.id === fbPageId);
+        if (!page) throw new Error("Select a Facebook Page");
+        const res = await api<Inbox>(`${acct(accountId)}/callbacks/register_facebook_page`, {
+          method: "POST",
+          json: {
+            page_id: page.id,
+            inbox_name: inboxName.trim() || page.name,
+            page_access_token: page.access_token,
+            user_access_token: fbUserToken.trim(),
+          },
+        });
+        navigate(`/accounts/${accountId}/settings/inboxes/new/${res.id}/agents`, { replace: true });
+        return;
+      } else if (sub_page === "voice") {
+        payload = {
+          name: inboxName.trim(),
+          channel: {
+            type: "voice",
+            phone_number: phoneNumber.trim(),
+            account_sid: accountSid.trim(),
+            auth_token: authToken.trim(),
+            twiml_app_sid: voiceTwimlAppSid.trim() || undefined,
+            api_key_sid: voiceApiKeySid.trim() || undefined,
+            api_key_secret: voiceApiKeySecret.trim() || undefined,
+            voice_enabled: true,
+          },
+        };
+      } else if (sub_page === "whatsapp_call") {
+        if (!waInboxId) throw new Error("Select a WhatsApp inbox");
+        await api(`${acct(accountId)}/inboxes/${waInboxId}/enable_whatsapp_calling`, {
+          method: "POST",
+        });
+        navigate(`/accounts/${accountId}/calls`, { replace: true });
+        return;
       }
 
       const res = await api<Inbox>(`${acct(accountId)}/inboxes`, {
@@ -744,7 +898,35 @@ export default function InboxNewWizard() {
                         </span>
                       </label>
 
-                      <div className="mt-4 flex justify-end gap-2">
+                      <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex gap-2">
+                          <Button
+                            outline
+                            slate
+                            type="button"
+                            onClick={async () => {
+                              const r = await api<{ url: string }>(`${acct(accountId)}/google/authorization`, {
+                                method: "POST",
+                                json: { email: emailAddress.trim() },
+                              });
+                              window.location.href = r.url;
+                            }}
+                            label="Connect Google"
+                          />
+                          <Button
+                            outline
+                            slate
+                            type="button"
+                            onClick={async () => {
+                              const r = await api<{ url: string }>(`${acct(accountId)}/microsoft/authorization`, {
+                                method: "POST",
+                                json: { email: emailAddress.trim() },
+                              });
+                              window.location.href = r.url;
+                            }}
+                            label="Connect Microsoft"
+                          />
+                        </div>
                         <Button
                           solid
                           blue
@@ -758,6 +940,250 @@ export default function InboxNewWizard() {
                       </div>
                     </form>
                   </>
+                ) : sub_page === "telegram" ? (
+                  <form onSubmit={handleCreateInbox} className="flex flex-col gap-4">
+                    <h2 className="text-xl font-medium text-n-slate-12">Telegram Bot</h2>
+                    <input
+                      value={inboxName}
+                      onChange={(e) => setInboxName(e.target.value)}
+                      placeholder="Inbox name (optional)"
+                      className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm"
+                    />
+                    <input
+                      required
+                      value={botToken}
+                      onChange={(e) => setBotToken(e.target.value)}
+                      placeholder="Telegram Bot Token"
+                      className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono"
+                    />
+                    <div className="flex justify-end">
+                      <Button solid blue type="submit" isLoading={loading} label="Create Telegram Channel" />
+                    </div>
+                  </form>
+                ) : sub_page === "line" ? (
+                  <form onSubmit={handleCreateInbox} className="flex flex-col gap-4">
+                    <h2 className="text-xl font-medium text-n-slate-12">LINE Channel</h2>
+                    <input required value={inboxName} onChange={(e) => setInboxName(e.target.value)} placeholder="Inbox name" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                    <input required value={lineChannelId} onChange={(e) => setLineChannelId(e.target.value)} placeholder="LINE Channel ID" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                    <input required value={lineChannelSecret} onChange={(e) => setLineChannelSecret(e.target.value)} placeholder="LINE Channel Secret" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                    <input required value={lineChannelToken} onChange={(e) => setLineChannelToken(e.target.value)} placeholder="LINE Channel Access Token" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                    <div className="flex justify-end">
+                      <Button solid blue type="submit" isLoading={loading} label="Create LINE Channel" />
+                    </div>
+                  </form>
+                ) : sub_page === "sms" ? (
+                  <form onSubmit={handleCreateInbox} className="flex flex-col gap-4">
+                    <h2 className="text-xl font-medium text-n-slate-12">SMS Channel</h2>
+                    <select value={smsProvider} onChange={(e) => setSmsProvider(e.target.value as "twilio" | "bandwidth")} className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm">
+                      <option value="twilio">Twilio</option>
+                      <option value="bandwidth">Bandwidth</option>
+                    </select>
+                    <input required value={inboxName} onChange={(e) => setInboxName(e.target.value)} placeholder="Inbox name" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                    <input value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} placeholder="+15551234567" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                    {smsProvider === "twilio" ? (
+                      <>
+                        <input required value={accountSid} onChange={(e) => setAccountSid(e.target.value)} placeholder="Account SID" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                        <input required value={authToken} onChange={(e) => setAuthToken(e.target.value)} placeholder="Auth Token" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                        <input value={messagingServiceSid} onChange={(e) => setMessagingServiceSid(e.target.value)} placeholder="Messaging Service SID (optional)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                      </>
+                    ) : (
+                      <>
+                        <input required value={bwAccountId} onChange={(e) => setBwAccountId(e.target.value)} placeholder="Bandwidth Account ID" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                        <input required value={bwApplicationId} onChange={(e) => setBwApplicationId(e.target.value)} placeholder="Application ID" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                        <input required value={bwApiKey} onChange={(e) => setBwApiKey(e.target.value)} placeholder="API Key" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                        <input required value={bwApiSecret} onChange={(e) => setBwApiSecret(e.target.value)} placeholder="API Secret" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                      </>
+                    )}
+                    <div className="flex justify-end">
+                      <Button solid blue type="submit" isLoading={loading} label="Create SMS Channel" />
+                    </div>
+                  </form>
+                ) : sub_page === "whatsapp" ? (
+                  <form onSubmit={handleCreateInbox} className="flex flex-col gap-4">
+                    <h2 className="text-xl font-medium text-n-slate-12">WhatsApp Cloud API</h2>
+                    <div className="flex gap-2">
+                      <Button outline slate sm type="button" onClick={() => setWaMode("manual")} label="Manual Setup" />
+                      <Button outline slate sm type="button" onClick={() => setWaMode("embedded")} label="Embedded Signup" />
+                    </div>
+                    {waMode === "embedded" ? (
+                      <>
+                        <input required value={waCode} onChange={(e) => setWaCode(e.target.value)} placeholder="OAuth authorization code" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                        <input required value={waWabaId} onChange={(e) => setWaWabaId(e.target.value)} placeholder="WABA ID" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                        <input value={waPhoneId} onChange={(e) => setWaPhoneId(e.target.value)} placeholder="Phone Number ID (optional)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                      </>
+                    ) : (
+                      <>
+                        <input value={inboxName} onChange={(e) => setInboxName(e.target.value)} placeholder="Inbox name (optional)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                        <input required value={waWabaId} onChange={(e) => setWaWabaId(e.target.value)} placeholder="WhatsApp Business Account ID (WABA ID)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                        <input required value={waPhoneId} onChange={(e) => setWaPhoneId(e.target.value)} placeholder="Phone Number ID" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                        <input required value={waAccessToken} onChange={(e) => setWaAccessToken(e.target.value)} placeholder="Permanent Access Token" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                        <input value={waAppSecret} onChange={(e) => setWaAppSecret(e.target.value)} placeholder="App Secret" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono" />
+                        {waPreview && (
+                          <div className="rounded-lg border border-n-teal-6 bg-n-teal-2 p-3 text-xs text-n-teal-11">
+                            Verified: {waPreview.display_phone_number} ({waPreview.suggested_inbox_name})
+                          </div>
+                        )}
+                      </>
+                    )}
+                    <div className="flex justify-end gap-2">
+                      {waMode === "manual" && (
+                        <Button
+                          outline
+                          slate
+                          type="button"
+                          onClick={async () => {
+                            setError("");
+                            try {
+                              const prev = await api<{ suggested_inbox_name?: string; display_phone_number?: string }>(
+                                `${acct(accountId)}/whatsapp/manual/preview`,
+                                {
+                                  method: "POST",
+                                  json: { waba_id: waWabaId.trim(), phone_number_id: waPhoneId.trim(), access_token: waAccessToken.trim() },
+                                }
+                              );
+                              setWaPreview(prev);
+                              if (!inboxName && prev.suggested_inbox_name) setInboxName(prev.suggested_inbox_name);
+                            } catch (err) {
+                              setError(err instanceof Error ? err.message : "Validation failed");
+                            }
+                          }}
+                          label="Preview & Verify"
+                        />
+                      )}
+                      <Button solid blue type="submit" isLoading={loading} label="Connect WhatsApp" />
+                    </div>
+                  </form>
+                ) : sub_page === "facebook" ? (
+                  <form onSubmit={handleCreateInbox} className="flex flex-col gap-4">
+                    <h2 className="text-xl font-medium text-n-slate-12">Facebook Messenger</h2>
+                    <input
+                      required
+                      value={fbUserToken}
+                      onChange={(e) => setFbUserToken(e.target.value)}
+                      placeholder="Facebook User Access Token"
+                      className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm font-mono"
+                    />
+                    <Button
+                      outline
+                      slate
+                      type="button"
+                      onClick={async () => {
+                        setError("");
+                        try {
+                          const r = await api<{
+                            data: {
+                              pages: Array<{ id: string; name: string; access_token: string }>;
+                              access_token?: string;
+                            };
+                          }>(
+                            `${acct(accountId)}/callbacks/facebook_pages`,
+                            { method: "POST", json: { omniauth_token: fbUserToken.trim() } }
+                          );
+                          const list = r.data?.pages || [];
+                          setFbPages(list);
+                          if (r.data?.access_token) setFbUserToken(r.data.access_token);
+                          if (list[0]) setFbPageId(list[0].id);
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : "Failed to fetch pages");
+                        }
+                      }}
+                      label="Load Facebook Pages"
+                    />
+                    {fbPages.length > 0 && (
+                      <>
+                        <select value={fbPageId} onChange={(e) => setFbPageId(e.target.value)} className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm">
+                          {fbPages.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name} ({p.id})
+                            </option>
+                          ))}
+                        </select>
+                        <input value={inboxName} onChange={(e) => setInboxName(e.target.value)} placeholder="Inbox name (optional)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                        <Button solid blue type="submit" isLoading={loading} label="Connect Page" />
+                      </>
+                    )}
+                  </form>
+                ) : sub_page === "instagram" || sub_page === "tiktok" || sub_page === "twitter" ? (
+                  <div className="flex flex-col gap-4">
+                    <h2 className="text-xl font-medium text-n-slate-12 capitalize">Connect {sub_page}</h2>
+                    <p className="text-sm text-n-slate-11">
+                      Authorize Pulsar to receive and reply to direct messages via {sub_page}.
+                    </p>
+                    <div>
+                      <Button
+                        solid
+                        blue
+                        type="button"
+                        isLoading={loading}
+                        onClick={async () => {
+                          setLoading(true);
+                          setError("");
+                          try {
+                            const res = await api<{ url: string }>(`${acct(accountId)}/${sub_page}/authorization`, {
+                              method: "POST",
+                              json: { return_to: "web" },
+                            });
+                            window.location.href = res.url;
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : "OAuth initiation failed");
+                            setLoading(false);
+                          }
+                        }}
+                        label={`Authorize ${sub_page}`}
+                      />
+                    </div>
+                  </div>
+                ) : sub_page === "voice" ? (
+                  <>
+                    <div className="mb-6">
+                      <h2 className="text-xl font-medium text-n-slate-12">Twilio Voice</h2>
+                      <p className="mt-1 text-sm text-n-slate-11">Connect a Twilio Voice number for inbound and outbound browser calls.</p>
+                    </div>
+                    <form onSubmit={handleCreateInbox} className="flex flex-col gap-4">
+                      <input required value={inboxName} onChange={(e) => setInboxName(e.target.value)} placeholder="Inbox name (e.g. Support Voice)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                      <input required value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} placeholder="Twilio phone number (+14155550100)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                      <input required value={accountSid} onChange={(e) => setAccountSid(e.target.value)} placeholder="Twilio Account SID (AC...)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                      <input required type="password" value={authToken} onChange={(e) => setAuthToken(e.target.value)} placeholder="Twilio Auth Token" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                      <input value={voiceTwimlAppSid} onChange={(e) => setVoiceTwimlAppSid(e.target.value)} placeholder="TwiML App SID (optional)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                      <div className="grid grid-cols-2 gap-3">
+                        <input value={voiceApiKeySid} onChange={(e) => setVoiceApiKeySid(e.target.value)} placeholder="API Key SID (optional)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                        <input type="password" value={voiceApiKeySecret} onChange={(e) => setVoiceApiKeySecret(e.target.value)} placeholder="API Key Secret (optional)" className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm" />
+                      </div>
+                      <div className="mt-4 flex justify-end">
+                        <Button solid blue type="submit" isLoading={loading} label="Create Voice Inbox" />
+                      </div>
+                    </form>
+                  </>
+                ) : sub_page === "whatsapp_call" ? (
+                  <form onSubmit={handleCreateInbox} className="flex flex-col gap-4">
+                    <h2 className="text-xl font-medium text-n-slate-12">Enable WhatsApp Calling</h2>
+                    <p className="text-sm text-n-slate-11">Load an existing WhatsApp Cloud inbox in this account and enable voice calling on it.</p>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        onClick={async () => {
+                          setError("");
+                          try {
+                            const res = await api<{ payload: Inbox[] }>(`${acct(accountId)}/inboxes`);
+                            const list = (res.payload || []).filter((i) => i.channel_type === "Channel::Whatsapp");
+                            setWaInboxes(list);
+                            if (list[0]) setWaInboxId(String(list[0].id));
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : "Failed to load WhatsApp inboxes");
+                          }
+                        }}
+                        label="Load WhatsApp Inboxes"
+                      />
+                    </div>
+                    {waInboxes.length > 0 && (
+                      <>
+                        <select value={waInboxId} onChange={(e) => setWaInboxId(e.target.value)} className="h-10 rounded-lg border border-n-weak bg-n-background px-3 text-sm">
+                          {waInboxes.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                        </select>
+                        <Button solid blue type="submit" isLoading={loading} label="Enable WhatsApp Calling" />
+                      </>
+                    )}
+                  </form>
                 ) : (
                   <div className="text-sm text-n-slate-11">
                     Channel configuration not supported in this wizard.

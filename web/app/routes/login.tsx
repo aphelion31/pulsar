@@ -39,6 +39,10 @@ export default function Login() {
             {busy ? "Signing in" : "Sign in"}
           </Button>
         </form>
+        <div className="mt-4 flex items-center justify-between text-sm text-ink-2">
+          <Link className="underline" to="/login/sso">Sign in with SSO</Link>
+          <Link className="underline" to="/auth/signup">Create account</Link>
+        </div>
       </div>
     </main>
   );

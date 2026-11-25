@@ -3,51 +3,92 @@
 use std::collections::HashMap;
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     routing::{get, patch, post},
-    Json, Router,
 };
 use chrono::NaiveDateTime;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::common::*;
 
 const NOTIFICATION_TYPES: [&str; 9] = [
-    "conversation_creation", "conversation_assignment", "assigned_conversation_new_message", "conversation_mention",
-    "participating_conversation_new_message", "sla_missed_first_response", "sla_missed_next_response",
-    "sla_missed_resolution", "voice_call_missed",
+    "conversation_creation",
+    "conversation_assignment",
+    "assigned_conversation_new_message",
+    "conversation_mention",
+    "participating_conversation_new_message",
+    "sla_missed_first_response",
+    "sla_missed_next_response",
+    "sla_missed_resolution",
+    "voice_call_missed",
 ];
 
 pub fn routes() -> Router<AppState> {
-    let empty_arr = || get(|| async { Json(json!([])) });
-    let empty_payload = || get(|| async { Json(json!({ "payload": [] })) });
     Router::new()
         .route("/labels", get(labels_index).post(labels_create))
-        .route("/labels/{id}", get(labels_show).patch(labels_update).put(labels_update).delete(labels_destroy))
+        .route(
+            "/labels/{id}",
+            get(labels_show)
+                .patch(labels_update)
+                .put(labels_update)
+                .delete(labels_destroy),
+        )
         .route("/canned_responses", get(canned_index).post(canned_create))
-        .route("/canned_responses/{id}", patch(canned_update).put(canned_update).delete(canned_destroy))
-        .route("/custom_attribute_definitions", get(cad_index).post(cad_create))
-        .route("/custom_attribute_definitions/{id}", get(cad_show).patch(cad_update).put(cad_update).delete(cad_destroy))
+        .route(
+            "/canned_responses/{id}",
+            patch(canned_update)
+                .put(canned_update)
+                .delete(canned_destroy),
+        )
+        .route(
+            "/custom_attribute_definitions",
+            get(cad_index).post(cad_create),
+        )
+        .route(
+            "/custom_attribute_definitions/{id}",
+            get(cad_show)
+                .patch(cad_update)
+                .put(cad_update)
+                .delete(cad_destroy),
+        )
         .route("/custom_filters", get(cf_index).post(cf_create))
-        .route("/custom_filters/{id}", get(cf_show).patch(cf_update).put(cf_update).delete(cf_destroy))
+        .route(
+            "/custom_filters/{id}",
+            get(cf_show)
+                .patch(cf_update)
+                .put(cf_update)
+                .delete(cf_destroy),
+        )
         .route("/notifications", get(notif_index))
         .route("/notifications/unread_count", get(notif_unread))
         .route("/notifications/read_all", post(notif_read_all))
         .route("/notifications/destroy_all", post(notif_destroy_all))
-        .route("/notifications/{id}", patch(notif_read).put(notif_read).delete(notif_destroy))
+        .route(
+            "/notifications/{id}",
+            patch(notif_read).put(notif_read).delete(notif_destroy),
+        )
         .route("/notifications/{id}/snooze", post(notif_snooze))
         .route("/notifications/{id}/unread", post(notif_unread_one))
-        .route("/notification_settings", get(ns_show).patch(ns_update).put(ns_update))
+        .route(
+            "/notification_settings",
+            get(ns_show).patch(ns_update).put(ns_update),
+        )
         .route("/cache_keys", get(cache_keys))
         .route("/search", get(search_all))
         .route("/search/contacts", get(search_all))
         .route("/search/conversations", get(search_all))
         .route("/search/messages", get(search_all))
-        // ponytail: unported settings pages; empty data in the shape each Vue store expects
-        .route("/working_hours", empty_arr())
-        .route("/sla_policies", empty_payload())
-        .route("/integrations/apps", empty_payload())
-        .route("/captain/assistants", get(|| async { Json(json!({ "payload": [], "meta": {} })) }))
+        .route("/working_hours", get(working_hours_index))
+        .route("/integrations/apps", get(integration_apps_index))
+        .route("/integrations/apps/{id}", get(integration_apps_show))
+        .route(
+            "/branded_email_layout",
+            get(branded_email_layout_show)
+                .put(branded_email_layout_update)
+                .patch(branded_email_layout_update),
+        )
+        .route("/reporting_events", get(reporting_events_index))
 }
 
 fn s(b: &Value, k: &str) -> Option<String> {
@@ -71,47 +112,81 @@ impl Label {
 }
 const LABEL_COLS: &str = "id, title, description, color, show_on_sidebar";
 
-async fn labels_index(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>) -> ApiResult {
+async fn labels_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    let rows: Vec<Label> = sqlx::query_as(&format!("SELECT {LABEL_COLS} FROM labels WHERE account_id = $1 ORDER BY title"))
-        .bind(account_id)
-        .fetch_all(&st.db)
-        .await?;
-    Ok(Json(json!({ "payload": rows.iter().map(Label::json).collect::<Vec<_>>() })))
+    let rows: Vec<Label> = sqlx::query_as(&format!(
+        "SELECT {LABEL_COLS} FROM labels WHERE account_id = $1 ORDER BY title"
+    ))
+    .bind(account_id)
+    .fetch_all(&st.db)
+    .await?;
+    Ok(Json(
+        json!({ "payload": rows.iter().map(Label::json).collect::<Vec<_>>() }),
+    ))
 }
 
-async fn labels_show(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn labels_show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    let l: Label = sqlx::query_as(&format!("SELECT {LABEL_COLS} FROM labels WHERE id = $1 AND account_id = $2"))
-        .bind(id)
-        .bind(account_id)
-        .fetch_one(&st.db)
-        .await?;
+    let l: Label = sqlx::query_as(&format!(
+        "SELECT {LABEL_COLS} FROM labels WHERE id = $1 AND account_id = $2"
+    ))
+    .bind(id)
+    .bind(account_id)
+    .fetch_one(&st.db)
+    .await?;
     Ok(Json(l.json()))
 }
 
 /// Rails Label: title lowercase, letters/digits/_/- only, unique per account.
 fn label_title(b: &Value) -> Result<Option<String>, ApiError> {
-    let Some(t) = b["title"].as_str() else { return Ok(None) };
+    let Some(t) = b["title"].as_str() else {
+        return Ok(None);
+    };
     let t = t.trim().to_lowercase();
-    if t.is_empty() || !t.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if t.is_empty()
+        || !t
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(ApiError::bad("Title is invalid"));
     }
     Ok(Some(t))
 }
 
-async fn title_taken(st: &AppState, account_id: i64, title: &str, except: i64) -> Result<bool, ApiError> {
-    let r: Option<i32> = sqlx::query_scalar("SELECT 1 FROM labels WHERE account_id = $1 AND title = $2 AND id <> $3")
-        .bind(account_id)
-        .bind(title)
-        .bind(except)
-        .fetch_optional(&st.db)
-        .await?;
+async fn title_taken(
+    st: &AppState,
+    account_id: i64,
+    title: &str,
+    except: i64,
+) -> Result<bool, ApiError> {
+    let r: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM labels WHERE account_id = $1 AND title = $2 AND id <> $3",
+    )
+    .bind(account_id)
+    .bind(title)
+    .bind(except)
+    .fetch_optional(&st.db)
+    .await?;
     Ok(r.is_some())
 }
 
-async fn labels_create(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Json(b): Json<Value>) -> ApiResult {
-    require_account(&st.db, &user, account_id).await?.require_admin()?;
+async fn labels_create(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(b): Json<Value>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
     let title = label_title(&b)?.ok_or_else(|| ApiError::bad("Title can't be blank"))?;
     if title_taken(&st, account_id, &title, 0).await? {
         return Err(ApiError::bad("Title has already been taken"));
@@ -131,8 +206,15 @@ async fn labels_create(State(st): State<AppState>, user: CurrentUser, Path(accou
     Ok(Json(l.json()))
 }
 
-async fn labels_update(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
-    require_account(&st.db, &user, account_id).await?.require_admin()?;
+async fn labels_update(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
     let title = label_title(&b)?;
     if let Some(t) = &title {
         if title_taken(&st, account_id, t, id).await? {
@@ -302,9 +384,19 @@ async fn labels_update(State(st): State<AppState>, user: CurrentUser, Path((acco
     Ok(Json(l.json()))
 }
 
-async fn labels_destroy(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
-    require_account(&st.db, &user, account_id).await?.require_admin()?;
-    let n = sqlx::query("DELETE FROM labels WHERE id = $1 AND account_id = $2").bind(id).bind(account_id).execute(&st.db).await?;
+async fn labels_destroy(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let n = sqlx::query("DELETE FROM labels WHERE id = $1 AND account_id = $2")
+        .bind(id)
+        .bind(account_id)
+        .execute(&st.db)
+        .await?;
     if n.rows_affected() == 0 {
         return Err(ApiError::not_found());
     }
@@ -328,9 +420,17 @@ impl Canned {
 }
 const CANNED_COLS: &str = "id::bigint AS id, account_id::bigint AS account_id, short_code, content";
 
-async fn canned_index(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+async fn canned_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    let pat = q.get("search").filter(|s| !s.is_empty()).map(|s| format!("%{s}%"));
+    let pat = q
+        .get("search")
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{s}%"));
     let rows: Vec<Canned> = sqlx::query_as(&format!(
         "SELECT {CANNED_COLS} FROM canned_responses WHERE account_id = $1
            AND ($2::text IS NULL OR short_code ILIKE $2 OR content ILIKE $2)
@@ -340,25 +440,41 @@ async fn canned_index(State(st): State<AppState>, user: CurrentUser, Path(accoun
     .bind(pat)
     .fetch_all(&st.db)
     .await?;
-    Ok(Json(json!(rows.iter().map(Canned::json).collect::<Vec<_>>())))
+    Ok(Json(json!(
+        rows.iter().map(Canned::json).collect::<Vec<_>>()
+    )))
 }
 
 fn canned_fields(b: &Value) -> (Option<String>, Option<String>) {
-    let b = if b["canned_response"].is_object() { &b["canned_response"] } else { b };
+    let b = if b["canned_response"].is_object() {
+        &b["canned_response"]
+    } else {
+        b
+    };
     (s(b, "short_code"), s(b, "content"))
 }
 
-async fn canned_create(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Json(b): Json<Value>) -> ApiResult {
+async fn canned_create(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
     let (code, content) = canned_fields(&b);
-    let (Some(code), Some(content)) = (code.filter(|c| !c.trim().is_empty()), content.filter(|c| !c.trim().is_empty())) else {
+    let (Some(code), Some(content)) = (
+        code.filter(|c| !c.trim().is_empty()),
+        content.filter(|c| !c.trim().is_empty()),
+    ) else {
         return Err(ApiError::bad("Short code and content can't be blank"));
     };
-    let taken: Option<i32> = sqlx::query_scalar("SELECT 1 FROM canned_responses WHERE account_id = $1 AND short_code = $2")
-        .bind(account_id as i32)
-        .bind(&code)
-        .fetch_optional(&st.db)
-        .await?;
+    let taken: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM canned_responses WHERE account_id = $1 AND short_code = $2",
+    )
+    .bind(account_id as i32)
+    .bind(&code)
+    .fetch_optional(&st.db)
+    .await?;
     if taken.is_some() {
         return Err(ApiError::bad("Short code has already been taken"));
     }
@@ -373,7 +489,12 @@ async fn canned_create(State(st): State<AppState>, user: CurrentUser, Path(accou
     Ok(Json(c.json()))
 }
 
-async fn canned_update(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+async fn canned_update(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
     let (code, content) = canned_fields(&b);
     let c: Canned = sqlx::query_as(&format!(
@@ -389,8 +510,14 @@ async fn canned_update(State(st): State<AppState>, user: CurrentUser, Path((acco
     Ok(Json(c.json()))
 }
 
-async fn canned_destroy(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
-    require_account(&st.db, &user, account_id).await?.require_admin()?;
+async fn canned_destroy(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
     let n = sqlx::query("DELETE FROM canned_responses WHERE id = $1 AND account_id = $2")
         .bind(id as i32)
         .bind(account_id as i32)
@@ -406,7 +533,9 @@ async fn canned_destroy(State(st): State<AppState>, user: CurrentUser, Path((acc
 // attribute_model: 0 conversation_attribute, 1 contact_attribute.
 // attribute_display_type: text number currency percent link date list checkbox.
 
-const DISPLAY_TYPES: [&str; 8] = ["text", "number", "currency", "percent", "link", "date", "list", "checkbox"];
+const DISPLAY_TYPES: [&str; 8] = [
+    "text", "number", "currency", "percent", "link", "date", "list", "checkbox",
+];
 const ATTR_MODELS: [&str; 2] = ["conversation_attribute", "contact_attribute"];
 
 #[derive(sqlx::FromRow)]
@@ -449,12 +578,21 @@ fn enum_val(v: &Value, list: &[&str]) -> Option<i32> {
         return Some(i as i32);
     }
     let s = v.as_str()?;
-    s.parse().ok().or_else(|| list.iter().position(|x| *x == s).map(|i| i as i32))
+    s.parse()
+        .ok()
+        .or_else(|| list.iter().position(|x| *x == s).map(|i| i as i32))
 }
 
-async fn cad_index(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+async fn cad_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    let model = q.get("attribute_model").and_then(|m| enum_val(&json!(m), &ATTR_MODELS));
+    let model = q
+        .get("attribute_model")
+        .and_then(|m| enum_val(&json!(m), &ATTR_MODELS));
     let rows: Vec<Cad> = sqlx::query_as(&format!(
         "SELECT {CAD_COLS} FROM custom_attribute_definitions WHERE account_id = $1 AND ($2::int IS NULL OR attribute_model = $2) ORDER BY id"
     ))
@@ -465,24 +603,43 @@ async fn cad_index(State(st): State<AppState>, user: CurrentUser, Path(account_i
     Ok(Json(json!(rows.iter().map(Cad::json).collect::<Vec<_>>())))
 }
 
-async fn cad_show(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn cad_show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    let c: Cad = sqlx::query_as(&format!("SELECT {CAD_COLS} FROM custom_attribute_definitions WHERE id = $1 AND account_id = $2"))
-        .bind(id)
-        .bind(account_id)
-        .fetch_one(&st.db)
-        .await?;
+    let c: Cad = sqlx::query_as(&format!(
+        "SELECT {CAD_COLS} FROM custom_attribute_definitions WHERE id = $1 AND account_id = $2"
+    ))
+    .bind(id)
+    .bind(account_id)
+    .fetch_one(&st.db)
+    .await?;
     Ok(Json(c.json()))
 }
 
 fn cad_body(b: &Value) -> &Value {
-    if b["custom_attribute_definition"].is_object() { &b["custom_attribute_definition"] } else { b }
+    if b["custom_attribute_definition"].is_object() {
+        &b["custom_attribute_definition"]
+    } else {
+        b
+    }
 }
 
-async fn cad_create(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Json(b): Json<Value>) -> ApiResult {
-    require_account(&st.db, &user, account_id).await?.require_admin()?;
+async fn cad_create(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(b): Json<Value>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
     let b = cad_body(&b);
-    let key = s(b, "attribute_key").filter(|k| !k.trim().is_empty()).ok_or_else(|| ApiError::bad("Attribute key can't be blank"))?;
+    let key = s(b, "attribute_key")
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| ApiError::bad("Attribute key can't be blank"))?;
     let model = enum_val(&b["attribute_model"], &ATTR_MODELS).unwrap_or(0);
     let taken: Option<i32> =
         sqlx::query_scalar("SELECT 1 FROM custom_attribute_definitions WHERE account_id = $1 AND attribute_key = $2 AND attribute_model = $3")
@@ -513,8 +670,15 @@ async fn cad_create(State(st): State<AppState>, user: CurrentUser, Path(account_
     Ok(Json(c.json()))
 }
 
-async fn cad_update(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
-    require_account(&st.db, &user, account_id).await?.require_admin()?;
+async fn cad_update(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
     let b = cad_body(&b);
     let c: Cad = sqlx::query_as(&format!(
         "UPDATE custom_attribute_definitions SET attribute_display_name = COALESCE($1, attribute_display_name),
@@ -534,9 +698,20 @@ async fn cad_update(State(st): State<AppState>, user: CurrentUser, Path((account
     Ok(Json(c.json()))
 }
 
-async fn cad_destroy(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
-    require_account(&st.db, &user, account_id).await?.require_admin()?;
-    let n = sqlx::query("DELETE FROM custom_attribute_definitions WHERE id = $1 AND account_id = $2").bind(id).bind(account_id).execute(&st.db).await?;
+async fn cad_destroy(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let n =
+        sqlx::query("DELETE FROM custom_attribute_definitions WHERE id = $1 AND account_id = $2")
+            .bind(id)
+            .bind(account_id)
+            .execute(&st.db)
+            .await?;
     if n.rows_affected() == 0 {
         return Err(ApiError::not_found());
     }
@@ -567,9 +742,17 @@ impl Cf {
 }
 const CF_COLS: &str = "id, name, filter_type, query, created_at, updated_at";
 
-async fn cf_index(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+async fn cf_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    let ft = q.get("filter_type").and_then(|t| enum_val(&json!(t), &FILTER_TYPES)).unwrap_or(0);
+    let ft = q
+        .get("filter_type")
+        .and_then(|t| enum_val(&json!(t), &FILTER_TYPES))
+        .unwrap_or(0);
     let rows: Vec<Cf> = sqlx::query_as(&format!(
         "SELECT {CF_COLS} FROM custom_filters WHERE account_id = $1 AND user_id = $2 AND filter_type = $3 ORDER BY id"
     ))
@@ -581,21 +764,38 @@ async fn cf_index(State(st): State<AppState>, user: CurrentUser, Path(account_id
     Ok(Json(json!(rows.iter().map(Cf::json).collect::<Vec<_>>())))
 }
 
-async fn cf_show(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn cf_show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    let c: Cf = sqlx::query_as(&format!("SELECT {CF_COLS} FROM custom_filters WHERE id = $1 AND account_id = $2 AND user_id = $3"))
-        .bind(id)
-        .bind(account_id)
-        .bind(user.id)
-        .fetch_one(&st.db)
-        .await?;
+    let c: Cf = sqlx::query_as(&format!(
+        "SELECT {CF_COLS} FROM custom_filters WHERE id = $1 AND account_id = $2 AND user_id = $3"
+    ))
+    .bind(id)
+    .bind(account_id)
+    .bind(user.id)
+    .fetch_one(&st.db)
+    .await?;
     Ok(Json(c.json()))
 }
 
-async fn cf_create(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Json(b): Json<Value>) -> ApiResult {
+async fn cf_create(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    let b = if b["custom_filter"].is_object() { &b["custom_filter"] } else { &b };
-    let name = s(b, "name").filter(|n| !n.trim().is_empty()).ok_or_else(|| ApiError::bad("Name can't be blank"))?;
+    let b = if b["custom_filter"].is_object() {
+        &b["custom_filter"]
+    } else {
+        &b
+    };
+    let name = s(b, "name")
+        .filter(|n| !n.trim().is_empty())
+        .ok_or_else(|| ApiError::bad("Name can't be blank"))?;
     let c: Cf = sqlx::query_as(&format!(
         "INSERT INTO custom_filters (name, filter_type, query, account_id, user_id, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, now(), now()) RETURNING {CF_COLS}"
@@ -610,9 +810,18 @@ async fn cf_create(State(st): State<AppState>, user: CurrentUser, Path(account_i
     Ok(Json(c.json()))
 }
 
-async fn cf_update(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(b): Json<Value>) -> ApiResult {
+async fn cf_update(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    let b = if b["custom_filter"].is_object() { &b["custom_filter"] } else { &b };
+    let b = if b["custom_filter"].is_object() {
+        &b["custom_filter"]
+    } else {
+        &b
+    };
     let c: Cf = sqlx::query_as(&format!(
         "UPDATE custom_filters SET name = COALESCE($1, name), query = COALESCE($2, query), updated_at = now()
          WHERE id = $3 AND account_id = $4 AND user_id = $5 RETURNING {CF_COLS}"
@@ -627,14 +836,20 @@ async fn cf_update(State(st): State<AppState>, user: CurrentUser, Path((account_
     Ok(Json(c.json()))
 }
 
-async fn cf_destroy(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn cf_destroy(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    let n = sqlx::query("DELETE FROM custom_filters WHERE id = $1 AND account_id = $2 AND user_id = $3")
-        .bind(id)
-        .bind(account_id)
-        .bind(user.id)
-        .execute(&st.db)
-        .await?;
+    let n = sqlx::query(
+        "DELETE FROM custom_filters WHERE id = $1 AND account_id = $2 AND user_id = $3",
+    )
+    .bind(id)
+    .bind(account_id)
+    .bind(user.id)
+    .execute(&st.db)
+    .await?;
     if n.rows_affected() == 0 {
         return Err(ApiError::not_found());
     }
@@ -680,9 +895,18 @@ async fn unread(st: &AppState, account_id: i64, user_id: i64) -> Result<i64, Api
         .await?)
 }
 
-async fn notif_index(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+async fn notif_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    let page = q.get("page").and_then(|p| p.parse::<i64>().ok()).unwrap_or(1).max(1);
+    let page = q
+        .get("page")
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1);
     let rows: Vec<Notif> = sqlx::query_as(
         "SELECT id, notification_type, primary_actor_type, primary_actor_id, read_at, created_at, last_activity_at, snoozed_until, meta
          FROM notifications WHERE account_id = $1 AND user_id = $2 ORDER BY last_activity_at DESC NULLS LAST, id DESC LIMIT 15 OFFSET $3",
@@ -692,23 +916,33 @@ async fn notif_index(State(st): State<AppState>, user: CurrentUser, Path(account
     .bind((page - 1) * 15)
     .fetch_all(&st.db)
     .await?;
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE account_id = $1 AND user_id = $2")
-        .bind(account_id)
-        .bind(user.id)
-        .fetch_one(&st.db)
-        .await?;
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM notifications WHERE account_id = $1 AND user_id = $2",
+    )
+    .bind(account_id)
+    .bind(user.id)
+    .fetch_one(&st.db)
+    .await?;
     Ok(Json(json!({ "data": {
         "meta": { "unread_count": unread(&st, account_id, user.id).await?, "count": count, "current_page": page },
         "payload": rows.iter().map(|n| n.json(&user)).collect::<Vec<_>>(),
     } })))
 }
 
-async fn notif_unread(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>) -> ApiResult {
+async fn notif_unread(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
     Ok(Json(json!(unread(&st, account_id, user.id).await?)))
 }
 
-async fn notif_read_all(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>) -> ApiResult {
+async fn notif_read_all(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
     sqlx::query("UPDATE notifications SET read_at = now() WHERE account_id = $1 AND user_id = $2 AND read_at IS NULL")
         .bind(account_id)
@@ -718,7 +952,11 @@ async fn notif_read_all(State(st): State<AppState>, user: CurrentUser, Path(acco
     Ok(Json(json!({})))
 }
 
-async fn notif_read(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn notif_read(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
     let n = sqlx::query("UPDATE notifications SET read_at = now() WHERE id = $1 AND account_id = $2 AND user_id = $3")
         .bind(id)
@@ -732,7 +970,11 @@ async fn notif_read(State(st): State<AppState>, user: CurrentUser, Path((account
     Ok(Json(json!({})))
 }
 
-async fn notif_destroy(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn notif_destroy(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
     sqlx::query("DELETE FROM notifications WHERE id = $1 AND account_id = $2 AND user_id = $3")
         .bind(id)
@@ -744,7 +986,12 @@ async fn notif_destroy(State(st): State<AppState>, user: CurrentUser, Path((acco
 }
 
 /// Mirrors NotificationsController#destroy_all: type=read deletes read ones, anything else deletes all.
-async fn notif_destroy_all(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+async fn notif_destroy_all(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
     let read_only = q.get("type").map(String::as_str) == Some("read");
     sqlx::query("DELETE FROM notifications WHERE account_id = $1 AND user_id = $2 AND ($3 = false OR read_at IS NOT NULL)")
@@ -756,7 +1003,12 @@ async fn notif_destroy_all(State(st): State<AppState>, user: CurrentUser, Path(a
     Ok(Json(json!({})))
 }
 
-async fn notif_one(st: &AppState, user: &CurrentUser, account_id: i64, id: i64) -> Result<Notif, ApiError> {
+async fn notif_one(
+    st: &AppState,
+    user: &CurrentUser,
+    account_id: i64,
+    id: i64,
+) -> Result<Notif, ApiError> {
     sqlx::query_as(
         "SELECT id, notification_type, primary_actor_type, primary_actor_id, read_at, created_at, last_activity_at, snoozed_until, meta
          FROM notifications WHERE id = $1 AND account_id = $2 AND user_id = $3",
@@ -770,14 +1022,26 @@ async fn notif_one(st: &AppState, user: &CurrentUser, account_id: i64, id: i64) 
 }
 
 /// Mirrors NotificationsController#snooze: `snoozed_until` is a unix timestamp; clears last_snoozed_at in meta.
-async fn notif_snooze(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>, Json(body): Json<Value>) -> ApiResult {
+async fn notif_snooze(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(body): Json<Value>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
     let n = notif_one(&st, &user, account_id, id).await?;
     let until = match &body["snoozed_until"] {
         Value::Null => None,
         v => {
-            let secs = v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())).ok_or_else(|| ApiError::bad("snoozed_until must be a unix timestamp"))?;
-            Some(chrono::DateTime::from_timestamp(secs, 0).ok_or_else(|| ApiError::bad("snoozed_until is out of range"))?.naive_utc())
+            let secs = v
+                .as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+                .ok_or_else(|| ApiError::bad("snoozed_until must be a unix timestamp"))?;
+            Some(
+                chrono::DateTime::from_timestamp(secs, 0)
+                    .ok_or_else(|| ApiError::bad("snoozed_until is out of range"))?
+                    .naive_utc(),
+            )
         }
     };
     if body.get("snoozed_until").is_some() {
@@ -799,7 +1063,11 @@ async fn notif_snooze(State(st): State<AppState>, user: CurrentUser, Path((accou
 }
 
 /// Mirrors NotificationsController#unread: clears read_at and returns the notification.
-async fn notif_unread_one(State(st): State<AppState>, user: CurrentUser, Path((account_id, id)): Path<(i64, i64)>) -> ApiResult {
+async fn notif_unread_one(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
     sqlx::query("UPDATE notifications SET read_at = NULL, updated_at = now() WHERE id = $1 AND account_id = $2 AND user_id = $3")
         .bind(id)
@@ -814,13 +1082,30 @@ async fn notif_unread_one(State(st): State<AppState>, user: CurrentUser, Path((a
 // ---------- notification settings (bit flags, bit i <-> NOTIFICATION_TYPES[i]) ----------
 
 fn flags_to_names(prefix: &str, flags: i32) -> Vec<String> {
-    NOTIFICATION_TYPES.iter().enumerate().filter(|(i, _)| flags >> i & 1 == 1).map(|(_, n)| format!("{prefix}_{n}")).collect()
+    NOTIFICATION_TYPES
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| flags >> i & 1 == 1)
+        .map(|(_, n)| format!("{prefix}_{n}"))
+        .collect()
 }
 fn names_to_flags(prefix: &str, v: &Value) -> Option<i32> {
     let arr = v.as_array()?;
-    Some(NOTIFICATION_TYPES.iter().enumerate().fold(0, |acc, (i, n)| {
-        if arr.iter().any(|x| x.as_str() == Some(&format!("{prefix}_{n}"))) { acc | 1 << i } else { acc }
-    }))
+    Some(
+        NOTIFICATION_TYPES
+            .iter()
+            .enumerate()
+            .fold(0, |acc, (i, n)| {
+                if arr
+                    .iter()
+                    .any(|x| x.as_str() == Some(&format!("{prefix}_{n}")))
+                {
+                    acc | 1 << i
+                } else {
+                    acc
+                }
+            }),
+    )
 }
 
 async fn ns_json(st: &AppState, account_id: i64, user_id: i64) -> Result<Value, ApiError> {
@@ -847,12 +1132,21 @@ async fn ns_json(st: &AppState, account_id: i64, user_id: i64) -> Result<Value, 
     }))
 }
 
-async fn ns_show(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>) -> ApiResult {
+async fn ns_show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
     Ok(Json(ns_json(&st, account_id, user.id).await?))
 }
 
-async fn ns_update(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Json(b): Json<Value>) -> ApiResult {
+async fn ns_update(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
     ns_json(&st, account_id, user.id).await?; // ensure row exists
     let ns = &b["notification_settings"];
@@ -871,17 +1165,30 @@ async fn ns_update(State(st): State<AppState>, user: CurrentUser, Path(account_i
 
 // ---------- cache keys, search ----------
 
-async fn cache_keys(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>) -> ApiResult {
+async fn cache_keys(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    Ok(Json(json!({ "cache_keys": crate::cable::cache_keys(account_id) })))
+    Ok(Json(
+        json!({ "cache_keys": crate::cable::cache_keys(account_id) }),
+    ))
 }
 
 /// GET /search?q= (and /search/{contacts,conversations,messages}): ILIKE over contacts, messages. 15 per kind.
 /// Agents only see conversations/messages from inboxes they belong to.
-async fn search_all(State(st): State<AppState>, user: CurrentUser, Path(account_id): Path<i64>, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+async fn search_all(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
     let Some(term) = q.get("q").map(|s| s.trim()).filter(|s| !s.is_empty()) else {
-        return Ok(Json(json!({ "payload": { "contacts": [], "conversations": [], "messages": [], "articles": [] } })));
+        return Ok(Json(
+            json!({ "payload": { "contacts": [], "conversations": [], "messages": [], "articles": [] } }),
+        ));
     };
     let pat = format!("%{term}%");
     let contacts: Vec<(i64, Option<String>, Option<String>, Option<String>, Option<String>, Option<NaiveDateTime>)> = sqlx::query_as(
@@ -928,7 +1235,7 @@ async fn search_all(State(st): State<AppState>, user: CurrentUser, Path(account_
     for c in &contacts {
         contact_rows.push(json!({
             "id": c.0, "name": c.1, "email": c.2, "phone_number": c.3, "identifier": c.4,
-            "thumbnail": crate::storage::avatar_url(&st.db, "Contact", c.0 as i64).await,
+            "thumbnail": crate::storage::avatar_url(&st.db, "Contact", c.0).await,
             "additional_attributes": {}, "last_activity_at": ts(c.5),
         }));
     }
@@ -947,13 +1254,536 @@ async fn search_all(State(st): State<AppState>, user: CurrentUser, Path(account_
     } })))
 }
 
+// ---------- working hours ----------
+
+async fn working_hours_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id).await?;
+    let inbox_id: Option<i64> = q.get("inbox_id").and_then(|v| v.parse().ok());
+    let rows: Vec<(i64, Option<i64>, i32, bool, bool, Option<i32>, Option<i32>, Option<i32>, Option<i32>)> = sqlx::query_as(
+        "SELECT id, inbox_id, day_of_week, COALESCE(closed_all_day, false), COALESCE(open_all_day, false),
+                open_hour, open_minutes, close_hour, close_minutes
+         FROM working_hours
+         WHERE account_id = $1 AND ($2::bigint IS NULL OR inbox_id = $2)
+         ORDER BY inbox_id NULLS FIRST, day_of_week",
+    )
+    .bind(account_id)
+    .bind(inbox_id)
+    .fetch_all(&st.db)
+    .await?;
+    let items: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "id": r.0,
+                "inbox_id": r.1,
+                "day_of_week": r.2,
+                "closed_all_day": r.3,
+                "open_all_day": r.4,
+                "open_hour": r.5,
+                "open_minutes": r.6,
+                "close_hour": r.7,
+                "close_minutes": r.8,
+            })
+        })
+        .collect();
+    Ok(Json(Value::Array(items)))
+}
+
+// ---------- integration apps catalog ----------
+
+struct AppDef {
+    id: &'static str,
+    name: &'static str,
+    short_description: &'static str,
+    description: &'static str,
+    logo: &'static str,
+    hook_type: &'static str,
+    allow_multiple_hooks: bool,
+    visible_properties: &'static [&'static str],
+    action: &'static str,
+}
+
+const INTEGRATION_APPS: &[AppDef] = &[
+    AppDef {
+        id: "webhook",
+        name: "Webhooks",
+        short_description: "Receive HTTP callbacks on account events.",
+        description: "Webhook events provide real-time updates about activities in your Chatwoot account.",
+        logo: "webhooks.png",
+        hook_type: "account",
+        allow_multiple_hooks: true,
+        visible_properties: &[],
+        action: "/webhook",
+    },
+    AppDef {
+        id: "dashboard_apps",
+        name: "Dashboard Apps",
+        short_description: "Embed custom applications inside conversation sidebars.",
+        description: "Dashboard Apps allow you to create and embed applications that display user information, orders, or payment history.",
+        logo: "dashboard_apps.png",
+        hook_type: "account",
+        allow_multiple_hooks: true,
+        visible_properties: &[],
+        action: "/dashboard_apps",
+    },
+    AppDef {
+        id: "openai",
+        name: "OpenAI",
+        short_description: "AI-powered reply suggestions, summarization, and message enhancement.",
+        description: "Leverage large language models from OpenAI for reply suggestions, summarization, message rephrasing, and spell-checking.",
+        logo: "openai.png",
+        hook_type: "account",
+        allow_multiple_hooks: false,
+        visible_properties: &[],
+        action: "/openai",
+    },
+    AppDef {
+        id: "stripe",
+        name: "Stripe",
+        short_description: "View customer billing details in conversations.",
+        description: "View customer details, subscriptions, and recent invoices from Stripe alongside your conversations.",
+        logo: "stripe.svg",
+        hook_type: "account",
+        allow_multiple_hooks: false,
+        visible_properties: &[],
+        action: "/stripe",
+    },
+    AppDef {
+        id: "linear",
+        name: "Linear",
+        short_description: "Create and link Linear issues directly from conversations.",
+        description: "Create issues in Linear directly from your conversation window or link existing Linear issues.",
+        logo: "linear.png",
+        hook_type: "account",
+        allow_multiple_hooks: false,
+        visible_properties: &[],
+        action: "https://linear.app/oauth/authorize",
+    },
+    AppDef {
+        id: "notion",
+        name: "Notion",
+        short_description: "Integrate databases, documents and pages directly with Captain.",
+        description: "Connect your Notion workspace to enable Captain to access and generate responses using your pages.",
+        logo: "notion.png",
+        hook_type: "account",
+        allow_multiple_hooks: false,
+        visible_properties: &[],
+        action: "/notion",
+    },
+    AppDef {
+        id: "slack",
+        name: "Slack",
+        short_description: "Receive notifications and respond to conversations directly in Slack.",
+        description: "Integrate with Slack to receive notifications for new conversations and respond directly within Slack.",
+        logo: "slack.png",
+        hook_type: "account",
+        allow_multiple_hooks: false,
+        visible_properties: &["channel_name", "message_mode"],
+        action: "https://slack.com/oauth/v2/authorize?scope=commands,chat:write,channels:read,channels:manage,channels:join,groups:read,groups:write,im:write,mpim:write,users:read,users:read.email,chat:write.customize,channels:history,groups:history,mpim:history,im:history,files:read,files:write",
+    },
+    AppDef {
+        id: "dialogflow",
+        name: "Dialogflow",
+        short_description: "Build chatbots to handle initial queries before transferring to agents.",
+        description: "Build chatbots with Dialogflow and integrate them into your inbox to handle initial queries.",
+        logo: "dialogflow.png",
+        hook_type: "inbox",
+        allow_multiple_hooks: true,
+        visible_properties: &["project_id", "region", "language_code"],
+        action: "/dialogflow",
+    },
+    AppDef {
+        id: "google_translate",
+        name: "Google Translate",
+        short_description: "Automatically translate customer messages for agents.",
+        description: "Integrate Google Translate to detect message language and translate customer messages.",
+        logo: "google-translate.png",
+        hook_type: "account",
+        allow_multiple_hooks: false,
+        visible_properties: &["project_id"],
+        action: "/google_translate",
+    },
+    AppDef {
+        id: "dyte",
+        name: "Cloudflare RealtimeKit",
+        short_description: "Start video/voice calls with customers directly from Chatwoot.",
+        description: "Start video/voice calls with customers directly from conversations.",
+        logo: "dyte.png",
+        hook_type: "account",
+        allow_multiple_hooks: false,
+        visible_properties: &["account_id", "app_id"],
+        action: "/dyte",
+    },
+    AppDef {
+        id: "shopify",
+        name: "Shopify",
+        short_description: "Access order details and customer data from your Shopify store.",
+        description: "Connect your Shopify store to access order details, customer information, and product data.",
+        logo: "shopify.png",
+        hook_type: "account",
+        allow_multiple_hooks: false,
+        visible_properties: &[],
+        action: "/shopify",
+    },
+    AppDef {
+        id: "leadsquared",
+        name: "LeadSquared",
+        short_description: "Sync leads and conversation activities with LeadSquared.",
+        description: "Connect LeadSquared CRM to capture leads and sync conversation transcripts.",
+        logo: "leadsquared.png",
+        hook_type: "account",
+        allow_multiple_hooks: false,
+        visible_properties: &["endpoint_url", "app_url", "timezone"],
+        action: "/leadsquared",
+    },
+];
+
+async fn app_json(st: &AppState, au: &AccountUser, def: &AppDef) -> Result<Value, ApiError> {
+    let hooks_rows: Vec<(
+        i64,
+        i32,
+        Option<i64>,
+        Option<String>,
+        i32,
+        Option<Value>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT h.id, COALESCE(h.status, 1), h.inbox_id::bigint, i.name, COALESCE(h.hook_type, 0),
+                h.settings, h.reference_id
+         FROM integrations_hooks h
+         LEFT JOIN inboxes i ON i.id = h.inbox_id AND i.account_id = h.account_id
+         WHERE h.account_id = $1 AND h.app_id = $2
+         ORDER BY h.id",
+    )
+    .bind(au.account_id as i32)
+    .bind(def.id)
+    .fetch_all(&st.db)
+    .await?;
+
+    let enabled = match def.id {
+        "webhook" => {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM webhooks WHERE account_id = $1)",
+            )
+            .bind(au.account_id as i32)
+            .fetch_one(&st.db)
+            .await?
+        }
+        "dashboard_apps" => {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM dashboard_apps WHERE account_id = $1)",
+            )
+            .bind(au.account_id)
+            .fetch_one(&st.db)
+            .await?
+        }
+        "shopify" | "stripe" => hooks_rows.iter().any(|h| h.1 == 1),
+        _ => !hooks_rows.is_empty(),
+    };
+
+    let hooks: Vec<Value> = hooks_rows
+        .into_iter()
+        .map(|h| {
+            let mut item = json!({
+                "id": h.0,
+                "app_id": def.id,
+                "status": h.1 == 1,
+                "inbox": h.2.map(|iid| json!({ "id": iid, "name": h.3 })),
+                "account_id": au.account_id,
+                "hook_type": if h.4 == 1 { "inbox" } else { "account" },
+            });
+            if au.is_admin() {
+                let mut filtered = serde_json::Map::new();
+                if let Some(Value::Object(map)) = h.5 {
+                    for (k, v) in map {
+                        if def.visible_properties.is_empty()
+                            || def.visible_properties.contains(&k.as_str())
+                        {
+                            filtered.insert(k, v);
+                        }
+                    }
+                }
+                item["settings"] = Value::Object(filtered);
+                item["reference_id"] = json!(h.6);
+            }
+            item
+        })
+        .collect();
+
+    let mut out = json!({
+        "id": def.id,
+        "name": def.name,
+        "description": def.description,
+        "short_description": def.short_description,
+        "enabled": enabled,
+        "hooks": hooks,
+    });
+    if au.is_admin() {
+        out["logo"] = json!(def.logo);
+        out["hook_type"] = json!(def.hook_type);
+        out["allow_multiple_hooks"] = json!(def.allow_multiple_hooks);
+        out["visible_properties"] = json!(def.visible_properties);
+        out["action"] = json!(def.action);
+        out["button"] = json!(def.action);
+    }
+    Ok(out)
+}
+
+async fn integration_apps_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let mut payload = Vec::with_capacity(INTEGRATION_APPS.len());
+    for def in INTEGRATION_APPS {
+        if def.id == "slack" {
+            payload.push(crate::slack::app(&st.db, au.account_id, au.is_admin()).await?);
+        } else {
+            payload.push(app_json(&st, &au, def).await?);
+        }
+    }
+    Ok(Json(json!({ "payload": payload })))
+}
+
+async fn integration_apps_show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, String)>,
+) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    if id == "slack" {
+        return Ok(Json(
+            crate::slack::app(&st.db, au.account_id, au.is_admin()).await?,
+        ));
+    }
+    let def = INTEGRATION_APPS
+        .iter()
+        .find(|d| d.id == id)
+        .ok_or_else(ApiError::not_found)?;
+    Ok(Json(app_json(&st, &au, def).await?))
+}
+
+// ---------- branded email layout ----------
+
+async fn branded_email_layout_show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let body: Option<String> = sqlx::query_scalar(
+        "SELECT body FROM email_templates
+         WHERE account_id = $1 AND inbox_id IS NULL AND name = 'base' AND template_type = 0 AND locale = 0
+         LIMIT 1",
+    )
+    .bind(account_id as i32)
+    .fetch_optional(&st.db)
+    .await?;
+    Ok(Json(json!({ "branded_email_layout": body })))
+}
+
+async fn branded_email_layout_update(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    if body.get("branded_email_layout").is_some() {
+        let raw = match &body["branded_email_layout"] {
+            Value::Null => None,
+            Value::String(s) if s == "null" || s.trim().is_empty() => None,
+            Value::String(s) => Some(s.clone()),
+            _ => {
+                return Err(ApiError::bad(
+                    "branded_email_layout must be a string or null",
+                ));
+            }
+        };
+        if let Some(ref html) = raw {
+            if !html.contains("content_for_layout") {
+                return Err(ApiError::bad("Body must include {{ content_for_layout }}"));
+            }
+            let existing_id: Option<i64> = sqlx::query_scalar(
+                "SELECT id FROM email_templates
+                 WHERE account_id = $1 AND inbox_id IS NULL AND name = 'base' AND template_type = 0 AND locale = 0",
+            )
+            .bind(account_id as i32)
+            .fetch_optional(&st.db)
+            .await?;
+            if let Some(eid) = existing_id {
+                sqlx::query(
+                    "UPDATE email_templates SET body = $2, updated_at = now() WHERE id = $1",
+                )
+                .bind(eid)
+                .bind(html)
+                .execute(&st.db)
+                .await?;
+            } else {
+                sqlx::query(
+                    "INSERT INTO email_templates (account_id, inbox_id, name, body, template_type, locale, created_at, updated_at)
+                     VALUES ($1, NULL, 'base', $2, 0, 0, now(), now())",
+                )
+                .bind(account_id as i32)
+                .bind(html)
+                .execute(&st.db)
+                .await?;
+            }
+        } else {
+            sqlx::query(
+                "DELETE FROM email_templates
+                 WHERE account_id = $1 AND inbox_id IS NULL AND name = 'base' AND template_type = 0 AND locale = 0",
+            )
+            .bind(account_id as i32)
+            .execute(&st.db)
+            .await?;
+        }
+    }
+    let current: Option<String> = sqlx::query_scalar(
+        "SELECT body FROM email_templates
+         WHERE account_id = $1 AND inbox_id IS NULL AND name = 'base' AND template_type = 0 AND locale = 0
+         LIMIT 1",
+    )
+    .bind(account_id as i32)
+    .fetch_optional(&st.db)
+    .await?;
+    Ok(Json(json!({ "branded_email_layout": current })))
+}
+
+// ---------- reporting events ----------
+
+#[derive(sqlx::FromRow)]
+struct ReportingEventRow {
+    id: i64,
+    name: Option<String>,
+    value: Option<f64>,
+    value_in_business_hours: Option<f64>,
+    event_start_time: Option<NaiveDateTime>,
+    event_end_time: Option<NaiveDateTime>,
+    account_id: Option<i32>,
+    inbox_id: Option<i32>,
+    user_id: Option<i32>,
+    conversation_id: Option<i32>,
+    created_at: NaiveDateTime,
+    updated_at: NaiveDateTime,
+}
+
+impl ReportingEventRow {
+    fn json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "name": self.name,
+            "value": self.value,
+            "value_in_business_hours": self.value_in_business_hours,
+            "event_start_time": self.event_start_time,
+            "event_end_time": self.event_end_time,
+            "account_id": self.account_id,
+            "inbox_id": self.inbox_id,
+            "user_id": self.user_id,
+            "conversation_id": self.conversation_id,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        })
+    }
+}
+
+async fn reporting_events_index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let page = q
+        .get("page")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1);
+    let offset = (page - 1) * 25;
+    let since = q
+        .get("since")
+        .and_then(|v| v.parse::<i64>().ok())
+        .and_then(|s| chrono::DateTime::from_timestamp(s, 0).map(|d| d.naive_utc()));
+    let until = q
+        .get("until")
+        .and_then(|v| v.parse::<i64>().ok())
+        .and_then(|s| chrono::DateTime::from_timestamp(s, 0).map(|d| d.naive_utc()));
+    let inbox_id: Option<i32> = q.get("inbox_id").and_then(|v| v.parse().ok());
+    let user_id: Option<i32> = q.get("user_id").and_then(|v| v.parse().ok());
+    let name = q.get("name").filter(|v| !v.trim().is_empty()).cloned();
+
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint FROM reporting_events
+         WHERE account_id = $1
+           AND ($2::timestamp IS NULL OR created_at >= $2)
+           AND ($3::timestamp IS NULL OR created_at <= $3)
+           AND ($4::int IS NULL OR inbox_id = $4)
+           AND ($5::int IS NULL OR user_id = $5)
+           AND ($6::text IS NULL OR name = $6)",
+    )
+    .bind(account_id as i32)
+    .bind(since)
+    .bind(until)
+    .bind(inbox_id)
+    .bind(user_id)
+    .bind(&name)
+    .fetch_one(&st.db)
+    .await?;
+
+    let rows: Vec<ReportingEventRow> = sqlx::query_as(
+        "SELECT id, name, value, value_in_business_hours, event_start_time, event_end_time,
+                account_id, inbox_id, user_id, conversation_id, created_at, updated_at
+         FROM reporting_events
+         WHERE account_id = $1
+           AND ($2::timestamp IS NULL OR created_at >= $2)
+           AND ($3::timestamp IS NULL OR created_at <= $3)
+           AND ($4::int IS NULL OR inbox_id = $4)
+           AND ($5::int IS NULL OR user_id = $5)
+           AND ($6::text IS NULL OR name = $6)
+         ORDER BY created_at DESC
+         LIMIT 25 OFFSET $7",
+    )
+    .bind(account_id as i32)
+    .bind(since)
+    .bind(until)
+    .bind(inbox_id)
+    .bind(user_id)
+    .bind(&name)
+    .bind(offset)
+    .fetch_all(&st.db)
+    .await?;
+
+    Ok(Json(json!({
+        "payload": rows.iter().map(ReportingEventRow::json).collect::<Vec<_>>(),
+        "meta": { "count": total, "current_page": page },
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn notification_flags_roundtrip() {
         let names = flags_to_names("email", 0b101);
-        assert_eq!(names, vec!["email_conversation_creation", "email_assigned_conversation_new_message"]);
+        assert_eq!(
+            names,
+            vec![
+                "email_conversation_creation",
+                "email_assigned_conversation_new_message"
+            ]
+        );
         assert_eq!(names_to_flags("email", &json!(names)), Some(0b101));
         assert_eq!(enum_val(&json!("contact_attribute"), &ATTR_MODELS), Some(1));
         assert_eq!(enum_val(&json!("1"), &ATTR_MODELS), Some(1));

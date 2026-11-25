@@ -3,13 +3,13 @@
 //! and app/services/telegram/incoming_message_service.rb.
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::post,
-    Json, Router,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use crate::{
@@ -60,14 +60,12 @@ pub(crate) async fn create_channel(
         .bytes()
         .await
         .map_err(|e| ApiError::bad(format!("Invalid bot token: {e}")))?;
-    let me_json: Value = serde_json::from_slice(&me_bytes)
-        .map_err(|_| ApiError::bad("Invalid bot token"))?;
+    let me_json: Value =
+        serde_json::from_slice(&me_bytes).map_err(|_| ApiError::bad("Invalid bot token"))?;
     if me_json["ok"].as_bool() != Some(true) {
         return Err(ApiError::bad("Invalid bot token"));
     }
-    let bot_name = me_json["result"]["username"]
-        .as_str()
-        .map(str::to_string);
+    let bot_name = me_json["result"]["username"].as_str().map(str::to_string);
 
     let channel_id: i64 = sqlx::query_scalar(
         "INSERT INTO channel_telegram (account_id, bot_token, bot_name, created_at, updated_at)
@@ -80,8 +78,14 @@ pub(crate) async fn create_channel(
     .await?;
 
     // Register webhook (deleteWebhook best-effort, then setWebhook).
-    let _ = client.post(format!("{base}/bot{bot_token}/deleteWebhook")).send().await;
-    let webhook_url = format!("{}/webhooks/telegram/{bot_token}", frontend_url.trim_end_matches('/'));
+    let _ = client
+        .post(format!("{base}/bot{bot_token}/deleteWebhook"))
+        .send()
+        .await;
+    let webhook_url = format!(
+        "{}/webhooks/telegram/{bot_token}",
+        frontend_url.trim_end_matches('/')
+    );
     let hook_body = serde_json::to_vec(&json!({ "url": webhook_url }))
         .map_err(|e| ApiError::bad(format!("Webhook JSON error: {e}")))?;
     let hook_resp = client
@@ -116,7 +120,11 @@ async fn webhook(
     .await?;
 
     let Some(inbox_row) = inbox_row else {
-        return Ok((StatusCode::NOT_FOUND, Json(json!({ "error": "Inbox not found" }))).into_response());
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Inbox not found" })),
+        )
+            .into_response());
     };
 
     let inbox_id: i64 = inbox_row.try_get("inbox_id")?;
@@ -191,8 +199,15 @@ async fn process_update(
         None
     } else {
         let m = base_obj;
-        m["photo"].as_array().and_then(|a| a.last()).map(|f| (f, 0))
-            .or_else(|| m["sticker"]["thumb"].as_object().map(|_| (&m["sticker"]["thumb"], 0)))
+        m["photo"]
+            .as_array()
+            .and_then(|a| a.last())
+            .map(|f| (f, 0))
+            .or_else(|| {
+                m["sticker"]["thumb"]
+                    .as_object()
+                    .map(|_| (&m["sticker"]["thumb"], 0))
+            })
             .or_else(|| m["video"].as_object().map(|_| (&m["video"], 2)))
             .or_else(|| m["video_note"].as_object().map(|_| (&m["video_note"], 2)))
             .or_else(|| m["voice"].as_object().map(|_| (&m["voice"], 1)))
@@ -204,13 +219,12 @@ async fn process_update(
     }
 
     // Deduplicate by message source_id within this inbox.
-    let dup: Option<i32> = sqlx::query_scalar(
-        "SELECT 1 FROM messages WHERE inbox_id = $1 AND source_id = $2 LIMIT 1",
-    )
-    .bind(inbox_id as i32)
-    .bind(&msg_id_str)
-    .fetch_optional(&st.db)
-    .await?;
+    let dup: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM messages WHERE inbox_id = $1 AND source_id = $2 LIMIT 1")
+            .bind(inbox_id as i32)
+            .bind(&msg_id_str)
+            .fetch_optional(&st.db)
+            .await?;
     if dup.is_some() {
         return Ok(());
     }
@@ -222,7 +236,9 @@ async fn process_update(
     };
     let from = &base_obj["from"];
     let chat_id = chat["id"].as_i64().unwrap_or(0);
-    let business_conn_id = base_obj["business_connection_id"].as_str().map(str::to_string);
+    let business_conn_id = base_obj["business_connection_id"]
+        .as_str()
+        .map(str::to_string);
     let from_id = from["id"].as_i64().unwrap_or(chat_id);
     if from_id == 0 {
         return Ok(());
@@ -295,9 +311,17 @@ async fn process_update(
 
 /// Channel::Telegram#get_telegram_file_path + Down.download, then attach and re-broadcast message.updated.
 async fn attach_media(
-    st: &AppState, account_id: i64, inbox_id: i64, conv: &crate::conversations::Conv, created: &Value, file: &Value, kind: i32,
+    st: &AppState,
+    account_id: i64,
+    inbox_id: i64,
+    conv: &crate::conversations::Conv,
+    created: &Value,
+    file: &Value,
+    kind: i32,
 ) -> anyhow::Result<()> {
-    let Some(file_id) = file["file_id"].as_str() else { return Ok(()) };
+    let Some(file_id) = file["file_id"].as_str() else {
+        return Ok(());
+    };
     let token: String = sqlx::query_scalar(
         "SELECT ct.bot_token FROM inboxes i JOIN channel_telegram ct ON ct.id = i.channel_id WHERE i.id = $1 AND i.channel_type = 'Channel::Telegram'",
     )
@@ -305,17 +329,41 @@ async fn attach_media(
     .fetch_one(&st.db)
     .await?;
     let base = api_base();
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build()?;
-    let info: Value = serde_json::from_slice(&client.get(format!("{base}/bot{token}/getFile")).query(&[("file_id", file_id)]).send().await?.error_for_status()?.bytes().await?)?;
-    let Some(path) = info["result"]["file_path"].as_str() else { return Ok(()) };
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let info: Value = serde_json::from_slice(
+        &client
+            .get(format!("{base}/bot{token}/getFile"))
+            .query(&[("file_id", file_id)])
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?,
+    )?;
+    let Some(path) = info["result"]["file_path"].as_str() else {
+        return Ok(());
+    };
     if path.contains("..") {
         anyhow::bail!("unexpected file path");
     }
-    let mut resp = client.get(format!("{base}/file/bot{token}/{path}")).send().await?.error_for_status()?;
-    if resp.content_length().is_some_and(|n| n as usize > crate::storage::MAX_BYTES) {
+    let mut resp = client
+        .get(format!("{base}/file/bot{token}/{path}"))
+        .send()
+        .await?
+        .error_for_status()?;
+    if resp
+        .content_length()
+        .is_some_and(|n| n as usize > crate::storage::MAX_BYTES)
+    {
         anyhow::bail!("file too large");
     }
-    let header_ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let header_ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     // Read in chunks so a missing or false Content-Length cannot exhaust memory.
     let mut bytes = Vec::new();
     while let Some(chunk) = resp.chunk().await? {
@@ -324,14 +372,36 @@ async fn attach_media(
         }
         bytes.extend_from_slice(&chunk);
     }
-    let fname = file["file_name"].as_str().map(str::to_string).unwrap_or_else(|| path.rsplit('/').next().unwrap_or("file").to_string());
-    let ct = file["mime_type"].as_str().map(str::to_string).or(header_ct).unwrap_or_else(|| "application/octet-stream".into());
-    let Some(mid) = created["id"].as_i64() else { return Ok(()) };
-    crate::storage::attach_to_message(&st.db, account_id, mid, &fname, &ct, &bytes, (kind >= 0).then_some(kind)).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
-    let m: crate::conversations::Msg = sqlx::query_as(&format!("SELECT {} FROM messages m WHERE m.id = $1", crate::conversations::MSG_COLS))
-        .bind(mid)
-        .fetch_one(&st.db)
-        .await?;
+    let fname = file["file_name"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| path.rsplit('/').next().unwrap_or("file").to_string());
+    let ct = file["mime_type"]
+        .as_str()
+        .map(str::to_string)
+        .or(header_ct)
+        .unwrap_or_else(|| "application/octet-stream".into());
+    let Some(mid) = created["id"].as_i64() else {
+        return Ok(());
+    };
+    crate::storage::attach_to_message(
+        &st.db,
+        account_id,
+        mid,
+        &fname,
+        &ct,
+        &bytes,
+        (kind >= 0).then_some(kind),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let m: crate::conversations::Msg = sqlx::query_as(&format!(
+        "SELECT {} FROM messages m WHERE m.id = $1",
+        crate::conversations::MSG_COLS
+    ))
+    .bind(mid)
+    .fetch_one(&st.db)
+    .await?;
     let mut data = crate::conversations::msg_json(&st.db, &m, conv).await;
     data["attachments"] = serde_json::json!(crate::storage::attachments_json(&st.db, mid).await);
     crate::conversations::emit(st, conv, "message.updated", data).await;

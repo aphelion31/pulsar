@@ -269,6 +269,52 @@ export default function Sidebar({ me, accountId }: SidebarProps) {
         ],
       },
 
+      // 4.5 Help Center & Calls & Captain AI
+      {
+        name: "Help Center",
+        label: "Help Center",
+        icon: "i-lucide-book-open",
+        to: `${acctPrefix}/portals`,
+      },
+      {
+        name: "Calls",
+        label: "Voice Calls",
+        icon: "i-lucide-phone-call",
+        to: `${acctPrefix}/calls`,
+      },
+      {
+        name: "Captain",
+        label: "Captain AI",
+        icon: "i-lucide-bot",
+        children: [
+          {
+            name: "Captain Assistants",
+            label: "Assistants",
+            to: `${acctPrefix}/captain/assistants`,
+          },
+          {
+            name: "Captain Documents",
+            label: "Documents",
+            to: `${acctPrefix}/captain/documents`,
+          },
+          {
+            name: "Captain Responses",
+            label: "FAQs & Suggestions",
+            to: `${acctPrefix}/captain/responses`,
+          },
+          {
+            name: "Captain Tools",
+            label: "Tools & MCP",
+            to: `${acctPrefix}/captain/tools`,
+          },
+          {
+            name: "Captain Preferences",
+            label: "Preferences",
+            to: `${acctPrefix}/captain/preferences`,
+          },
+        ],
+      },
+
       // 5. Reports
       {
         name: "Reports",
@@ -319,6 +365,11 @@ export default function Sidebar({ me, accountId }: SidebarProps) {
             name: "Reports Bot",
             label: "Bot",
             to: `${acctPrefix}/reports/bot`,
+          },
+          {
+            name: "Reports Monitors",
+            label: "Monitors",
+            to: `${acctPrefix}/reports/monitors`,
           },
         ],
       },
@@ -466,6 +517,12 @@ export default function Sidebar({ me, accountId }: SidebarProps) {
             label: "Security",
             icon: "i-lucide-shield",
             to: `${acctPrefix}/settings/security`,
+          },
+          {
+            name: "Settings Billing",
+            label: "Billing",
+            icon: "i-lucide-credit-card",
+            to: `${acctPrefix}/settings/billing`,
           },
         ],
       },

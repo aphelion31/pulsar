@@ -4,23 +4,23 @@
 //! chatwoot/lib/integrations/dyte/processor_service.rb, and chatwoot/lib/dyte.rb.
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::post,
-    Json, Router,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2_compat::Sha256;
 use sqlx::PgPool;
 use std::sync::OnceLock;
 
 use crate::{
-    common::{require_account, AccountUser, ApiError, AppState, CurrentUser},
-    conversations::{insert_message, Conv, CONV_COLS},
+    common::{AccountUser, ApiError, AppState, CurrentUser, require_account},
+    conversations::{CONV_COLS, Conv, insert_message},
 };
 
 const DEFAULT_DYTE_API_URL: &str = "https://api.cloudflare.com/client/v4";
@@ -31,8 +31,14 @@ const MSG_MISSING_CREDS: &str = "Cloudflare RealtimeKit credentials are required
 
 pub fn account_routes() -> Router<AppState> {
     Router::new()
-        .route("/integrations/dyte/create_a_meeting", post(create_a_meeting))
-        .route("/integrations/dyte/add_participant_to_meeting", post(add_participant_to_meeting))
+        .route(
+            "/integrations/dyte/create_a_meeting",
+            post(create_a_meeting),
+        )
+        .route(
+            "/integrations/dyte/add_participant_to_meeting",
+            post(add_participant_to_meeting),
+        )
 }
 
 pub fn widget_routes() -> Router<AppState> {
@@ -114,12 +120,17 @@ async fn authorize_conv(db: &PgPool, au: &AccountUser, c: &Conv) -> Result<(), A
 }
 
 fn json_id(v: &Value) -> Option<i64> {
-    v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    v.as_i64()
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
 }
 
 fn render_dyte_response(v: Value) -> Response {
     let has_error = v.get("error").is_some_and(|e| !e.is_null());
-    let status = if has_error { StatusCode::UNPROCESSABLE_ENTITY } else { StatusCode::OK };
+    let status = if has_error {
+        StatusCode::UNPROCESSABLE_ENTITY
+    } else {
+        StatusCode::OK
+    };
     (status, Json(v)).into_response()
 }
 
@@ -168,7 +179,9 @@ async fn dyte_request(
 }
 
 fn preset_not_found(resp: &Value) -> bool {
-    let Some(err) = resp.get("error") else { return false };
+    let Some(err) = resp.get("error") else {
+        return false;
+    };
     let msg = err
         .get("error")
         .and_then(|e| e.get("message"))
@@ -180,7 +193,14 @@ fn preset_not_found(resp: &Value) -> bool {
 }
 
 async fn dyte_create_meeting(client: &reqwest::Client, creds: &DyteCreds, title: &str) -> Value {
-    dyte_request(client, creds, reqwest::Method::POST, "meetings", Some(json!({ "title": title }))).await
+    dyte_request(
+        client,
+        creds,
+        reqwest::Method::POST,
+        "meetings",
+        Some(json!({ "title": title })),
+    )
+    .await
 }
 
 async fn dyte_add_participant(
@@ -198,7 +218,14 @@ async fn dyte_add_participant(
         "picture": avatar_url,
         "preset_name": PRESET_NAME
     });
-    let resp = dyte_request(client, creds, reqwest::Method::POST, &path, Some(payload.clone())).await;
+    let resp = dyte_request(
+        client,
+        creds,
+        reqwest::Method::POST,
+        &path,
+        Some(payload.clone()),
+    )
+    .await;
     if !preset_not_found(&resp) {
         return resp;
     }
@@ -234,16 +261,31 @@ async fn store_participant_id(
     client_id: &str,
     participant_id: &str,
 ) {
-    let mut updated = if attrs.is_object() { attrs.clone() } else { json!({}) };
-    let data = updated.as_object_mut().unwrap().entry("data").or_insert_with(|| json!({}));
+    let mut updated = if attrs.is_object() {
+        attrs.clone()
+    } else {
+        json!({})
+    };
+    let data = updated
+        .as_object_mut()
+        .unwrap()
+        .entry("data")
+        .or_insert_with(|| json!({}));
     if !data.is_object() {
         *data = json!({});
     }
-    let participants = data.as_object_mut().unwrap().entry("participants").or_insert_with(|| json!({}));
+    let participants = data
+        .as_object_mut()
+        .unwrap()
+        .entry("participants")
+        .or_insert_with(|| json!({}));
     if !participants.is_object() {
         *participants = json!({});
     }
-    participants.as_object_mut().unwrap().insert(client_id.to_string(), json!(participant_id));
+    participants
+        .as_object_mut()
+        .unwrap()
+        .insert(client_id.to_string(), json!(participant_id));
     if let Err(e) = sqlx::query(
         "UPDATE messages SET content_attributes = $2::json, updated_at = now() WHERE id = $1::bigint",
     )
@@ -290,7 +332,11 @@ async fn add_participant_flow(
 
     let resp = dyte_add_participant(&client, creds, meeting_id, client_id, name, avatar_url).await;
     if resp.get("error").is_none() {
-        if let Some(pid) = resp.get("id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        if let Some(pid) = resp
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
             store_participant_id(db, message_id, attrs, client_id, pid).await;
         }
         return render_dyte_response(resp);
@@ -300,7 +346,9 @@ async fn add_participant_flow(
     if let Some(arr) = participants.as_array() {
         if let Some(pid) = arr.iter().find_map(|p| {
             let cid = p.get("custom_participant_id").and_then(|v| {
-                v.as_str().map(str::to_string).or_else(|| v.as_i64().map(|n| n.to_string()))
+                v.as_str()
+                    .map(str::to_string)
+                    .or_else(|| v.as_i64().map(|n| n.to_string()))
             })?;
             if cid == client_id {
                 p.get("id").and_then(|v| v.as_str()).map(str::to_string)
@@ -409,18 +457,38 @@ async fn add_participant_to_meeting(
     authorize_conv(&st.db, &au, &c).await?;
 
     if content_type != 10 {
-        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": MSG_INVALID_TYPE }))).into_response());
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": MSG_INVALID_TYPE })),
+        )
+            .into_response());
     }
     let Some(creds) = load_dyte_creds(&st.db, account_id).await? else {
         return Ok(render_dyte_response(json!({ "error": MSG_MISSING_CREDS })));
     };
 
     let client_id = format!("User:{}", user.id);
-    let avatar_url = format!("{}/integrations/slack/user.png", st.frontend_url.trim_end_matches('/'));
-    let name = if user.name.trim().is_empty() { "Agent" } else { user.name.as_str() };
+    let avatar_url = format!(
+        "{}/integrations/slack/user.png",
+        st.frontend_url.trim_end_matches('/')
+    );
+    let name = if user.name.trim().is_empty() {
+        "Agent"
+    } else {
+        user.name.as_str()
+    };
     let attrs = attrs.unwrap_or_else(|| json!({}));
 
-    Ok(add_participant_flow(&st.db, &creds, message_id, &attrs, &client_id, name, &avatar_url).await)
+    Ok(add_participant_flow(
+        &st.db,
+        &creds,
+        message_id,
+        &attrs,
+        &client_id,
+        name,
+        &avatar_url,
+    )
+    .await)
 }
 
 // ---------- Widget handler ----------
@@ -488,7 +556,10 @@ async fn widget_add_participant_to_meeting(
     .ok_or_else(ApiError::not_found)?;
 
     if account_status == Some(1) {
-        return Err(ApiError(StatusCode::UNAUTHORIZED, "Account is suspended".into()));
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "Account is suspended".into(),
+        ));
     }
 
     let auth_tok = headers
@@ -525,7 +596,11 @@ async fn widget_add_participant_to_meeting(
     .ok_or_else(ApiError::not_found)?;
 
     if content_type != 10 {
-        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": MSG_INVALID_TYPE }))).into_response());
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": MSG_INVALID_TYPE })),
+        )
+            .into_response());
     }
     let Some(creds) = load_dyte_creds(&st.db, account_id).await? else {
         return Ok(render_dyte_response(json!({ "error": MSG_MISSING_CREDS })));
@@ -537,8 +612,20 @@ async fn widget_add_participant_to_meeting(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or("Visitor");
-    let avatar_url = format!("{}/integrations/slack/user.png", st.frontend_url.trim_end_matches('/'));
+    let avatar_url = format!(
+        "{}/integrations/slack/user.png",
+        st.frontend_url.trim_end_matches('/')
+    );
     let attrs = attrs.unwrap_or_else(|| json!({}));
 
-    Ok(add_participant_flow(&st.db, &creds, message_id, &attrs, &client_id, name, &avatar_url).await)
+    Ok(add_participant_flow(
+        &st.db,
+        &creds,
+        message_id,
+        &attrs,
+        &client_id,
+        name,
+        &avatar_url,
+    )
+    .await)
 }

@@ -1,15 +1,15 @@
 //! OWNED BY A WORKER. See WORKERS.md for the contract.
 //! Routes here are mounted at /api/v1/accounts/{account_id}.
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     routing::{delete, get, post},
-    Json, Router,
 };
 use chrono::NaiveDateTime;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::common::{now, require_account, ts, ApiError, ApiResult, AppState, CurrentUser};
+use crate::common::{ApiError, ApiResult, AppState, CurrentUser, now, require_account, ts};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -25,7 +25,10 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/companies/{id}/avatar", delete(companies_avatar_destroy))
         .route("/companies/{id}/conversations", get(company_conversations))
-        .route("/companies/{id}/conversations/filter", post(company_conversations_filter))
+        .route(
+            "/companies/{id}/conversations/filter",
+            post(company_conversations_filter),
+        )
         .route("/companies/{id}/notes", get(company_notes))
         .route(
             "/companies/{id}/destroy_custom_attributes",
@@ -43,6 +46,7 @@ pub fn routes() -> Router<AppState> {
             "/companies/{id}/contacts/{contact_id}",
             delete(company_contacts_destroy),
         )
+        .route("/companies/{id}/enrichment", post(company_enrichment))
         // Audit Logs (admin only)
         .route("/audit_logs", get(audit_logs_index))
         // Custom Roles (admin only for mutations)
@@ -68,43 +72,96 @@ const CONTACTS_PER_PAGE: i64 = 25;
 const AUDITS_PER_PAGE: i64 = 25;
 
 async fn company_conversations_filter(
-    path: Path<(i64, i64)>, user: CurrentUser, state: State<AppState>,
-    query: Query<CompaniesQuery>, Json(body): Json<Value>,
+    path: Path<(i64, i64)>,
+    user: CurrentUser,
+    state: State<AppState>,
+    query: Query<CompaniesQuery>,
+    Json(body): Json<Value>,
 ) -> ApiResult {
     require_account(&state.0.db, &user, path.0.0).await?;
-    if body.get("payload").and_then(Value::as_array).is_some_and(|v| !v.is_empty()) {
+    if body
+        .get("payload")
+        .and_then(Value::as_array)
+        .is_some_and(|v| !v.is_empty())
+    {
         return Err(ApiError::bad("Conversation filters are not supported"));
     }
     company_conversations(path, user, state, query).await
 }
 
 async fn company_conversations(
-    Path((account_id, company_id)): Path<(i64, i64)>, user: CurrentUser,
-    State(st): State<AppState>, Query(params): Query<CompaniesQuery>,
+    Path((account_id, company_id)): Path<(i64, i64)>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+    Query(params): Query<CompaniesQuery>,
 ) -> ApiResult {
     let au = require_account(&st.db, &user, account_id).await?;
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM companies WHERE account_id=$1 AND id=$2)").bind(account_id).bind(company_id).fetch_one(&st.db).await?;
-    if !exists { return Err(ApiError::not_found()); }
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM companies WHERE account_id=$1 AND id=$2)")
+            .bind(account_id)
+            .bind(company_id)
+            .fetch_one(&st.db)
+            .await?;
+    if !exists {
+        return Err(ApiError::not_found());
+    }
     let scope = au.custom_scope_sql("$3");
-    let base = format!("FROM conversations c JOIN contacts ct ON ct.id=c.contact_id WHERE c.account_id=$1 AND ct.account_id=$1 AND ct.company_id=$2 AND ($4 OR c.inbox_id IN (SELECT inbox_id FROM inbox_members WHERE user_id=$3)) AND ({scope})");
-    let (all_count, open_count): (i64, i64) = sqlx::query_as(&format!("SELECT count(*), count(*) FILTER (WHERE c.status=0) {base}"))
-        .bind(account_id).bind(company_id).bind(user.id).bind(au.is_admin()).fetch_one(&st.db).await?;
+    let base = format!(
+        "FROM conversations c JOIN contacts ct ON ct.id=c.contact_id WHERE c.account_id=$1 AND ct.account_id=$1 AND ct.company_id=$2 AND ($4 OR c.inbox_id IN (SELECT inbox_id FROM inbox_members WHERE user_id=$3)) AND ({scope})"
+    );
+    let (all_count, open_count): (i64, i64) = sqlx::query_as(&format!(
+        "SELECT count(*), count(*) FILTER (WHERE c.status=0) {base}"
+    ))
+    .bind(account_id)
+    .bind(company_id)
+    .bind(user.id)
+    .bind(au.is_admin())
+    .fetch_one(&st.db)
+    .await?;
     let page = params.page.unwrap_or(1).max(1);
-    let rows: Vec<crate::conversations::Conv> = sqlx::query_as(&format!("SELECT {} {base} ORDER BY c.last_activity_at DESC, c.id DESC LIMIT 25 OFFSET $5", crate::conversations::CONV_COLS))
-        .bind(account_id).bind(company_id).bind(user.id).bind(au.is_admin()).bind((page-1)*25).fetch_all(&st.db).await?;
+    let rows: Vec<crate::conversations::Conv> = sqlx::query_as(&format!(
+        "SELECT {} {base} ORDER BY c.last_activity_at DESC, c.id DESC LIMIT 25 OFFSET $5",
+        crate::conversations::CONV_COLS
+    ))
+    .bind(account_id)
+    .bind(company_id)
+    .bind(user.id)
+    .bind(au.is_admin())
+    .bind((page - 1) * 25)
+    .fetch_all(&st.db)
+    .await?;
     let mut payload = Vec::new();
-    for row in &rows { payload.push(crate::conversations::conv_json(&st.db, row).await); }
-    Ok(Json(json!({"meta":{"total_count":all_count,"all_count":all_count,"open_count":open_count,"page":page},"payload":payload})))
+    for row in &rows {
+        payload.push(crate::conversations::conv_json(&st.db, row).await);
+    }
+    Ok(Json(
+        json!({"meta":{"total_count":all_count,"all_count":all_count,"open_count":open_count,"page":page},"payload":payload}),
+    ))
 }
 
 async fn company_notes(
-    Path((account_id, company_id)): Path<(i64, i64)>, user: CurrentUser,
-    State(st): State<AppState>, Query(params): Query<CompaniesQuery>,
+    Path((account_id, company_id)): Path<(i64, i64)>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+    Query(params): Query<CompaniesQuery>,
 ) -> ApiResult {
     require_account(&st.db, &user, account_id).await?;
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM companies WHERE account_id=$1 AND id=$2)").bind(account_id).bind(company_id).fetch_one(&st.db).await?;
-    if !exists { return Err(ApiError::not_found()); }
-    let q = params.q.unwrap_or_default().trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM companies WHERE account_id=$1 AND id=$2)")
+            .bind(account_id)
+            .bind(company_id)
+            .fetch_one(&st.db)
+            .await?;
+    if !exists {
+        return Err(ApiError::not_found());
+    }
+    let q = params
+        .q
+        .unwrap_or_default()
+        .trim()
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
     let pattern = format!("%{q}%");
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM notes n JOIN contacts c ON c.id=n.contact_id WHERE n.account_id=$1 AND c.account_id=$1 AND c.company_id=$2 AND n.content ILIKE $3")
         .bind(account_id).bind(company_id).bind(&pattern).fetch_one(&st.db).await?;
@@ -114,10 +171,14 @@ async fn company_notes(
     let mut payload = Vec::new();
     for (id, content, contact_id, user_id, created_at, updated_at) in rows {
         let mut item = json!({"id":id,"content":content,"account_id":account_id,"contact_id":contact_id,"created_at":ts(Some(created_at)),"updated_at":ts(Some(updated_at)),"contact":crate::conversations::contact_json(&st.db, Some(contact_id)).await});
-        if let Some(uid) = user_id { item["user"] = crate::conversations::user_json(&st.db, account_id, uid).await; }
+        if let Some(uid) = user_id {
+            item["user"] = crate::conversations::user_json(&st.db, account_id, uid).await;
+        }
         payload.push(item);
     }
-    Ok(Json(json!({"meta":{"total_count":count,"page":page},"payload":payload})))
+    Ok(Json(
+        json!({"meta":{"total_count":count,"page":page},"payload":payload}),
+    ))
 }
 
 #[allow(dead_code)]
@@ -196,12 +257,11 @@ async fn companies_index(
     let (rows, total): (Vec<CompanyRow>, i64) = if let Some(ref q) = params.q {
         let q_trimmed = q.trim();
         if q_trimmed.is_empty() {
-            let total: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM companies WHERE account_id = $1",
-            )
-            .bind(account_id)
-            .fetch_one(&st.db)
-            .await?;
+            let total: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM companies WHERE account_id = $1")
+                    .bind(account_id)
+                    .fetch_one(&st.db)
+                    .await?;
 
             let sql = format!(
                 "SELECT id, name, domain, description, account_id, created_at, updated_at,
@@ -246,12 +306,10 @@ async fn companies_index(
             (rows, total.0)
         }
     } else {
-        let total: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM companies WHERE account_id = $1",
-        )
-        .bind(account_id)
-        .fetch_one(&st.db)
-        .await?;
+        let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM companies WHERE account_id = $1")
+            .bind(account_id)
+            .fetch_one(&st.db)
+            .await?;
 
         let sql = format!(
             "SELECT id, name, domain, description, account_id, created_at, updated_at,
@@ -410,13 +468,12 @@ async fn companies_create(
         .filter(|s| !s.is_empty());
 
     if let Some(ref d) = domain {
-        let exists: Option<(i64,)> = sqlx::query_as(
-            "SELECT id FROM companies WHERE account_id = $1 AND domain = $2",
-        )
-        .bind(account_id)
-        .bind(d)
-        .fetch_optional(&st.db)
-        .await?;
+        let exists: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM companies WHERE account_id = $1 AND domain = $2")
+                .bind(account_id)
+                .bind(d)
+                .fetch_optional(&st.db)
+                .await?;
         if exists.is_some() {
             return Err(ApiError::bad("Domain has already been taken"));
         }
@@ -976,24 +1033,25 @@ async fn company_contacts_create(
             None => true,
         };
         if should_update {
-            sqlx::query("UPDATE companies SET last_activity_at = $1 WHERE account_id = $2 AND id = $3")
-                .bind(la)
-                .bind(account_id)
-                .bind(company_id)
-                .execute(&st.db)
-                .await?;
+            sqlx::query(
+                "UPDATE companies SET last_activity_at = $1 WHERE account_id = $2 AND id = $3",
+            )
+            .bind(la)
+            .bind(account_id)
+            .bind(company_id)
+            .execute(&st.db)
+            .await?;
             company.last_activity_at = Some(la);
         }
     }
 
     // refresh contacts_count on new company
-    let count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM contacts WHERE account_id = $1 AND company_id = $2",
-    )
-    .bind(account_id)
-    .bind(company_id)
-    .fetch_one(&st.db)
-    .await?;
+    let count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM contacts WHERE account_id = $1 AND company_id = $2")
+            .bind(account_id)
+            .bind(company_id)
+            .fetch_one(&st.db)
+            .await?;
     sqlx::query("UPDATE companies SET contacts_count = $1 WHERE account_id = $2 AND id = $3")
         .bind(count.0 as i32)
         .bind(account_id)
@@ -1065,13 +1123,12 @@ async fn company_contacts_destroy(
         .await?;
 
     // recalculate contacts_count
-    let count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM contacts WHERE account_id = $1 AND company_id = $2",
-    )
-    .bind(account_id)
-    .bind(company_id)
-    .fetch_one(&st.db)
-    .await?;
+    let count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM contacts WHERE account_id = $1 AND company_id = $2")
+            .bind(account_id)
+            .bind(company_id)
+            .fetch_one(&st.db)
+            .await?;
     sqlx::query("UPDATE companies SET contacts_count = $1 WHERE account_id = $2 AND id = $3")
         .bind(count.0 as i32)
         .bind(account_id)
@@ -1117,7 +1174,10 @@ fn mask_remote_address(ip_str: Option<&str>) -> Option<String> {
         Some(format!("{}.{}.{}.x", oct[0], oct[1], oct[2]))
     } else if let Ok(ipv6) = ip.parse::<std::net::Ipv6Addr>() {
         let seg = ipv6.segments();
-        Some(format!("{:x}:{:x}:{:x}:{:x}::", seg[0], seg[1], seg[2], seg[3]))
+        Some(format!(
+            "{:x}:{:x}:{:x}:{:x}::",
+            seg[0], seg[1], seg[2], seg[3]
+        ))
     } else {
         None
     }
@@ -1444,4 +1504,78 @@ async fn custom_roles_destroy(
         .await?;
 
     Ok(Json(json!({ "ok": true })))
+}
+
+// POST /companies/{id}/enrichment
+async fn company_enrichment(
+    Path((account_id, id)): Path<(i64, i64)>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id).await?;
+    let row: CompanyRow = sqlx::query_as(
+        "SELECT id, name, domain, description, account_id, created_at, updated_at,
+                contacts_count, additional_attributes, custom_attributes, last_activity_at
+         FROM companies WHERE account_id = $1 AND id = $2",
+    )
+    .bind(account_id)
+    .bind(id)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+
+    let domain = row
+        .domain
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::bad("Company domain is required for enrichment"))?
+        .to_string();
+
+    let mut attrs = row
+        .additional_attributes
+        .clone()
+        .unwrap_or_else(|| json!({}));
+    if let Ok(base) = std::env::var("COMPANY_ENRICHMENT_API_URL")
+        && !base.trim().is_empty()
+        && let Ok(client) = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+        && let Ok(resp) = client
+            .get(format!(
+                "{}/companies/find?domain={}",
+                base.trim_end_matches('/'),
+                domain
+            ))
+            .send()
+            .await
+        && resp.status().is_success()
+        && let Ok(raw) = resp.bytes().await
+        && let Ok(enriched) = serde_json::from_slice::<Value>(&raw)
+        && let Some(obj) = attrs.as_object_mut()
+    {
+        obj.insert("enrichment".into(), enriched);
+    } else if let Some(obj) = attrs.as_object_mut() {
+        obj.insert(
+            "enrichment".into(),
+            json!({
+                "domain": domain,
+                "enriched_at": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+    }
+
+    let updated: CompanyRow = sqlx::query_as(
+        "UPDATE companies SET additional_attributes = $1, updated_at = now()
+         WHERE account_id = $2 AND id = $3
+         RETURNING id, name, domain, description, account_id, created_at, updated_at,
+                   contacts_count, additional_attributes, custom_attributes, last_activity_at",
+    )
+    .bind(&attrs)
+    .bind(account_id)
+    .bind(id)
+    .fetch_one(&st.db)
+    .await?;
+
+    Ok(Json(company_to_json(&updated)))
 }

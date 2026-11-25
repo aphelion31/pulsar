@@ -11,12 +11,12 @@ use std::{
 };
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use crate::{
     common::AppState,
-    conversations::{conv_json, emit, insert_message, reload, Conv},
+    conversations::{Conv, conv_json, emit, insert_message, reload},
     events::Event,
 };
 
@@ -256,8 +256,18 @@ async fn process(st: &AppState, ev: &Event) -> anyhow::Result<()> {
         .await?;
 
         for rule in rules {
-            let conds = rule.conditions.as_array().map(|a| a.as_slice()).unwrap_or(&[]);
-            if matches_conditions(conds, &conv, contact.as_ref(), Some(&msg), ev.changed.as_ref()) {
+            let conds = rule
+                .conditions
+                .as_array()
+                .map(|a| a.as_slice())
+                .unwrap_or(&[]);
+            if matches_conditions(
+                conds,
+                &conv,
+                contact.as_ref(),
+                Some(&msg),
+                ev.changed.as_ref(),
+            ) {
                 execute_rule(st, &rule, &mut conv, Some(&msg)).await?;
             }
         }
@@ -319,7 +329,11 @@ async fn process(st: &AppState, ev: &Event) -> anyhow::Result<()> {
         .await?;
 
         for rule in rules {
-            let conds = rule.conditions.as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+            let conds = rule
+                .conditions
+                .as_array()
+                .map(|a| a.as_slice())
+                .unwrap_or(&[]);
             if matches_conditions(conds, &conv, contact.as_ref(), None, ev.changed.as_ref()) {
                 execute_rule(st, &rule, &mut conv, None).await?;
             }
@@ -422,13 +436,22 @@ fn evaluate_condition(
         let to_list = values_to_strings(raw_values.get("to").unwrap_or(&Value::Null));
         let (ch_from, ch_to) = match changed {
             Value::Array(a) if a.len() >= 2 => {
-                let f = a[0].as_str().map(|s| s.to_string()).or_else(|| a[0].as_i64().map(|n| n.to_string())).unwrap_or_default();
-                let t = a[1].as_str().map(|s| s.to_string()).or_else(|| a[1].as_i64().map(|n| n.to_string())).unwrap_or_default();
+                let f = a[0]
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| a[0].as_i64().map(|n| n.to_string()))
+                    .unwrap_or_default();
+                let t = a[1]
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| a[1].as_i64().map(|n| n.to_string()))
+                    .unwrap_or_default();
                 (f, t)
             }
             _ => return false,
         };
-        let from_ok = from_list.is_empty() || from_list.iter().any(|s| s.eq_ignore_ascii_case(&ch_from));
+        let from_ok =
+            from_list.is_empty() || from_list.iter().any(|s| s.eq_ignore_ascii_case(&ch_from));
         let to_ok = to_list.is_empty() || to_list.iter().any(|s| s.eq_ignore_ascii_case(&ch_to));
         return from_ok && to_ok;
     }
@@ -455,7 +478,9 @@ fn evaluate_condition(
         if key == "message_type" {
             let mname = message_type_name(m.message_type);
             let mtype_str = m.message_type.to_string();
-            let matches = values.iter().any(|v| v.eq_ignore_ascii_case(mname) || *v == mtype_str);
+            let matches = values
+                .iter()
+                .any(|v| v.eq_ignore_ascii_case(mname) || *v == mtype_str);
             return match op {
                 "equal_to" => matches,
                 "not_equal_to" => !matches,
@@ -463,8 +488,12 @@ fn evaluate_condition(
             };
         }
         if key == "private_note" {
-            let is_true = values.iter().any(|v| v.eq_ignore_ascii_case("true") || v == "1");
-            let is_false = values.iter().any(|v| v.eq_ignore_ascii_case("false") || v == "0");
+            let is_true = values
+                .iter()
+                .any(|v| v.eq_ignore_ascii_case("true") || v == "1");
+            let is_false = values
+                .iter()
+                .any(|v| v.eq_ignore_ascii_case("false") || v == "0");
             let matches = (m.private && is_true) || (!m.private && is_false);
             return match op {
                 "equal_to" => matches,
@@ -494,7 +523,9 @@ fn evaluate_condition(
     if key == "status" {
         let sname = status_name(conv.status);
         let sval = conv.status.to_string();
-        let matches = values.iter().any(|v| v.eq_ignore_ascii_case(sname) || *v == sval || v.eq_ignore_ascii_case("all"));
+        let matches = values
+            .iter()
+            .any(|v| v.eq_ignore_ascii_case(sname) || *v == sval || v.eq_ignore_ascii_case("all"));
         return match op {
             "equal_to" => matches,
             "not_equal_to" => !matches,
@@ -516,11 +547,15 @@ fn evaluate_condition(
             "is_not_present" => conv.assignee_id.is_none(),
             "equal_to" => match conv.assignee_id {
                 Some(aid) => values.iter().any(|v| v == &aid.to_string()),
-                None => values.iter().any(|v| v == "nil" || v == "0" || v.is_empty()),
+                None => values
+                    .iter()
+                    .any(|v| v == "nil" || v == "0" || v.is_empty()),
             },
             "not_equal_to" => match conv.assignee_id {
                 Some(aid) => !values.iter().any(|v| v == &aid.to_string()),
-                None => !values.iter().any(|v| v == "nil" || v == "0" || v.is_empty()),
+                None => !values
+                    .iter()
+                    .any(|v| v == "nil" || v == "0" || v.is_empty()),
             },
             _ => false,
         };
@@ -531,11 +566,15 @@ fn evaluate_condition(
             "is_not_present" => conv.team_id.is_none(),
             "equal_to" => match conv.team_id {
                 Some(tid) => values.iter().any(|v| v == &tid.to_string()),
-                None => values.iter().any(|v| v == "nil" || v == "0" || v.is_empty()),
+                None => values
+                    .iter()
+                    .any(|v| v == "nil" || v == "0" || v.is_empty()),
             },
             "not_equal_to" => match conv.team_id {
                 Some(tid) => !values.iter().any(|v| v == &tid.to_string()),
-                None => !values.iter().any(|v| v == "nil" || v == "0" || v.is_empty()),
+                None => !values
+                    .iter()
+                    .any(|v| v == "nil" || v == "0" || v.is_empty()),
             },
             _ => false,
         };
@@ -646,7 +685,9 @@ fn evaluate_condition(
         }
         if key == "blocked" {
             let is_blocked = ct.blocked.unwrap_or(false);
-            let target = values.iter().any(|v| v.eq_ignore_ascii_case("true") || v == "1");
+            let target = values
+                .iter()
+                .any(|v| v.eq_ignore_ascii_case("true") || v == "1");
             return match op {
                 "equal_to" => is_blocked == target,
                 "not_equal_to" => is_blocked != target,
@@ -672,10 +713,8 @@ fn evaluate_condition(
     }
 
     // 6. Custom attributes (conversation or contact)
-    let is_contact_custom = cond
-        .get("custom_attribute_type")
-        .and_then(Value::as_str)
-        == Some("contact_attribute");
+    let is_contact_custom =
+        cond.get("custom_attribute_type").and_then(Value::as_str) == Some("contact_attribute");
     let custom_attrs = if is_contact_custom {
         contact.and_then(|c| c.custom_attributes.as_ref())
     } else {
@@ -711,7 +750,9 @@ fn evaluate_condition(
                 }
             }
             if let Some(val_bool) = val.as_bool() {
-                let target = values.iter().any(|v| v.eq_ignore_ascii_case("true") || v == "1");
+                let target = values
+                    .iter()
+                    .any(|v| v.eq_ignore_ascii_case("true") || v == "1");
                 return match op {
                     "equal_to" => val_bool == target,
                     "not_equal_to" => val_bool != target,
@@ -844,10 +885,16 @@ async fn execute_rule(
     let actions = rule.actions.as_array().unwrap_or(&empty_actions);
 
     for action in actions {
-        let name = action.get("action_name").and_then(Value::as_str).unwrap_or("");
+        let name = action
+            .get("action_name")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let empty_params = json!([]);
         let params = action.get("action_params").unwrap_or(&empty_params);
-        let first_param = params.as_array().and_then(|a| a.first()).unwrap_or(&Value::Null);
+        let first_param = params
+            .as_array()
+            .and_then(|a| a.first())
+            .unwrap_or(&Value::Null);
 
         match name {
             "add_label" | "remove_label" => {
@@ -979,13 +1026,12 @@ async fn execute_rule(
                 };
 
                 if let Some(team_id) = target_team {
-                    let valid: Option<i32> = sqlx::query_scalar(
-                        "SELECT 1 FROM teams WHERE account_id = $1 AND id = $2",
-                    )
-                    .bind(conv.account_id)
-                    .bind(team_id)
-                    .fetch_optional(&st.db)
-                    .await?;
+                    let valid: Option<i32> =
+                        sqlx::query_scalar("SELECT 1 FROM teams WHERE account_id = $1 AND id = $2")
+                            .bind(conv.account_id)
+                            .bind(team_id)
+                            .fetch_optional(&st.db)
+                            .await?;
 
                     if valid.is_some() {
                         sqlx::query(
@@ -1049,10 +1095,12 @@ async fn execute_rule(
 
             "mute_conversation" => {
                 if let Some(cid) = conv.contact_id {
-                    sqlx::query("UPDATE contacts SET blocked = true, updated_at = now() WHERE id = $1")
-                        .bind(cid)
-                        .execute(&st.db)
-                        .await?;
+                    sqlx::query(
+                        "UPDATE contacts SET blocked = true, updated_at = now() WHERE id = $1",
+                    )
+                    .bind(cid)
+                    .execute(&st.db)
+                    .await?;
                 }
                 sqlx::query(
                     "UPDATE conversations SET status = 1, status_changed_at = now(), updated_at = now(), waiting_since = NULL WHERE id = $1",
@@ -1170,7 +1218,11 @@ async fn execute_rule(
 
                         if let Some(mid) = msg_id {
                             for (blob_id, fname, ct) in blobs {
-                                let ft = if ct.as_deref().unwrap_or("").starts_with("image/") { 0 } else { 3 };
+                                let ft = if ct.as_deref().unwrap_or("").starts_with("image/") {
+                                    0
+                                } else {
+                                    3
+                                };
                                 let ext = fname.rsplit('.').next().map(|s| s.to_string());
                                 let att_id: Option<i64> = sqlx::query_scalar(
                                     "INSERT INTO attachments (file_type, message_id, account_id, extension, created_at, updated_at)
@@ -1200,7 +1252,11 @@ async fn execute_rule(
             }
 
             _ => {
-                tracing::warn!(action_name = name, rule_id = rule.id, "unsupported automation action");
+                tracing::warn!(
+                    action_name = name,
+                    rule_id = rule.id,
+                    "unsupported automation action"
+                );
             }
         }
     }
@@ -1267,17 +1323,35 @@ mod tests {
         let cond_contains = json!([
             { "attribute_key": "content", "filter_operator": "contains", "values": ["refund"] }
         ]);
-        assert!(matches_conditions(cond_contains.as_array().unwrap(), &conv, None, Some(&msg), None));
+        assert!(matches_conditions(
+            cond_contains.as_array().unwrap(),
+            &conv,
+            None,
+            Some(&msg),
+            None
+        ));
 
         let cond_not_contains = json!([
             { "attribute_key": "content", "filter_operator": "does_not_contain", "values": ["refund"] }
         ]);
-        assert!(!matches_conditions(cond_not_contains.as_array().unwrap(), &conv, None, Some(&msg), None));
+        assert!(!matches_conditions(
+            cond_not_contains.as_array().unwrap(),
+            &conv,
+            None,
+            Some(&msg),
+            None
+        ));
 
         let cond_no_match = json!([
             { "attribute_key": "content", "filter_operator": "contains", "values": ["shipping"] }
         ]);
-        assert!(!matches_conditions(cond_no_match.as_array().unwrap(), &conv, None, Some(&msg), None));
+        assert!(!matches_conditions(
+            cond_no_match.as_array().unwrap(),
+            &conv,
+            None,
+            Some(&msg),
+            None
+        ));
     }
 
     #[test]
@@ -1288,19 +1362,37 @@ mod tests {
             { "attribute_key": "labels", "filter_operator": "equal_to", "values": ["billing"], "query_operator": "AND" },
             { "attribute_key": "status", "filter_operator": "equal_to", "values": ["open"] }
         ]);
-        assert!(matches_conditions(cond.as_array().unwrap(), &conv, None, None, None));
+        assert!(matches_conditions(
+            cond.as_array().unwrap(),
+            &conv,
+            None,
+            None,
+            None
+        ));
 
         let cond_fail = json!([
             { "attribute_key": "labels", "filter_operator": "equal_to", "values": ["missing_tag"], "query_operator": "AND" },
             { "attribute_key": "status", "filter_operator": "equal_to", "values": ["open"] }
         ]);
-        assert!(!matches_conditions(cond_fail.as_array().unwrap(), &conv, None, None, None));
+        assert!(!matches_conditions(
+            cond_fail.as_array().unwrap(),
+            &conv,
+            None,
+            None,
+            None
+        ));
 
         let cond_or = json!([
             { "attribute_key": "labels", "filter_operator": "equal_to", "values": ["missing_tag"], "query_operator": "OR" },
             { "attribute_key": "status", "filter_operator": "equal_to", "values": ["open"] }
         ]);
-        assert!(matches_conditions(cond_or.as_array().unwrap(), &conv, None, None, None));
+        assert!(matches_conditions(
+            cond_or.as_array().unwrap(),
+            &conv,
+            None,
+            None,
+            None
+        ));
     }
 
     #[test]
@@ -1340,17 +1432,35 @@ mod tests {
         let cond_custom = json!([
             { "attribute_key": "vip_code", "filter_operator": "equal_to", "values": ["gold"] }
         ]);
-        assert!(matches_conditions(cond_custom.as_array().unwrap(), &conv, None, None, None));
+        assert!(matches_conditions(
+            cond_custom.as_array().unwrap(),
+            &conv,
+            None,
+            None,
+            None
+        ));
 
         let changed = json!({ "status": ["open", "resolved"] });
         let cond_changed = json!([
             { "attribute_key": "status", "filter_operator": "attribute_changed", "values": { "from": ["open"], "to": ["resolved"] } }
         ]);
-        assert!(matches_conditions(cond_changed.as_array().unwrap(), &conv, None, None, Some(&changed)));
+        assert!(matches_conditions(
+            cond_changed.as_array().unwrap(),
+            &conv,
+            None,
+            None,
+            Some(&changed)
+        ));
 
         let cond_changed_miss = json!([
             { "attribute_key": "status", "filter_operator": "attribute_changed", "values": { "from": ["pending"], "to": ["resolved"] } }
         ]);
-        assert!(!matches_conditions(cond_changed_miss.as_array().unwrap(), &conv, None, None, Some(&changed)));
+        assert!(!matches_conditions(
+            cond_changed_miss.as_array().unwrap(),
+            &conv,
+            None,
+            None,
+            Some(&changed)
+        ));
     }
 }

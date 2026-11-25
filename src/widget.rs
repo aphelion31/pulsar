@@ -3,15 +3,15 @@
 //! Visitor identity = HS256 token (X-Auth-Token header; cw_conversation query on /widget).
 //! HS256 is hand-rolled on sha2 because jsonwebtoken 11 has no crypto backend enabled in Cargo.toml (would panic).
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
-    Json, Router,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::sync::OnceLock;
@@ -19,13 +19,26 @@ use std::sync::OnceLock;
 use crate::{
     auth::{availability_name, locale_code},
     common::*,
-    conversations::{contact_json, conv_json, insert_message, msg_json, reload, Conv, Msg, CONV_COLS, MSG_COLS},
+    conversations::{
+        CONV_COLS, Conv, MSG_COLS, Msg, contact_json, conv_json, insert_message, msg_json, reload,
+    },
 };
 
 const STATUSES: [&str; 4] = ["open", "resolved", "pending", "snoozed"];
 const CONTENT_TYPES: [&str; 13] = [
-    "text", "input_text", "input_textarea", "input_email", "input_select", "cards", "form", "article",
-    "incoming_email", "input_csat", "integrations", "sticker", "voice_call",
+    "text",
+    "input_text",
+    "input_textarea",
+    "input_email",
+    "input_select",
+    "cards",
+    "form",
+    "article",
+    "incoming_email",
+    "input_csat",
+    "integrations",
+    "sticker",
+    "voice_call",
 ];
 const REPLY_TIMES: [&str; 3] = ["in_a_few_minutes", "in_a_few_hours", "in_a_day"];
 
@@ -98,26 +111,67 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/widget", get(page))
         .route("/api/v1/widget/config", post(config))
-        .route("/api/v1/widget/conversations", get(conv_index).post(conv_create))
-        .route("/api/v1/widget/conversations/update_last_seen", post(update_last_seen))
-        .route("/api/v1/widget/conversations/toggle_typing", post(toggle_typing))
-        .route("/api/v1/widget/conversations/toggle_status", get(toggle_status))
+        .route(
+            "/api/v1/widget/conversations",
+            get(conv_index).post(conv_create),
+        )
+        .route(
+            "/api/v1/widget/conversations/update_last_seen",
+            post(update_last_seen),
+        )
+        .route(
+            "/api/v1/widget/conversations/toggle_typing",
+            post(toggle_typing),
+        )
+        .route(
+            "/api/v1/widget/conversations/toggle_status",
+            get(toggle_status),
+        )
         .route("/api/v1/widget/messages", get(msg_index).post(msg_create))
-        .route("/api/v1/widget/messages/{id}", patch(msg_update).put(msg_update))
-        .route("/api/v1/widget/contact", get(contact_show).patch(contact_update).put(contact_update))
+        .route(
+            "/api/v1/widget/messages/{id}",
+            patch(msg_update).put(msg_update),
+        )
+        .route(
+            "/api/v1/widget/contact",
+            get(contact_show).patch(contact_update).put(contact_update),
+        )
         .route("/api/v1/widget/contact/set_user", patch(contact_set_user))
-        .route("/api/v1/widget/contact/destroy_custom_attributes", post(contact_destroy_custom_attributes))
-        .route("/api/v1/widget/conversations/set_custom_attributes", post(conv_set_custom_attributes))
-        .route("/api/v1/widget/conversations/destroy_custom_attributes", post(conv_destroy_custom_attributes))
-        .route("/api/v1/widget/conversations/transcript", post(conv_transcript))
+        .route(
+            "/api/v1/widget/contact/destroy_custom_attributes",
+            post(contact_destroy_custom_attributes),
+        )
+        .route(
+            "/api/v1/widget/conversations/set_custom_attributes",
+            post(conv_set_custom_attributes),
+        )
+        .route(
+            "/api/v1/widget/conversations/destroy_custom_attributes",
+            post(conv_destroy_custom_attributes),
+        )
+        .route(
+            "/api/v1/widget/conversations/transcript",
+            post(conv_transcript),
+        )
         .route("/api/v1/widget/inbox_members", get(inbox_members))
         .route("/api/v1/widget/events", post(events))
         .route("/api/v1/widget/campaigns", get(campaigns))
-        .route("/api/v1/widget/labels", post(label_add).delete(label_remove))
-        .route("/api/v1/widget/labels/{id}", axum::routing::delete(label_remove_by_id))
+        .route(
+            "/api/v1/widget/labels",
+            post(label_add).delete(label_remove),
+        )
+        .route(
+            "/api/v1/widget/labels/{id}",
+            axum::routing::delete(label_remove_by_id),
+        )
 }
 
-async fn label_remove_by_id(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, axum::extract::Path(id): axum::extract::Path<String>) -> ApiResult<StatusCode> {
+async fn label_remove_by_id(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> ApiResult<StatusCode> {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = required(&st, &w, &headers).await?;
     if let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? {
@@ -139,7 +193,10 @@ async fn campaigns(State(st): State<AppState>, Query(q): Query<Q>) -> ApiResult 
     .await?;
     let mut out = Vec::with_capacity(rows.len());
     for (id, rules, bh, message, sender) in rows {
-        let sender = match sender { Some(u) => crate::conversations::user_json(&st.db, w.account_id, u).await, None => Value::Null };
+        let sender = match sender {
+            Some(u) => crate::conversations::user_json(&st.db, w.account_id, u).await,
+            None => Value::Null,
+        };
         out.push(json!({ "id": id, "trigger_rules": rules, "trigger_only_during_business_hours": bh.unwrap_or(false), "message": message, "sender": sender }));
     }
     Ok(Json(json!(out)))
@@ -147,14 +204,22 @@ async fn campaigns(State(st): State<AppState>, Query(q): Query<Q>) -> ApiResult 
 
 /// POST /api/v1/widget/events: only `campaign.triggered` has an effect (campaign_listener.rb +
 /// campaigns/campaign_conversation_builder.rb); other events are analytics and are accepted silently.
-async fn events(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
+async fn events(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = required(&st, &w, &headers).await?;
     if b["name"] != "campaign.triggered" {
         return Ok(Json(json!({})));
     }
     let info = &b["event_info"];
-    let Some(display_id) = info["campaign_id"].as_i64().or_else(|| info["campaign_id"].as_str().and_then(|v| v.parse().ok())) else {
+    let Some(display_id) = info["campaign_id"]
+        .as_i64()
+        .or_else(|| info["campaign_id"].as_str().and_then(|v| v.parse().ok()))
+    else {
         return Ok(Json(json!({})));
     };
     let campaign: Option<(i64, String, Option<i64>)> = sqlx::query_as(
@@ -165,15 +230,21 @@ async fn events(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<
     .bind(display_id)
     .fetch_optional(&st.db)
     .await?;
-    let Some((campaign_id, message, sender)) = campaign else { return Ok(Json(json!({}))) };
+    let Some((campaign_id, message, sender)) = campaign else {
+        return Ok(Json(json!({})));
+    };
     // Builder rule: no campaign when the contact already has a conversation. Lock the contact_inbox row
     // so two triggers racing cannot both create one.
     let mut tx = st.db.begin().await?;
-    sqlx::query("SELECT 1 FROM contact_inboxes WHERE id = $1 FOR UPDATE").bind(s.c.ci_id).execute(&mut *tx).await?;
-    let existing: Option<i32> = sqlx::query_scalar("SELECT 1 FROM conversations WHERE contact_inbox_id = $1 LIMIT 1")
+    sqlx::query("SELECT 1 FROM contact_inboxes WHERE id = $1 FOR UPDATE")
         .bind(s.c.ci_id)
-        .fetch_optional(&mut *tx)
+        .execute(&mut *tx)
         .await?;
+    let existing: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM conversations WHERE contact_inbox_id = $1 LIMIT 1")
+            .bind(s.c.ci_id)
+            .fetch_optional(&mut *tx)
+            .await?;
     if existing.is_some() {
         return Ok(Json(json!({})));
     }
@@ -182,7 +253,11 @@ async fn events(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<
         o.remove("campaign_id");
         o.remove("custom_attributes");
     }
-    let custom = if info["custom_attributes"].is_object() { info["custom_attributes"].clone() } else { json!({}) };
+    let custom = if info["custom_attributes"].is_object() {
+        info["custom_attributes"].clone()
+    } else {
+        json!({})
+    };
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO conversations (account_id, inbox_id, status, contact_id, contact_inbox_id, campaign_id,
             additional_attributes, custom_attributes, last_activity_at, created_at, updated_at)
@@ -200,7 +275,18 @@ async fn events(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<
     tx.commit().await?;
     let c = reload(&st.db, id).await?;
     notify_conv(&st, &c, "conversation.created").await?;
-    let m = insert_message(&st, &c, sender.map(|u| ("User", u)), &message, 1, false, 0, json!({}), None).await?;
+    let m = insert_message(
+        &st,
+        &c,
+        sender.map(|u| ("User", u)),
+        &message,
+        1,
+        false,
+        0,
+        json!({}),
+        None,
+    )
+    .await?;
     // MessageBuilder#campaign_id stores it in message additional_attributes
     sqlx::query("UPDATE messages SET additional_attributes = COALESCE(additional_attributes,'{}'::jsonb) || jsonb_build_object('campaign_id', $2::bigint) WHERE id = $1")
         .bind(m["id"].as_i64().unwrap_or_default())
@@ -281,12 +367,23 @@ fn secret() -> &'static [u8] {
 }
 
 fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
-    let mut k = if key.len() > 64 { Sha256::digest(key).to_vec() } else { key.to_vec() };
+    let mut k = if key.len() > 64 {
+        Sha256::digest(key).to_vec()
+    } else {
+        key.to_vec()
+    };
     k.resize(64, 0);
     let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
     let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
-    let inner = Sha256::new().chain_update(&ipad).chain_update(msg).finalize();
-    Sha256::new().chain_update(&opad).chain_update(inner).finalize().to_vec()
+    let inner = Sha256::new()
+        .chain_update(&ipad)
+        .chain_update(msg)
+        .finalize();
+    Sha256::new()
+        .chain_update(&opad)
+        .chain_update(inner)
+        .finalize()
+        .to_vec()
 }
 
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
@@ -327,18 +424,26 @@ fn decode(token: &str, inbox_id: i64) -> Option<Claims> {
 }
 
 fn token(h: &HeaderMap) -> Option<String> {
-    h.get("x-auth-token").and_then(|v| v.to_str().ok()).map(str::to_string)
+    h.get("x-auth-token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
 }
 
 /// Writes need a valid visitor token from POST /config; a missing or forged token is 401.
 async fn required(st: &AppState, w: &Wd, h: &HeaderMap) -> ApiResult<Sess> {
-    read_session(&st.db, w, token(h).as_deref()).await?.ok_or_else(ApiError::unauthorized)
+    read_session(&st.db, w, token(h).as_deref())
+        .await?
+        .ok_or_else(ApiError::unauthorized)
 }
 
 // ---------- lookups ----------
 
 /// Visitor session gate for storage direct uploads (Chatwoot `set_contact`). Rejects without a valid X-Auth-Token.
-pub(crate) async fn check_visitor(st: &AppState, website_token: Option<&str>, headers: &HeaderMap) -> ApiResult<()> {
+pub(crate) async fn check_visitor(
+    st: &AppState,
+    website_token: Option<&str>,
+    headers: &HeaderMap,
+) -> ApiResult<()> {
     let w = widget_of(&st.db, website_token).await?;
     required(st, &w, headers).await?;
     Ok(())
@@ -346,9 +451,16 @@ pub(crate) async fn check_visitor(st: &AppState, website_token: Option<&str>, he
 
 async fn widget_of(db: &PgPool, website_token: Option<&str>) -> ApiResult<Wd> {
     let t = website_token.ok_or_else(ApiError::not_found)?;
-    let w: Wd = sqlx::query_as(WIDGET_SQL).bind(t).fetch_optional(db).await?.ok_or_else(ApiError::not_found)?;
+    let w: Wd = sqlx::query_as(WIDGET_SQL)
+        .bind(t)
+        .fetch_optional(db)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     if w.account_status == 1 {
-        return Err(ApiError(StatusCode::UNAUTHORIZED, "Account is suspended".into()));
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "Account is suspended".into(),
+        ));
     }
     Ok(w)
 }
@@ -370,24 +482,40 @@ async fn find_contact(db: &PgPool, w: &Wd, source_id: &str) -> ApiResult<Option<
 /// Read-only: resolve visitor from a valid token. No contact is created.
 async fn read_session(db: &PgPool, w: &Wd, tok: Option<&str>) -> ApiResult<Option<Sess>> {
     let Some(tok) = tok else { return Ok(None) };
-    let Some(cl) = decode(tok, w.inbox_id) else { return Ok(None) };
-    let Some(c) = find_contact(db, w, &cl.source_id).await? else { return Ok(None) };
+    let Some(cl) = decode(tok, w.inbox_id) else {
+        return Ok(None);
+    };
+    let Some(c) = find_contact(db, w, &cl.source_id).await? else {
+        return Ok(None);
+    };
     // chatwoot#15776: tokens minted before the last rotation for this visitor are revoked.
-    let floor: Option<i64> = sqlx::query_scalar("SELECT min_iat FROM pulsar_widget_token_floors WHERE contact_inbox_id = $1")
-        .bind(c.ci_id)
-        .fetch_optional(db)
-        .await?;
+    let floor: Option<i64> = sqlx::query_scalar(
+        "SELECT min_iat FROM pulsar_widget_token_floors WHERE contact_inbox_id = $1",
+    )
+    .bind(c.ci_id)
+    .fetch_optional(db)
+    .await?;
     if floor.is_some_and(|f| cl.iat < f) {
         return Ok(None);
     }
-    Ok(Some(Sess { c, token: tok.to_string(), iat: cl.iat }))
+    Ok(Some(Sess {
+        c,
+        token: tok.to_string(),
+        iat: cl.iat,
+    }))
 }
 
 /// chatwoot#15776: revoke every earlier token for this visitor and mint one that passes the new floor.
 /// iat has one-second resolution, so the floor must be strictly above the iat of the token being
 /// replaced (and above any previous floor). Otherwise a rotation in the same second as the token was
 /// minted would yield an identical token and the old one would stay valid.
-async fn rotate_token(db: &PgPool, w: &Wd, ci_id: i64, source_id: &str, current_iat: i64) -> ApiResult<String> {
+async fn rotate_token(
+    db: &PgPool,
+    w: &Wd,
+    ci_id: i64,
+    source_id: &str,
+    current_iat: i64,
+) -> ApiResult<String> {
     let floor: i64 = sqlx::query_scalar(
         "INSERT INTO pulsar_widget_token_floors (contact_inbox_id, min_iat, updated_at)
          VALUES ($1, greatest(extract(epoch from now())::bigint, $2 + 1), now())
@@ -407,9 +535,14 @@ async fn rotate_token(db: &PgPool, w: &Wd, ci_id: i64, source_id: &str, current_
 /// Only used by POST /config: a present-but-invalid token is rejected instead of silently replaced.
 async fn session(st: &AppState, w: &Wd, tok: Option<&str>) -> ApiResult<Sess> {
     if tok.is_some() {
-        return read_session(&st.db, w, tok).await?.ok_or_else(ApiError::unauthorized);
+        return read_session(&st.db, w, tok)
+            .await?
+            .ok_or_else(ApiError::unauthorized);
     }
-    let name = format!("visitor-{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
+    let name = format!(
+        "visitor-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..6]
+    );
     let contact_id: i64 = sqlx::query_scalar(
         "INSERT INTO contacts (account_id, name, created_at, updated_at) VALUES ($1, $2, now(), now()) RETURNING id::bigint",
     )
@@ -440,7 +573,11 @@ async fn session(st: &AppState, w: &Wd, tok: Option<&str>) -> ApiResult<Sess> {
         phone_number: None,
         identifier: None,
     };
-    Ok(Sess { c, token, iat: chrono::Utc::now().timestamp() })
+    Ok(Sess {
+        c,
+        token,
+        iat: chrono::Utc::now().timestamp(),
+    })
 }
 
 fn presence(c: &Cs) -> Value {
@@ -485,10 +622,11 @@ async fn notify_agents(st: &AppState, c: &Conv, event: &str) -> ApiResult<()> {
 async fn notify_conv(st: &AppState, c: &Conv, event: &str) -> ApiResult<()> {
     notify_agents(st, c, event).await?;
     if let Some(ci) = c.contact_inbox_id {
-        let t: Option<Option<String>> = sqlx::query_scalar("SELECT pubsub_token FROM contact_inboxes WHERE id = $1::bigint")
-            .bind(ci)
-            .fetch_optional(&st.db)
-            .await?;
+        let t: Option<Option<String>> =
+            sqlx::query_scalar("SELECT pubsub_token FROM contact_inboxes WHERE id = $1::bigint")
+                .bind(ci)
+                .fetch_optional(&st.db)
+                .await?;
         if let Some(Some(t)) = t {
             st.hub.broadcast(&[t], event, widget_data(c));
         }
@@ -496,7 +634,13 @@ async fn notify_conv(st: &AppState, c: &Conv, event: &str) -> ApiResult<()> {
     Ok(())
 }
 
-async fn create_conv(st: &AppState, w: &Wd, s: &Sess, extra: Value, custom: Value) -> ApiResult<Conv> {
+async fn create_conv(
+    st: &AppState,
+    w: &Wd,
+    s: &Sess,
+    extra: Value,
+    custom: Value,
+) -> ApiResult<Conv> {
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO conversations (account_id, inbox_id, status, contact_id, contact_inbox_id,
             additional_attributes, custom_attributes, last_activity_at, created_at, updated_at)
@@ -520,13 +664,15 @@ async fn wmsg(db: &PgPool, m: &Msg, display_id: i64) -> Value {
     let sender = match (m.sender_type.as_deref(), m.sender_id) {
         (Some("Contact"), _) => json!({ "type": "contact" }),
         (Some("User"), Some(uid)) => {
-            let name: Option<String> = sqlx::query_scalar::<_, Option<String>>("SELECT name FROM users WHERE id = $1::bigint")
-                .bind(uid)
-                .fetch_optional(db)
-                .await
-                .ok()
-                .flatten()
-                .flatten();
+            let name: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT name FROM users WHERE id = $1::bigint",
+            )
+            .bind(uid)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
             json!({ "id": uid, "name": name.unwrap_or_default(), "type": "user", "avatar_url": "" })
         }
         _ => Value::Null,
@@ -611,7 +757,13 @@ fn strip_html(raw: &str) -> String {
 /// Safe contact update: name/phone/custom_attributes merge; email only if not taken by another contact.
 /// ponytail: identifier is never set from the client (would allow binding to another visitor's contact).
 async fn apply_contact(db: &PgPool, w: &Wd, cid: i64, src: &Value) -> ApiResult<()> {
-    let clean = |k: &str| src[k].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let clean = |k: &str| {
+        src[k]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
     let name = clean("name");
     let phone = clean("phone_number");
     let mut email = clean("email").map(|e| e.to_lowercase());
@@ -628,7 +780,9 @@ async fn apply_contact(db: &PgPool, w: &Wd, cid: i64, src: &Value) -> ApiResult<
             email = None; // discard like Chatwoot discard_invalid_attrs
         }
     }
-    let custom = src["custom_attributes"].is_object().then(|| src["custom_attributes"].clone());
+    let custom = src["custom_attributes"]
+        .is_object()
+        .then(|| src["custom_attributes"].clone());
     sqlx::query(
         "UPDATE contacts SET name = COALESCE($3, name), email = COALESCE($4, email),
            phone_number = COALESCE($5, phone_number),
@@ -651,19 +805,31 @@ async fn apply_contact(db: &PgPool, w: &Wd, cid: i64, src: &Value) -> ApiResult<
 
 /// Chatwoot `ActiveSupport::TimeZone[tz].now.formatted_offset`, e.g. "+05:30". Unknown zone gives "+00:00".
 async fn utc_offset(db: &PgPool, tz: &str) -> String {
-    let secs: i64 = sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM ((now() AT TIME ZONE $1) - (now() AT TIME ZONE 'UTC')))::bigint")
-        .bind(tz)
-        .fetch_one(db)
-        .await
-        .unwrap_or(0);
+    let secs: i64 = sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM ((now() AT TIME ZONE $1) - (now() AT TIME ZONE 'UTC')))::bigint",
+    )
+    .bind(tz)
+    .fetch_one(db)
+    .await
+    .unwrap_or(0);
     let sign = if secs < 0 { '-' } else { '+' };
     let abs = secs.abs();
     format!("{sign}{:02}:{:02}", abs / 3600, (abs % 3600) / 60)
 }
 
 fn pick_gc(gc: &Map<String, Value>) -> Value {
-    const KEYS: [&str; 5] = ["LOGO_THUMBNAIL", "BRAND_NAME", "WIDGET_BRAND_URL", "MAXIMUM_FILE_UPLOAD_SIZE", "INSTALLATION_NAME"];
-    Value::Object(KEYS.iter().map(|k| (k.to_string(), gc.get(*k).cloned().unwrap_or(Value::Null))).collect())
+    const KEYS: [&str; 5] = [
+        "LOGO_THUMBNAIL",
+        "BRAND_NAME",
+        "WIDGET_BRAND_URL",
+        "MAXIMUM_FILE_UPLOAD_SIZE",
+        "INSTALLATION_NAME",
+    ];
+    Value::Object(
+        KEYS.iter()
+            .map(|k| (k.to_string(), gc.get(*k).cloned().unwrap_or(Value::Null)))
+            .collect(),
+    )
 }
 
 fn pre_chat_options(v: Option<Value>) -> Value {
@@ -691,7 +857,11 @@ async fn channel_json(db: &PgPool, w: &Wd, token: &str) -> Value {
     .fetch_one(db)
     .await
     .unwrap_or(json!([]));
-    let features: Vec<&str> = FEATURE_BITS.iter().filter(|(_, b)| w.feature_flags as i64 & b != 0).map(|(n, _)| *n).collect();
+    let features: Vec<&str> = FEATURE_BITS
+        .iter()
+        .filter(|(_, b)| w.feature_flags as i64 & b != 0)
+        .map(|(n, _)| *n)
+        .collect();
     let (acc_flags, acc_flags_ext): (i64, i64) = sqlx::query_as("SELECT COALESCE(feature_flags,0)::bigint, COALESCE(feature_flags_ext_1,0)::bigint FROM accounts WHERE id = $1")
         .bind(w.account_id)
         .fetch_one(db)
@@ -734,8 +904,7 @@ async fn page(axum::extract::RawQuery(q): axum::extract::RawQuery) -> Response {
     let raw = q.unwrap_or_default();
     let cleaned: String = url::form_urlencoded::Serializer::new(String::new())
         .extend_pairs(
-            url::form_urlencoded::parse(raw.as_bytes())
-                .filter(|(k, _)| k != "cw_conversation"),
+            url::form_urlencoded::parse(raw.as_bytes()).filter(|(k, _)| k != "cw_conversation"),
         )
         .finish();
     let target = if cleaned.is_empty() {
@@ -745,7 +914,10 @@ async fn page(axum::extract::RawQuery(q): axum::extract::RawQuery) -> Response {
     };
     let mut res = axum::response::Redirect::to(&target).into_response();
     let h = res.headers_mut();
-    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     res
 }
@@ -767,7 +939,11 @@ async fn config(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<
 // ---------- conversations ----------
 
 /// GET /api/v1/widget/conversations
-async fn conv_index(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>) -> ApiResult {
+async fn conv_index(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let Some(s) = read_session(&st.db, &w, token(&headers).as_deref()).await? else {
         return Ok(Json(json!({})));
@@ -779,16 +955,35 @@ async fn conv_index(State(st): State<AppState>, headers: HeaderMap, Query(q): Qu
 }
 
 /// POST /api/v1/widget/conversations  { contact, message, custom_attributes }
-async fn conv_create(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
+async fn conv_create(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = required(&st, &w, &headers).await?;
     let content = msg_content(&b["message"])?;
     apply_contact(&st.db, &w, s.c.contact_id, &b["contact"]).await?;
     let extra = json!({ "referer": b["message"]["referer_url"], "initiated_at": b["message"]["timestamp"] });
-    let custom = if b["custom_attributes"].is_object() { b["custom_attributes"].clone() } else { json!({}) };
+    let custom = if b["custom_attributes"].is_object() {
+        b["custom_attributes"].clone()
+    } else {
+        json!({})
+    };
     let c = create_conv(&st, &w, &s, extra, custom).await?;
-    insert_message(&st, &c, Some(("Contact", s.c.contact_id)), &content, 0, false, 0, json!({}), b["message"]["echo_id"].as_str())
-        .await?;
+    insert_message(
+        &st,
+        &c,
+        Some(("Contact", s.c.contact_id)),
+        &content,
+        0,
+        false,
+        0,
+        json!({}),
+        b["message"]["echo_id"].as_str(),
+    )
+    .await?;
     let c = reload(&st.db, c.id).await?;
     let mut out = widget_data(&c);
     out["messages"] = json!(chat_messages(&st.db, &c, None).await?);
@@ -797,7 +992,11 @@ async fn conv_create(State(st): State<AppState>, headers: HeaderMap, Query(q): Q
 }
 
 /// POST /api/v1/widget/conversations/update_last_seen
-async fn update_last_seen(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>) -> ApiResult {
+async fn update_last_seen(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let Some(s) = read_session(&st.db, &w, token(&headers).as_deref()).await? else {
         return Ok(Json(json!({})));
@@ -812,11 +1011,20 @@ async fn update_last_seen(State(st): State<AppState>, headers: HeaderMap, Query(
 }
 
 /// POST /api/v1/widget/conversations/toggle_typing  { typing_status: on|off }
-async fn toggle_typing(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
+async fn toggle_typing(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
-    let s = read_session(&st.db, &w, token(&headers).as_deref()).await?.ok_or_else(ApiError::not_found)?;
+    let s = read_session(&st.db, &w, token(&headers).as_deref())
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     // Chatwoot #14710: the SDK sends typing before the first message exists. No conversation yet is a no-op, not a 404.
-    let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else { return Ok(Json(json!({}))) };
+    let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else {
+        return Ok(Json(json!({})));
+    };
     let event = match b["typing_status"].as_str() {
         Some("on") => "conversation.typing_on",
         Some("off") => "conversation.typing_off",
@@ -834,13 +1042,21 @@ async fn toggle_typing(State(st): State<AppState>, headers: HeaderMap, Query(q):
 }
 
 /// GET /api/v1/widget/conversations/toggle_status  (visitor ends conversation)
-async fn toggle_status(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>) -> ApiResult {
+async fn toggle_status(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     if w.feature_flags & 4 == 0 {
         return Err(ApiError::forbidden()); // end_conversation flag off
     }
-    let s = read_session(&st.db, &w, token(&headers).as_deref()).await?.ok_or_else(ApiError::not_found)?;
-    let c = latest_conv(&st.db, &w, s.c.ci_id).await?.ok_or_else(ApiError::not_found)?;
+    let s = read_session(&st.db, &w, token(&headers).as_deref())
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let c = latest_conv(&st.db, &w, s.c.ci_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     if c.status != 1 {
         sqlx::query("UPDATE conversations SET status = 1, updated_at = now() WHERE id = $1")
             .bind(c.id as i32)
@@ -855,11 +1071,19 @@ async fn toggle_status(State(st): State<AppState>, headers: HeaderMap, Query(q):
 // ---------- messages ----------
 
 /// GET /api/v1/widget/messages?before=
-async fn msg_index(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>) -> ApiResult {
+async fn msg_index(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let empty = || Json(json!({ "payload": [], "meta": {} }));
-    let Some(s) = read_session(&st.db, &w, token(&headers).as_deref()).await? else { return Ok(empty()) };
-    let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else { return Ok(empty()) };
+    let Some(s) = read_session(&st.db, &w, token(&headers).as_deref()).await? else {
+        return Ok(empty());
+    };
+    let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else {
+        return Ok(empty());
+    };
     Ok(Json(json!({
         "payload": chat_messages(&st.db, &c, q.before).await?,
         "meta": { "contact_last_seen_at": ts(c.contact_last_seen_at) },
@@ -867,7 +1091,12 @@ async fn msg_index(State(st): State<AppState>, headers: HeaderMap, Query(q): Que
 }
 
 /// POST /api/v1/widget/messages  { message: { content, echo_id, timestamp, referer_url } }
-async fn msg_create(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
+async fn msg_create(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = required(&st, &w, &headers).await?;
     let content = msg_content(&b["message"])?;
@@ -891,7 +1120,10 @@ async fn msg_create(State(st): State<AppState>, headers: HeaderMap, Query(q): Qu
     let (conv, created_new) = match existing {
         Some(c) => {
             if c.status == 1 && !w.allow_messages_after_resolved.unwrap_or(true) {
-                return Err(ApiError(StatusCode::FORBIDDEN, "Conversation is resolved. Start a new conversation.".into()));
+                return Err(ApiError(
+                    StatusCode::FORBIDDEN,
+                    "Conversation is resolved. Start a new conversation.".into(),
+                ));
             }
             (c, false)
         }
@@ -909,10 +1141,12 @@ async fn msg_create(State(st): State<AppState>, headers: HeaderMap, Query(q): Qu
             .bind(extra)
             .fetch_one(&mut *tx)
             .await?;
-            let c: Conv = sqlx::query_as(&format!("SELECT {CONV_COLS} FROM conversations c WHERE c.id = $1"))
-                .bind(id)
-                .fetch_one(&mut *tx)
-                .await?;
+            let c: Conv = sqlx::query_as(&format!(
+                "SELECT {CONV_COLS} FROM conversations c WHERE c.id = $1"
+            ))
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
             (c, true)
         }
     };
@@ -921,12 +1155,25 @@ async fn msg_create(State(st): State<AppState>, headers: HeaderMap, Query(q): Qu
         notify_conv(&st, &conv, "conversation.created").await?;
     }
     let echo = b["message"]["echo_id"].as_str();
-    let created = insert_message(&st, &conv, Some(("Contact", s.c.contact_id)), &content, 0, false, 0, json!({}), echo).await?;
+    let created = insert_message(
+        &st,
+        &conv,
+        Some(("Contact", s.c.contact_id)),
+        &content,
+        0,
+        false,
+        0,
+        json!({}),
+        echo,
+    )
+    .await?;
     let id = created["id"].as_i64().unwrap_or_default();
-    let m: Msg = sqlx::query_as(&format!("SELECT {MSG_COLS} FROM messages m WHERE m.id::bigint = $1"))
-        .bind(id)
-        .fetch_one(&st.db)
-        .await?;
+    let m: Msg = sqlx::query_as(&format!(
+        "SELECT {MSG_COLS} FROM messages m WHERE m.id::bigint = $1"
+    ))
+    .bind(id)
+    .fetch_one(&st.db)
+    .await?;
     let mut out = wmsg(&st.db, &m, conv.display_id).await;
     out["inbox_id"] = json!(conv.inbox_id);
     Ok(Json(out))
@@ -935,9 +1182,17 @@ async fn msg_create(State(st): State<AppState>, headers: HeaderMap, Query(q): Qu
 /// PATCH /api/v1/widget/messages/{id}  { message: { submitted_values }, contact: { email } }
 /// Chatwoot PR #15778: a contact write here is as sensitive as PATCH /widget/contact, so it rotates the
 /// visitor token the same way.
-async fn msg_update(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<i64>, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult<Response> {
+async fn msg_update(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Query(q): Query<Q>,
+    Json(b): Json<Value>,
+) -> ApiResult<Response> {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
-    let s = read_session(&st.db, &w, token(&headers).as_deref()).await?.ok_or_else(ApiError::not_found)?;
+    let s = read_session(&st.db, &w, token(&headers).as_deref())
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     // scoped to ALL of this visitor's conversations in this inbox, never to ids from elsewhere
     let m: Msg = sqlx::query_as(&format!(
         "SELECT {MSG_COLS} FROM messages m
@@ -951,7 +1206,10 @@ async fn msg_update(State(st): State<AppState>, headers: HeaderMap, Path(id): Pa
     .fetch_optional(&st.db)
     .await?
     .ok_or_else(ApiError::not_found)?;
-    if let Some(v) = b["message"].get("submitted_values").filter(|v| !v.is_null()) {
+    if let Some(v) = b["message"]
+        .get("submitted_values")
+        .filter(|v| !v.is_null())
+    {
         sqlx::query(
             "UPDATE messages SET content_attributes = (COALESCE(content_attributes::jsonb, '{}'::jsonb) || $2::jsonb)::json,
                updated_at = now() WHERE id = $1",
@@ -961,21 +1219,32 @@ async fn msg_update(State(st): State<AppState>, headers: HeaderMap, Path(id): Pa
         .execute(&st.db)
         .await?;
         // message_updated drives the CSAT response builder (csat_survey_listener.rb) and webhooks
-        let fresh: Msg = sqlx::query_as(&format!("SELECT {MSG_COLS} FROM messages m WHERE m.id = $1")).bind(m.id as i32).fetch_one(&st.db).await?;
+        let fresh: Msg = sqlx::query_as(&format!(
+            "SELECT {MSG_COLS} FROM messages m WHERE m.id = $1"
+        ))
+        .bind(m.id as i32)
+        .fetch_one(&st.db)
+        .await?;
         let c = reload(&st.db, fresh.conversation_id).await?;
         let data = msg_json(&st.db, &fresh, &c).await;
         crate::conversations::emit(&st, &c, "message.updated", data).await;
     }
     if b["contact"].is_null() {
-        let fresh = find_contact(&st.db, &w, &s.c.source_id).await?.unwrap_or(s.c);
+        let fresh = find_contact(&st.db, &w, &s.c.source_id)
+            .await?
+            .unwrap_or(s.c);
         return Ok(Json(json!({ "contact": presence(&fresh) })).into_response());
     }
     apply_contact(&st.db, &w, s.c.contact_id, &b["contact"]).await?;
-    let fresh = find_contact(&st.db, &w, &s.c.source_id).await?.unwrap_or(s.c);
+    let fresh = find_contact(&st.db, &w, &s.c.source_id)
+        .await?
+        .unwrap_or(s.c);
     let new_tok = rotate_token(&st.db, &w, fresh.ci_id, &fresh.source_id, s.iat).await?;
-    let mut resp = Json(json!({ "contact": presence(&fresh), "widget_auth_token": new_tok })).into_response();
+    let mut resp =
+        Json(json!({ "contact": presence(&fresh), "widget_auth_token": new_tok })).into_response();
     if let Ok(hv) = HeaderValue::from_str(&new_tok) {
-        resp.headers_mut().insert(HeaderName::from_static("x-auth-token"), hv);
+        resp.headers_mut()
+            .insert(HeaderName::from_static("x-auth-token"), hv);
     }
     Ok(resp)
 }
@@ -983,9 +1252,15 @@ async fn msg_update(State(st): State<AppState>, headers: HeaderMap, Path(id): Pa
 // ---------- contact ----------
 
 /// GET /api/v1/widget/contact
-async fn contact_show(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>) -> ApiResult {
+async fn contact_show(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
-    let s = read_session(&st.db, &w, token(&headers).as_deref()).await?.ok_or_else(ApiError::not_found)?;
+    let s = read_session(&st.db, &w, token(&headers).as_deref())
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let mut v = presence(&s.c);
     v["identifier"] = json!(s.c.identifier);
     Ok(Json(v))
@@ -997,23 +1272,36 @@ async fn contact_show(State(st): State<AppState>, headers: HeaderMap, Query(q): 
 /// to realtime events when the visitor contact is updated/rebound.
 ///
 /// Earlier tokens are revoked through pulsar_widget_token_floors (migrations/0003), see rotate_token.
-async fn contact_update(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult<Response> {
+async fn contact_update(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+    Json(b): Json<Value>,
+) -> ApiResult<Response> {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
-    let s = read_session(&st.db, &w, token(&headers).as_deref()).await?.ok_or_else(ApiError::not_found)?;
+    let s = read_session(&st.db, &w, token(&headers).as_deref())
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     // ponytail: identifier_hash (HMAC) not verified. Identity binding by identifier is ignored, and
     // refused outright on hmac_mandatory inboxes.
     if w.hmac_mandatory == Some(true) && !b["identifier"].is_null() {
-        return Err(ApiError(StatusCode::UNAUTHORIZED, "HMAC failed: Invalid Identifier Hash Provided".into()));
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "HMAC failed: Invalid Identifier Hash Provided".into(),
+        ));
     }
     apply_contact(&st.db, &w, s.c.contact_id, &b).await?;
-    let fresh = find_contact(&st.db, &w, &s.c.source_id).await?.unwrap_or(s.c);
+    let fresh = find_contact(&st.db, &w, &s.c.source_id)
+        .await?
+        .unwrap_or(s.c);
     let new_tok = rotate_token(&st.db, &w, fresh.ci_id, &fresh.source_id, s.iat).await?;
     let mut val = presence(&fresh);
     val["widget_auth_token"] = json!(new_tok);
     val["pubsub_token"] = json!(fresh.pubsub_token);
     let mut resp = Json(val).into_response();
     if let Ok(hv) = HeaderValue::from_str(&new_tok) {
-        resp.headers_mut().insert(HeaderName::from_static("x-auth-token"), hv);
+        resp.headers_mut()
+            .insert(HeaderName::from_static("x-auth-token"), hv);
     }
     Ok(resp)
 }
@@ -1021,18 +1309,31 @@ async fn contact_update(State(st): State<AppState>, headers: HeaderMap, Query(q)
 /// PATCH /api/v1/widget/contact/set_user (contacts_controller#set_user). `identifier` binds the visitor to an
 /// identified contact, so it needs a matching identifier_hash (HMAC-SHA256 of identifier, keyed by the
 /// inbox hmac_token). Without that the request is refused with Chatwoot's 401 message.
-async fn contact_set_user(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult<Response> {
+async fn contact_set_user(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+    Json(b): Json<Value>,
+) -> ApiResult<Response> {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
-    let s = read_session(&st.db, &w, token(&headers).as_deref()).await?.ok_or_else(ApiError::not_found)?;
+    let s = read_session(&st.db, &w, token(&headers).as_deref())
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let identifier = b["identifier"].as_str().filter(|v| !v.is_empty());
     let hash_given = b["identifier_hash"].as_str().filter(|v| !v.is_empty());
     // should_verify_hmac?: verify when a hash is sent or the inbox is hmac_mandatory
     let must_verify = hash_given.is_some() || w.hmac_mandatory == Some(true);
     if must_verify && !valid_hmac(&st.db, &w, identifier, hash_given).await? {
-        return Err(ApiError(StatusCode::UNAUTHORIZED, "HMAC failed: Invalid Identifier Hash Provided".into()));
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "HMAC failed: Invalid Identifier Hash Provided".into(),
+        ));
     }
     if must_verify && identifier.is_some() {
-        sqlx::query("UPDATE contact_inboxes SET hmac_verified = true WHERE id = $1").bind(s.c.ci_id).execute(&st.db).await?;
+        sqlx::query("UPDATE contact_inboxes SET hmac_verified = true WHERE id = $1")
+            .bind(s.c.ci_id)
+            .execute(&st.db)
+            .await?;
     }
     apply_contact(&st.db, &w, s.c.contact_id, &b).await?;
     if let Some(id) = identifier {
@@ -1049,27 +1350,45 @@ async fn contact_set_user(State(st): State<AppState>, headers: HeaderMap, Query(
 }
 
 /// HMAC check for set_user. The hash must be present and match, otherwise the call is refused.
-async fn valid_hmac(db: &PgPool, w: &Wd, identifier: Option<&str>, hash: Option<&str>) -> ApiResult<bool> {
-    let key: Option<String> = sqlx::query_scalar("SELECT hmac_token FROM channel_web_widgets WHERE website_token = $1")
-        .bind(w.website_token.as_deref().unwrap_or_default())
-        .fetch_optional(db)
-        .await?
-        .flatten();
-    let (Some(key), Some(hash), Some(id)) = (key, hash, identifier) else { return Ok(false) };
+async fn valid_hmac(
+    db: &PgPool,
+    w: &Wd,
+    identifier: Option<&str>,
+    hash: Option<&str>,
+) -> ApiResult<bool> {
+    let key: Option<String> =
+        sqlx::query_scalar("SELECT hmac_token FROM channel_web_widgets WHERE website_token = $1")
+            .bind(w.website_token.as_deref().unwrap_or_default())
+            .fetch_optional(db)
+            .await?
+            .flatten();
+    let (Some(key), Some(hash), Some(id)) = (key, hash, identifier) else {
+        return Ok(false);
+    };
     let expect = hex::encode(hmac_sha256(key.as_bytes(), id.as_bytes()));
     Ok(ct_eq(expect.as_bytes(), hash.as_bytes()))
 }
 
 /// Shared contact response: presence fields, rotated widget_auth_token, pubsub_token.
-async fn contact_response(st: &AppState, w: &Wd, source_id: &str, _ci_id: i64, iat: i64, _cid: i64) -> ApiResult<Response> {
-    let fresh = find_contact(&st.db, w, source_id).await?.ok_or_else(ApiError::not_found)?;
+async fn contact_response(
+    st: &AppState,
+    w: &Wd,
+    source_id: &str,
+    _ci_id: i64,
+    iat: i64,
+    _cid: i64,
+) -> ApiResult<Response> {
+    let fresh = find_contact(&st.db, w, source_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let new_tok = rotate_token(&st.db, w, fresh.ci_id, &fresh.source_id, iat).await?;
     let mut val = presence(&fresh);
     val["widget_auth_token"] = json!(new_tok);
     val["pubsub_token"] = json!(fresh.pubsub_token);
     let mut resp = Json(val).into_response();
     if let Ok(hv) = HeaderValue::from_str(&new_tok) {
-        resp.headers_mut().insert(HeaderName::from_static("x-auth-token"), hv);
+        resp.headers_mut()
+            .insert(HeaderName::from_static("x-auth-token"), hv);
     }
     Ok(resp)
 }
@@ -1088,7 +1407,12 @@ fn clone_cs(c: &Cs) -> Cs {
 }
 
 /// POST /api/v1/widget/contact/destroy_custom_attributes {custom_attributes: [keys]}
-async fn contact_destroy_custom_attributes(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
+async fn contact_destroy_custom_attributes(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = required(&st, &w, &headers).await?;
     let keys = string_list(&b["custom_attributes"]);
@@ -1097,29 +1421,61 @@ async fn contact_destroy_custom_attributes(State(st): State<AppState>, headers: 
         .bind(&keys)
         .execute(&st.db)
         .await?;
-    let fresh = find_contact(&st.db, &w, &s.c.source_id).await?.unwrap_or_else(|| clone_cs(&s.c));
+    let fresh = find_contact(&st.db, &w, &s.c.source_id)
+        .await?
+        .unwrap_or_else(|| clone_cs(&s.c));
     Ok(Json(presence(&fresh)))
 }
 
 fn string_list(v: &Value) -> Vec<String> {
-    v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default()
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// POST /api/v1/widget/conversations/set_custom_attributes {custom_attributes: {...}} on the visitor's latest conversation.
-async fn conv_set_custom_attributes(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
+async fn conv_set_custom_attributes(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = required(&st, &w, &headers).await?;
-    let c = latest_conv(&st.db, &w, s.c.ci_id).await?.ok_or_else(ApiError::not_found)?;
-    let attrs = if b["custom_attributes"].is_object() { b["custom_attributes"].clone() } else { json!({}) };
-    sqlx::query("UPDATE conversations SET custom_attributes = $2, updated_at = now() WHERE id = $1").bind(c.id).bind(&attrs).execute(&st.db).await?;
+    let c = latest_conv(&st.db, &w, s.c.ci_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let attrs = if b["custom_attributes"].is_object() {
+        b["custom_attributes"].clone()
+    } else {
+        json!({})
+    };
+    sqlx::query(
+        "UPDATE conversations SET custom_attributes = $2, updated_at = now() WHERE id = $1",
+    )
+    .bind(c.id)
+    .bind(&attrs)
+    .execute(&st.db)
+    .await?;
     Ok(Json(json!({ "custom_attributes": attrs })))
 }
 
 /// POST /api/v1/widget/conversations/destroy_custom_attributes {custom_attribute: [keys]}
-async fn conv_destroy_custom_attributes(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult {
+async fn conv_destroy_custom_attributes(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+    Json(b): Json<Value>,
+) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = required(&st, &w, &headers).await?;
-    let c = latest_conv(&st.db, &w, s.c.ci_id).await?.ok_or_else(ApiError::not_found)?;
+    let c = latest_conv(&st.db, &w, s.c.ci_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let keys = string_list(&b["custom_attribute"]);
     let attrs: Value = sqlx::query_scalar(
         "UPDATE conversations SET custom_attributes = COALESCE(custom_attributes, '{}'::jsonb) - $2::text[], updated_at = now()
@@ -1134,14 +1490,20 @@ async fn conv_destroy_custom_attributes(State(st): State<AppState>, headers: Hea
 
 /// POST /api/v1/widget/conversations/transcript {email} (conversations_controller#transcript). Gated like
 /// Chatwoot: plan gate is always true in Pulsar, rate limit per account not implemented (ponytail).
-async fn conv_transcript(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>) -> ApiResult {
+async fn conv_transcript(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+) -> ApiResult {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = required(&st, &w, &headers).await?;
     let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else {
         return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, String::new()));
     };
     // Chatwoot sends to the contact's stored email, not a client-supplied address.
-    let Some(email) = s.c.email.clone().filter(|e| !e.trim().is_empty()) else { return Ok(Json(json!({}))) };
+    let Some(email) = s.c.email.clone().filter(|e| !e.trim().is_empty()) else {
+        return Ok(Json(json!({})));
+    };
     let messages: Vec<Option<String>> = sqlx::query_scalar(
         "SELECT content FROM messages WHERE conversation_id = $1 AND account_id = $2 AND private = false
          AND message_type IN (0, 1) AND content_attributes::jsonb ->> 'forwarded_message_id' IS NULL ORDER BY created_at, id",
@@ -1153,7 +1515,13 @@ async fn conv_transcript(State(st): State<AppState>, headers: HeaderMap, Query(q
     let mut html = String::from("<html><body><ul>");
     for m in messages.into_iter().flatten() {
         html.push_str("<li>");
-        html.push_str(&m.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;"));
+        html.push_str(
+            &m.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+                .replace('\'', "&#39;"),
+        );
         html.push_str("</li>");
     }
     html.push_str("</ul></body></html>");
@@ -1166,16 +1534,26 @@ async fn conv_transcript(State(st): State<AppState>, headers: HeaderMap, Query(q
 
 /// POST /api/v1/widget/labels {label}: adds the label to the visitor's latest conversation only when the
 /// label already exists in the account (labels_controller#create). Always 204.
-async fn label_add(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult<StatusCode> {
+async fn label_add(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+    Json(b): Json<Value>,
+) -> ApiResult<StatusCode> {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = required(&st, &w, &headers).await?;
-    let Some(label) = b["label"].as_str().filter(|l| !l.is_empty()) else { return Ok(StatusCode::NO_CONTENT) };
-    let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else { return Ok(StatusCode::NO_CONTENT) };
-    let defined: Option<i32> = sqlx::query_scalar("SELECT 1 FROM labels WHERE account_id = $1 AND title = $2")
-        .bind(w.account_id)
-        .bind(label)
-        .fetch_optional(&st.db)
-        .await?;
+    let Some(label) = b["label"].as_str().filter(|l| !l.is_empty()) else {
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else {
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    let defined: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM labels WHERE account_id = $1 AND title = $2")
+            .bind(w.account_id)
+            .bind(label)
+            .fetch_optional(&st.db)
+            .await?;
     if defined.is_some() {
         crate::conversations::patch_labels_pub(&st.db, c.id, &[label.to_string()], &[]).await?;
     }
@@ -1183,11 +1561,20 @@ async fn label_add(State(st): State<AppState>, headers: HeaderMap, Query(q): Que
 }
 
 /// DELETE /api/v1/widget/labels {label} removes the label from the visitor's latest conversation. Always 204.
-async fn label_remove(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<Q>, Json(b): Json<Value>) -> ApiResult<StatusCode> {
+async fn label_remove(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<Q>,
+    Json(b): Json<Value>,
+) -> ApiResult<StatusCode> {
     let w = widget_of(&st.db, q.website_token.as_deref()).await?;
     let s = required(&st, &w, &headers).await?;
-    let Some(label) = b["label"].as_str().filter(|l| !l.is_empty()) else { return Ok(StatusCode::NO_CONTENT) };
-    let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else { return Ok(StatusCode::NO_CONTENT) };
+    let Some(label) = b["label"].as_str().filter(|l| !l.is_empty()) else {
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else {
+        return Ok(StatusCode::NO_CONTENT);
+    };
     crate::conversations::patch_labels_pub(&st.db, c.id, &[], &[label.to_string()]).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1230,7 +1617,10 @@ mod tests {
     /// chatwoot#15779: no HTML survives, markdown and plain `<` text stay.
     #[test]
     fn strip_html_removes_tags_keeps_text() {
-        assert_eq!(strip_html("hi <img src=x onerror=alert(1)> **bold**"), "hi  **bold**");
+        assert_eq!(
+            strip_html("hi <img src=x onerror=alert(1)> **bold**"),
+            "hi  **bold**"
+        );
         assert_eq!(strip_html("<script>alert(1)</script>ok"), "ok");
         assert_eq!(strip_html("a < b && c > d"), "a < b && c > d");
         // escaped markup written by the visitor must not decode back into a live tag
@@ -1242,7 +1632,10 @@ mod tests {
     #[test]
     fn hmac_matches_rfc4231() {
         let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
-        assert_eq!(hex::encode(mac), "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+        assert_eq!(
+            hex::encode(mac),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
     }
 
     #[test]
@@ -1260,7 +1653,10 @@ mod tests {
     fn rotated_token_needs_a_larger_iat() {
         assert_eq!(issue_at("s", 1, 100), issue_at("s", 1, 100));
         assert_ne!(issue_at("s", 1, 100), issue_at("s", 1, 101));
-        assert_eq!(decode(&issue_at("s", 1, chrono::Utc::now().timestamp()), 1).map(|c| c.source_id), Some("s".into()));
+        assert_eq!(
+            decode(&issue_at("s", 1, chrono::Utc::now().timestamp()), 1).map(|c| c.source_id),
+            Some("s".into())
+        );
     }
 
     /// chatwoot#15776: minted token has fresh iat and decodes to matching source_id and inbox_id.
@@ -1269,8 +1665,14 @@ mod tests {
         let t1 = issue("src-rotate", 42);
         // Ensure iat timestamp or new token generation creates a valid token
         let t2 = issue("src-rotate", 42);
-        assert_eq!(decode(&t1, 42).map(|c| c.source_id), Some("src-rotate".into()));
-        assert_eq!(decode(&t2, 42).map(|c| c.source_id), Some("src-rotate".into()));
+        assert_eq!(
+            decode(&t1, 42).map(|c| c.source_id),
+            Some("src-rotate".into())
+        );
+        assert_eq!(
+            decode(&t2, 42).map(|c| c.source_id),
+            Some("src-rotate".into())
+        );
     }
 
     #[tokio::test]
@@ -1281,15 +1683,21 @@ mod tests {
         .await;
         assert_eq!(res.status(), StatusCode::SEE_OTHER);
         assert_eq!(
-            res.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()),
+            res.headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
             Some("/app/widget?website_token=wt1&locale=en")
         );
         assert_eq!(
-            res.headers().get(header::REFERRER_POLICY).and_then(|v| v.to_str().ok()),
+            res.headers()
+                .get(header::REFERRER_POLICY)
+                .and_then(|v| v.to_str().ok()),
             Some("no-referrer")
         );
         assert_eq!(
-            res.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+            res.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
             Some("no-store")
         );
     }

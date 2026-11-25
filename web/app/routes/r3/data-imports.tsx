@@ -95,9 +95,7 @@ export default function DataImportsSettings() {
         {error && <p role="alert" className="mb-4 text-[13px] text-red-600">{error}</p>}
 
         {activeTab === "export" ? (
-          <Card icon="⇪" title={t(`${PREFIX}EXPORT.TITLE`)} body={t(`${PREFIX}EXPORT.DESCRIPTION`)}>
-            <span className="rounded-md bg-bg px-2 py-1 text-[12px] text-ink-3">{t(`${PREFIX}EXPORT.COMING_SOON`)}</span>
-          </Card>
+          <DataExportsPanel accountId={accountId} />
         ) : loading ? (
           <p className="text-[13px] text-ink-3">{t(`${PREFIX}LOADING`)}</p>
         ) : items.length === 0 ? (
@@ -188,6 +186,107 @@ function NewImportPanel({ base, onClose, onCreated }: { base: string; onClose: (
           <Button type="submit" disabled={!file || busy}>{t(`${PREFIX}DRAWER.IMPORT`)}</Button>
         </div>
       </form>
+    </div>
+  );
+}
+
+type ExportRecord = {
+  id: number;
+  name: string;
+  data_type: string;
+  status: string;
+  processed_records: number;
+  file_url: string | null;
+  created_at: string | number;
+};
+
+function DataExportsPanel({ accountId }: { accountId: number }) {
+  const [exports, setExports] = useState<ExportRecord[]>([]);
+  const [dataType, setDataType] = useState<"contacts" | "conversations" | "messages">("contacts");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const expBase = `${acct(accountId)}/data_exports`;
+
+  async function loadExports() {
+    setErr("");
+    try {
+      const r = await api<{ payload: ExportRecord[] }>(expBase);
+      setExports(r.payload ?? []);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to load exports");
+    }
+  }
+
+  useEffect(() => {
+    void loadExports();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expBase]);
+
+  async function triggerExport() {
+    setBusy(true);
+    setErr("");
+    try {
+      await api(expBase, { method: "POST", json: { data_type: dataType } });
+      await loadExports();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Export failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rerunExport(id: number) {
+    setErr("");
+    await api(`${expBase}/${id}/rerun`, { method: "POST" });
+    await loadExports();
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-surface p-4">
+        <div className="flex items-center gap-3">
+          <select
+            aria-label="Export Data Type"
+            value={dataType}
+            onChange={(e) => setDataType(e.target.value as typeof dataType)}
+            className="h-9 rounded-lg border border-line bg-bg px-3 text-sm text-ink"
+          >
+            <option value="contacts">Contacts CSV</option>
+            <option value="conversations">Conversations CSV</option>
+            <option value="messages">Messages CSV</option>
+          </select>
+          <Button onClick={() => void triggerExport()} disabled={busy}>
+            {busy ? "Generating..." : "Export CSV"}
+          </Button>
+        </div>
+      </div>
+      {err && <p className="text-sm text-red-600">{err}</p>}
+      {exports.length === 0 ? (
+        <Card icon="⇪" title={t(`${PREFIX}EXPORT.TITLE`)} body="Generate a CSV export of your contacts, conversations, or messages." />
+      ) : (
+        <ul className="divide-y divide-line border-y border-line">
+          {exports.map((ex) => (
+            <li key={ex.id} className="flex items-center justify-between gap-4 py-3">
+              <div>
+                <div className="text-[14px] font-medium text-ink">{ex.name}</div>
+                <div className="text-[12px] text-ink-3 capitalize">
+                  {ex.data_type} · {ex.status} · {ex.processed_records} records
+                </div>
+              </div>
+              <div className="flex items-center gap-3 text-[13px]">
+                {ex.file_url && (
+                  <a href={ex.file_url} className="font-medium text-accent hover:underline">
+                    Download CSV
+                  </a>
+                )}
+                <button onClick={() => void rerunExport(ex.id)} className="text-ink-2 hover:text-ink">
+                  Rerun
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

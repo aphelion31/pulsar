@@ -1,14 +1,14 @@
 use crate::common::{ApiError, ApiResult, AppState};
 use crate::conversations::{
-    contact_json, emit, emit_conv, insert_message, msg_json, reload, Conv, Msg, CONV_COLS, MSG_COLS,
+    CONV_COLS, Conv, MSG_COLS, Msg, contact_json, emit, emit_conv, insert_message, msg_json, reload,
 };
 use axum::{
+    Json, Router,
     extract::{Path, State},
     routing::get,
-    Json, Router,
 };
 use hmac::{Hmac, Mac};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2_compat::Sha256;
 
 pub fn routes() -> Router<AppState> {
@@ -42,10 +42,12 @@ async fn csat_message(st: &AppState, uuid: &str) -> Result<(Msg, Conv), ApiError
     .fetch_optional(&st.db)
     .await?
     .ok_or_else(ApiError::not_found)?;
-    let m: Msg = sqlx::query_as(&format!("SELECT {MSG_COLS} FROM messages m WHERE m.id = $1"))
-        .bind(mid as i32)
-        .fetch_one(&st.db)
-        .await?;
+    let m: Msg = sqlx::query_as(&format!(
+        "SELECT {MSG_COLS} FROM messages m WHERE m.id = $1"
+    ))
+    .bind(mid as i32)
+    .fetch_one(&st.db)
+    .await?;
     let c = reload(&st.db, m.conversation_id).await?;
     Ok((m, c))
 }
@@ -86,16 +88,25 @@ async fn csat_show(State(st): State<AppState>, Path(uuid): Path<String>) -> ApiR
 
 /// Mirrors CsatSurveyController#update: locked after 14 days, otherwise store `submitted_values` (permitted keys
 /// only) and emit message.updated so the csat listener records the rating.
-async fn csat_update(State(st): State<AppState>, Path(uuid): Path<String>, Json(body): Json<Value>) -> ApiResult {
+async fn csat_update(
+    State(st): State<AppState>,
+    Path(uuid): Path<String>,
+    Json(body): Json<Value>,
+) -> ApiResult {
     let (m, c) = csat_message(&st, &uuid).await?;
     if (chrono::Utc::now().date_naive() - m.created_at.date()).num_days() > CSAT_LOCK_DAYS {
-        return Err(ApiError::bad("You cannot update the CSAT survey after 14 days"));
+        return Err(ApiError::bad(
+            "You cannot update the CSAT survey after 14 days",
+        ));
     }
     let sv = &body["message"]["submitted_values"];
     if !sv.is_null() {
         let resp = &sv["csat_survey_response"];
         if let Some(r) = resp.get("rating").filter(|r| !r.is_null()) {
-            let ok = r.as_i64().or_else(|| r.as_str().and_then(|s| s.parse().ok())).is_some_and(|n| (1..=5).contains(&n));
+            let ok = r
+                .as_i64()
+                .or_else(|| r.as_str().and_then(|s| s.parse().ok()))
+                .is_some_and(|n| (1..=5).contains(&n));
             if !ok {
                 return Err(ApiError::bad("Rating is not included in the list"));
             }
@@ -120,7 +131,12 @@ async fn csat_update(State(st): State<AppState>, Path(uuid): Path<String>, Json(
             .bind(m.id as i32)
             .execute(&st.db)
             .await?;
-        let fresh: Msg = sqlx::query_as(&format!("SELECT {MSG_COLS} FROM messages m WHERE m.id = $1")).bind(m.id as i32).fetch_one(&st.db).await?;
+        let fresh: Msg = sqlx::query_as(&format!(
+            "SELECT {MSG_COLS} FROM messages m WHERE m.id = $1"
+        ))
+        .bind(m.id as i32)
+        .fetch_one(&st.db)
+        .await?;
         let data = msg_json(&st.db, &fresh, &c).await;
         emit(&st, &c, "message.updated", data).await;
     }

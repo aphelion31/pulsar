@@ -1,7 +1,7 @@
 // Inbox: conversation list (left), thread + composer (right). Realtime via shell cable.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useOutletContext, useParams } from "react-router";
-import { CheckCircle2, Lock, Paperclip, RotateCcw, Send } from "lucide-react";
+import { CheckCircle2, Lock, Paperclip, RotateCcw, Send, Sparkles } from "lucide-react";
 import { Avatar, Button, Empty } from "~/components/ui";
 import { acct, api, type Conversation, type Message } from "~/lib/api";
 import { bytes, clock, timeAgo } from "~/lib/format";
@@ -280,7 +280,12 @@ export function Thread({ id, epoch, accountId, meId, subscribe, onGone }: { id: 
         </ol>
         <div ref={end} />
       </div>
-      <Composer base={base} onSent={(m) => setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]))} />
+      <Composer
+        base={base}
+        accountId={accountId}
+        conversationDisplayId={conv.id}
+        onSent={(m) => setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]))}
+      />
       </div>
       <ConversationSidebar accountId={accountId} conversation={conv} onChange={setConv} />
     </div>
@@ -329,13 +334,56 @@ function Bubble({ m }: { m: Message }) {
   );
 }
 
-function Composer({ base, onSent }: { base: string; onSent: (m: Message) => void }) {
+function Composer({
+  base,
+  accountId,
+  conversationDisplayId,
+  onSent,
+}: {
+  base: string;
+  accountId: number;
+  conversationDisplayId: number;
+  onSent: (m: Message) => void;
+}) {
   const [text, setText] = useState("");
   const [note, setNote] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiSummary, setAiSummary] = useState("");
   const [error, setError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
+
+  async function runCaptainTask(kind: "reply_suggestion" | "rewrite" | "summarize") {
+    setAiBusy(true);
+    setError("");
+    try {
+      if (kind === "rewrite") {
+        if (!text.trim()) throw new Error("Type a draft first to rewrite");
+        const res = await api<{ message: string }>(`${acct(accountId)}/captain/tasks/rewrite`, {
+          method: "POST",
+          json: { content: text, operation: "improve" },
+        });
+        if (res.message) setText(res.message);
+      } else if (kind === "reply_suggestion") {
+        const res = await api<{ message: string }>(`${acct(accountId)}/captain/tasks/reply_suggestion`, {
+          method: "POST",
+          json: { conversation_display_id: conversationDisplayId },
+        });
+        if (res.message) setText(res.message);
+      } else {
+        const res = await api<{ message: string }>(`${acct(accountId)}/captain/tasks/summarize`, {
+          method: "POST",
+          json: { conversation_display_id: conversationDisplayId },
+        });
+        setAiSummary(res.message || "");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Captain AI failed");
+    } finally {
+      setAiBusy(false);
+    }
+  }
 
   async function send() {
     const content = text;
@@ -408,12 +456,34 @@ function Composer({ base, onSent }: { base: string; onSent: (m: Message) => void
             ))}
           </ul>
         )}
+        {aiSummary && (
+          <div className="mt-2 rounded-lg border border-line bg-raised px-3 py-2 text-xs text-ink-2">
+            <div className="flex items-center justify-between font-medium text-ink">
+              <span>Captain Summary</span>
+              <button type="button" onClick={() => setAiSummary("")} className="text-ink-3 hover:text-ink">
+                ×
+              </button>
+            </div>
+            <p className="mt-1 whitespace-pre-wrap">{aiSummary}</p>
+          </div>
+        )}
         {error && <p role="alert" className="mt-2 text-[13px] text-bad">{error}</p>}
         <div className="mt-2 flex items-center justify-between">
-          <input ref={fileInput} type="file" multiple hidden onChange={(e) => setFiles([...files, ...Array.from(e.target.files ?? [])])} />
-          <Button variant="quiet" onClick={() => fileInput.current?.click()} aria-label="Attach files">
-            <Paperclip size={16} strokeWidth={1.5} /> Attach
-          </Button>
+          <div className="flex items-center gap-1">
+            <input ref={fileInput} type="file" multiple hidden onChange={(e) => setFiles([...files, ...Array.from(e.target.files ?? [])])} />
+            <Button variant="quiet" onClick={() => fileInput.current?.click()} aria-label="Attach files">
+              <Paperclip size={16} strokeWidth={1.5} /> Attach
+            </Button>
+            <Button variant="quiet" disabled={aiBusy} onClick={() => void runCaptainTask("reply_suggestion")} aria-label="Captain Suggest Reply">
+              <Sparkles size={15} strokeWidth={1.5} /> Suggest
+            </Button>
+            <Button variant="quiet" disabled={aiBusy || !text.trim()} onClick={() => void runCaptainTask("rewrite")} aria-label="Captain Rewrite">
+              Rewrite
+            </Button>
+            <Button variant="quiet" disabled={aiBusy} onClick={() => void runCaptainTask("summarize")} aria-label="Captain Summarize">
+              Summarize
+            </Button>
+          </div>
           <div className="flex items-center gap-3">
             <span className="hidden text-[12px] text-ink-3 sm:inline">
               <kbd className="rounded border border-line-strong px-1 font-mono text-[11px]">⌘</kbd>{" "}

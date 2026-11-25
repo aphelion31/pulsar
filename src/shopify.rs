@@ -6,27 +6,27 @@
 //! chatwoot/app/services/shopify/{callback_service,shop_domain,uninstallation_service}.rb.
 
 use axum::{
+    Json, Router,
     body::Bytes,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
     routing::{delete, get, post},
-    Json, Router,
 };
 use base64::{
-    engine::general_purpose::{STANDARD as B64_STD, URL_SAFE_NO_PAD as B64_URL},
     Engine,
+    engine::general_purpose::{STANDARD as B64_STD, URL_SAFE_NO_PAD as B64_URL},
 };
 use chrono::SecondsFormat;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2_compat::Sha256;
 use sqlx::PgPool;
 
 use crate::{
     ar_encryption,
-    common::{require_account, ApiError, AppState, CurrentUser},
+    common::{ApiError, AppState, CurrentUser, require_account},
 };
 
 const REQUIRED_SCOPES: &str = "read_customers,read_orders,read_fulfillments";
@@ -35,14 +35,34 @@ const SHOPIFY_API_VERSION: &str = "2025-01";
 pub fn account_routes() -> Router<AppState> {
     Router::new()
         .route("/integrations/shopify/auth", post(auth))
+        .route(
+            "/integrations/shopify/complete_install",
+            post(complete_install),
+        )
         .route("/integrations/shopify/orders", get(orders))
         .route("/integrations/shopify", delete(destroy))
+        .route(
+            "/integrations/shopify_custom_app",
+            get(custom_app_show)
+                .post(custom_app_create)
+                .patch(custom_app_update)
+                .put(custom_app_update)
+                .delete(custom_app_destroy),
+        )
 }
 
 pub fn public_routes() -> Router<AppState> {
     Router::new()
         .route("/shopify/callback", get(callback))
+        .route(
+            "/shopify/accounts/{account_id}/callback",
+            get(custom_callback),
+        )
         .route("/webhooks/shopify", post(webhook_events))
+        .route(
+            "/webhooks/shopify/accounts/{account_id}",
+            post(custom_webhook_events),
+        )
 }
 
 // ---------- Config & ShopDomain helpers ----------
@@ -74,11 +94,15 @@ async fn config_value(db: &PgPool, key: &str) -> Option<String> {
     .await
     .ok()
     .flatten();
-    row.and_then(|v| parse_config_scalar(&v)).filter(|s| !s.is_empty())
+    row.and_then(|v| parse_config_scalar(&v))
+        .filter(|s| !s.is_empty())
 }
 
 async fn shopify_enabled(db: &PgPool) -> bool {
-    match config_value(db, "ENABLE_SHOPIFY_INTEGRATION").await.as_deref() {
+    match config_value(db, "ENABLE_SHOPIFY_INTEGRATION")
+        .await
+        .as_deref()
+    {
         Some("false") | Some("0") | Some("no") => false,
         _ => true,
     }
@@ -100,7 +124,9 @@ fn valid_shop_domain(value: &str) -> bool {
     let bytes = sub.as_bytes();
     bytes.first().is_some_and(u8::is_ascii_alphanumeric)
         && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
-        && bytes.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-')
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'-')
 }
 
 fn shopify_api_base(shop_domain: &str) -> String {
@@ -165,7 +191,11 @@ fn verify_callback_hmac(params: &[(String, String)], secret: &str) -> bool {
     let Some((_, hmac_val)) = params.iter().find(|(k, _)| k == "hmac") else {
         return false;
     };
-    if hmac_val.len() != 64 || !hmac_val.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+    if hmac_val.len() != 64
+        || !hmac_val
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
         return false;
     }
     let Ok(expected_bytes) = hex::decode(hmac_val) else {
@@ -212,20 +242,37 @@ async fn auth(
     if !shopify_enabled(&st.db).await {
         return Err(ApiError::not_found());
     }
-    require_account(&st.db, &user, account_id).await?.require_admin()?;
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
 
     let Some(shop_domain) = body.get("shop_domain").and_then(|v| v.as_str()) else {
-        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "Invalid Shopify shop domain" }))).into_response());
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": "Invalid Shopify shop domain" })),
+        )
+            .into_response());
     };
     if !valid_shop_domain(shop_domain) {
-        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "Invalid Shopify shop domain" }))).into_response());
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": "Invalid Shopify shop domain" })),
+        )
+            .into_response());
     }
 
-    let client_id = config_value(&st.db, "SHOPIFY_CLIENT_ID").await.unwrap_or_default();
-    let client_secret = config_value(&st.db, "SHOPIFY_CLIENT_SECRET").await.unwrap_or_default();
+    let client_id = config_value(&st.db, "SHOPIFY_CLIENT_ID")
+        .await
+        .unwrap_or_default();
+    let client_secret = config_value(&st.db, "SHOPIFY_CLIENT_SECRET")
+        .await
+        .unwrap_or_default();
     let state = sign_state_token(account_id, &client_secret);
     if client_id.is_empty() || state.is_none() {
-        return Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR, "Shopify OAuth is not configured".into()));
+        return Err(ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Shopify OAuth is not configured".into(),
+        ));
     }
 
     let norm_shop = normalize_shop_domain(shop_domain);
@@ -266,7 +313,9 @@ async fn orders(
     .await?
     .ok_or_else(ApiError::not_found)?;
 
-    let shop = reference_id.filter(|s| !s.is_empty()).ok_or_else(ApiError::not_found)?;
+    let shop = reference_id
+        .filter(|s| !s.is_empty())
+        .ok_or_else(ApiError::not_found)?;
     let access_token = match stored_token {
         Some(t) => ar_encryption::decrypt_deterministic(&t)?,
         None => String::new(),
@@ -288,12 +337,20 @@ async fn orders(
         None => None,
     };
     let Some((email, phone)) = contact else {
-        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "Contact information missing" }))).into_response());
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": "Contact information missing" })),
+        )
+            .into_response());
     };
     let email = email.filter(|s| !s.trim().is_empty());
     let phone = phone.filter(|s| !s.trim().is_empty());
     if email.is_none() && phone.is_none() {
-        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "Contact information missing" }))).into_response());
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": "Contact information missing" })),
+        )
+            .into_response());
     }
 
     let mut query_parts = Vec::new();
@@ -311,14 +368,24 @@ async fn orders(
     let cust_resp = client
         .get(&customers_url)
         .header("X-Shopify-Access-Token", &access_token)
-        .query(&[("query", search_query.as_str()), ("fields", "id,email,phone")])
+        .query(&[
+            ("query", search_query.as_str()),
+            ("fields", "id,email,phone"),
+        ])
         .send()
         .await
         .map_err(|e| ApiError::bad(e.to_string()))?;
 
     if !cust_resp.status().is_success() {
-        let msg = cust_resp.text().await.unwrap_or_else(|_| "Shopify API error".into());
-        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": msg }))).into_response());
+        let msg = cust_resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "Shopify API error".into());
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": msg })),
+        )
+            .into_response());
     }
     let cust_body: Value = cust_resp
         .text()
@@ -348,15 +415,25 @@ async fn orders(
         .query(&[
             ("customer_id", customer_id.as_str()),
             ("status", "any"),
-            ("fields", "id,email,created_at,total_price,currency,fulfillment_status,financial_status"),
+            (
+                "fields",
+                "id,email,created_at,total_price,currency,fulfillment_status,financial_status",
+            ),
         ])
         .send()
         .await
         .map_err(|e| ApiError::bad(e.to_string()))?;
 
     if !ord_resp.status().is_success() {
-        let msg = ord_resp.text().await.unwrap_or_else(|_| "Shopify API error".into());
-        return Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": msg }))).into_response());
+        let msg = ord_resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "Shopify API error".into());
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": msg })),
+        )
+            .into_response());
     }
     let ord_body: Value = ord_resp
         .text()
@@ -379,7 +456,10 @@ async fn orders(
                     Some(Value::String(s)) => s.clone(),
                     _ => String::new(),
                 };
-                obj.insert("admin_url".into(), json!(format!("https://{shop}/admin/orders/{oid}")));
+                obj.insert(
+                    "admin_url".into(),
+                    json!(format!("https://{shop}/admin/orders/{oid}")),
+                );
             }
             o
         })
@@ -396,7 +476,9 @@ async fn destroy(
     if !shopify_enabled(&st.db).await {
         return Err(ApiError::not_found());
     }
-    require_account(&st.db, &user, account_id).await?.require_admin()?;
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
 
     let hook_id: Option<i64> = sqlx::query_scalar(
         "SELECT id::bigint FROM integrations_hooks WHERE account_id = $1::bigint AND app_id = 'shopify' ORDER BY id LIMIT 1",
@@ -421,12 +503,21 @@ async fn callback(
     Query(params): Query<Vec<(String, String)>>,
 ) -> Redirect {
     let frontend = st.frontend_url.trim_end_matches('/').to_string();
-    let get = |k: &str| params.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+    let get = |k: &str| {
+        params
+            .iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.as_str())
+    };
 
-    let client_secret = config_value(&st.db, "SHOPIFY_CLIENT_SECRET").await.unwrap_or_default();
+    let client_secret = config_value(&st.db, "SHOPIFY_CLIENT_SECRET")
+        .await
+        .unwrap_or_default();
     let account_id = get("state").and_then(|s| verify_state_token(s, &client_secret));
     let error_redirect = || match account_id {
-        Some(aid) => format!("{frontend}/app/accounts/{aid}/settings/integrations/shopify?error=true"),
+        Some(aid) => {
+            format!("{frontend}/app/accounts/{aid}/settings/integrations/shopify?error=true")
+        }
         None => format!("{frontend}?error=true"),
     };
 
@@ -438,11 +529,12 @@ async fn callback(
         return Redirect::to(&error_redirect());
     };
 
-    let acct_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE id = $1::bigint)")
-        .bind(aid)
-        .fetch_one(&st.db)
-        .await
-        .unwrap_or(false);
+    let acct_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE id = $1::bigint)")
+            .bind(aid)
+            .fetch_one(&st.db)
+            .await
+            .unwrap_or(false);
     if !acct_exists || !shopify_enabled(&st.db).await {
         return Redirect::to(&error_redirect());
     }
@@ -462,7 +554,9 @@ async fn callback(
         tracing::error!("Shopify callback error: Missing authorization code");
         return Redirect::to(&error_redirect());
     };
-    let client_id = config_value(&st.db, "SHOPIFY_CLIENT_ID").await.unwrap_or_default();
+    let client_id = config_value(&st.db, "SHOPIFY_CLIENT_ID")
+        .await
+        .unwrap_or_default();
     if client_id.is_empty() {
         tracing::error!("Shopify callback error: Missing SHOPIFY_CLIENT_ID");
         return Redirect::to(&error_redirect());
@@ -486,7 +580,10 @@ async fn callback(
     {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
-            tracing::error!("Shopify callback token exchange failed: HTTP {}", r.status());
+            tracing::error!(
+                "Shopify callback token exchange failed: HTTP {}",
+                r.status()
+            );
             return Redirect::to(&error_redirect());
         }
         Err(e) => {
@@ -501,11 +598,18 @@ async fn callback(
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .unwrap_or(Value::Null);
-    let Some(access_token) = token_json.get("access_token").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+    let Some(access_token) = token_json
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    else {
         tracing::error!("Shopify callback error: access_token missing from response");
         return Redirect::to(&error_redirect());
     };
-    let scope = token_json.get("scope").and_then(|v| v.as_str()).unwrap_or("");
+    let scope = token_json
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     // Integrations::Hook encrypts access_token deterministically (only when all 3 keys are set).
     let Ok(encrypted_token) = ar_encryption::encrypt_deterministic(access_token) else {
         tracing::error!("Shopify callback error: token encryption failed");
@@ -558,7 +662,9 @@ async fn callback(
         return Redirect::to(&error_redirect());
     }
 
-    Redirect::to(&format!("{frontend}/app/accounts/{aid}/settings/integrations/shopify"))
+    Redirect::to(&format!(
+        "{frontend}/app/accounts/{aid}/settings/integrations/shopify"
+    ))
 }
 
 async fn webhook_events(
@@ -578,7 +684,9 @@ async fn webhook_events(
         return Err(ApiError::not_found());
     }
 
-    let secret = config_value(&st.db, "SHOPIFY_CLIENT_SECRET").await.unwrap_or_default();
+    let secret = config_value(&st.db, "SHOPIFY_CLIENT_SECRET")
+        .await
+        .unwrap_or_default();
     let hmac_hdr = headers
         .get("x-shopify-hmac-sha256")
         .and_then(|v| v.to_str().ok())
@@ -630,5 +738,373 @@ async fn webhook_events(
         }
     }
 
+    Ok(StatusCode::OK)
+}
+
+// ---------- Shopify Custom Apps + Complete Install ----------
+
+async fn custom_app_show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let row: Option<(String, String, bool)> = sqlx::query_as(
+        "SELECT shop_domain, client_id, enabled FROM shopify_custom_apps WHERE account_id = $1 LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_optional(&st.db)
+    .await?;
+    let origin = st.frontend_url.trim_end_matches('/');
+    let custom_app = row.map(|(shop_domain, client_id, enabled)| {
+        json!({
+            "shop_domain": shop_domain,
+            "client_id": client_id,
+            "enabled": enabled,
+            "callback_url": format!("{origin}/shopify/accounts/{account_id}/callback"),
+            "webhook_url": format!("{origin}/webhooks/shopify/accounts/{account_id}"),
+        })
+    });
+    Ok(Json(json!({ "custom_app": custom_app })))
+}
+
+async fn custom_app_create(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(body): Json<Value>,
+) -> Result<Response, ApiError> {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM shopify_custom_apps WHERE account_id = $1)",
+    )
+    .bind(account_id)
+    .fetch_one(&st.db)
+    .await?;
+    if exists {
+        return Ok(StatusCode::CONFLICT.into_response());
+    }
+    let shop = body["shop_domain"]
+        .as_str()
+        .map(normalize_shop_domain)
+        .filter(|s| valid_shop_domain(s))
+        .ok_or_else(|| ApiError::bad("Invalid Shopify custom app configuration"))?;
+    let client_id = body["client_id"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::bad("Invalid Shopify custom app configuration"))?;
+    let client_secret = body["client_secret"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::bad("Invalid Shopify custom app configuration"))?;
+    let install_url = body["install_url"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::bad("Invalid Shopify custom app configuration"))?;
+    let enc_secret = ar_encryption::encrypt(client_secret);
+
+    sqlx::query(
+        "INSERT INTO shopify_custom_apps (account_id, shop_domain, client_id, client_secret, install_url, enabled, installation_generation, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, false, 0, now(), now())",
+    )
+    .bind(account_id)
+    .bind(&shop)
+    .bind(client_id)
+    .bind(&enc_secret)
+    .bind(install_url)
+    .execute(&st.db)
+    .await?;
+
+    let origin = st.frontend_url.trim_end_matches('/');
+    Ok(Json(json!({
+        "custom_app": {
+            "shop_domain": shop,
+            "client_id": client_id,
+            "enabled": false,
+            "callback_url": format!("{origin}/shopify/accounts/{account_id}/callback"),
+            "webhook_url": format!("{origin}/webhooks/shopify/accounts/{account_id}"),
+        }
+    }))
+    .into_response())
+}
+
+async fn custom_app_update(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let existing: Option<(String, String, String, String, bool)> = sqlx::query_as(
+        "SELECT shop_domain, client_id, client_secret, install_url, enabled
+         FROM shopify_custom_apps WHERE account_id = $1 LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_optional(&st.db)
+    .await?;
+    let Some((shop_domain, client_id, cur_secret, cur_install, cur_enabled)) = existing else {
+        return Err(ApiError::not_found());
+    };
+    let next_secret = body["client_secret"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ar_encryption::encrypt)
+        .unwrap_or(cur_secret);
+    let next_install = body["install_url"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&cur_install);
+    let next_enabled = body["enabled"].as_bool().unwrap_or(cur_enabled);
+
+    sqlx::query(
+        "UPDATE shopify_custom_apps
+         SET client_secret = $2, install_url = $3, enabled = $4,
+             installation_generation = installation_generation + 1, updated_at = now()
+         WHERE account_id = $1",
+    )
+    .bind(account_id)
+    .bind(&next_secret)
+    .bind(next_install)
+    .bind(next_enabled)
+    .execute(&st.db)
+    .await?;
+    let origin = st.frontend_url.trim_end_matches('/');
+    Ok(Json(json!({
+        "custom_app": {
+            "shop_domain": shop_domain,
+            "client_id": client_id,
+            "enabled": next_enabled,
+            "callback_url": format!("{origin}/shopify/accounts/{account_id}/callback"),
+            "webhook_url": format!("{origin}/webhooks/shopify/accounts/{account_id}"),
+        }
+    })))
+}
+
+async fn custom_app_destroy(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+) -> Result<StatusCode, ApiError> {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let hook_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM integrations_hooks WHERE account_id = $1 AND app_id = 'shopify')",
+    )
+    .bind(account_id as i32)
+    .fetch_one(&st.db)
+    .await?;
+    if hook_exists {
+        return Ok(StatusCode::CONFLICT);
+    }
+    sqlx::query("DELETE FROM shopify_custom_apps WHERE account_id = $1")
+        .bind(account_id)
+        .execute(&st.db)
+        .await?;
+    Ok(StatusCode::OK)
+}
+
+async fn complete_install(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(body): Json<Value>,
+) -> Result<StatusCode, ApiError> {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let tok = body["pending_install_token"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::bad("pending_install_token is required"))?;
+    let claims = crate::common::verify_oauth_claims(tok)
+        .ok_or_else(|| ApiError::bad("Invalid pending installation token"))?;
+    let shop = claims["shop"]
+        .as_str()
+        .map(normalize_shop_domain)
+        .filter(|s| valid_shop_domain(s))
+        .ok_or_else(|| ApiError::bad("Invalid shop domain"))?;
+    let access_token = claims["access_token"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::bad("Missing Shopify access token"))?;
+    let enc_token = ar_encryption::encrypt_deterministic(access_token)
+        .map_err(|_| ApiError::bad("Token encryption failed"))?;
+    let settings = json!({
+        "scope": claims["scope"].as_str().unwrap_or(REQUIRED_SCOPES),
+        "connected_at": chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true),
+        "installation_id": uuid::Uuid::new_v4().to_string(),
+    });
+    let existing_id: Option<i64> = sqlx::query_scalar(
+        "SELECT id::bigint FROM integrations_hooks WHERE account_id = $1::bigint AND app_id = 'shopify' ORDER BY id LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_optional(&st.db)
+    .await?;
+    match existing_id {
+        Some(id) => {
+            sqlx::query(
+                "UPDATE integrations_hooks SET access_token = $2, status = 1, reference_id = $3, settings = $4, updated_at = now() WHERE id = $1::bigint",
+            )
+            .bind(id)
+            .bind(&enc_token)
+            .bind(&shop)
+            .bind(&settings)
+            .execute(&st.db)
+            .await?;
+        }
+        None => {
+            sqlx::query(
+                "INSERT INTO integrations_hooks (account_id, app_id, hook_type, status, reference_id, access_token, settings, created_at, updated_at)
+                 VALUES ($1::bigint, 'shopify', 0, 1, $2, $3, $4, now(), now())",
+            )
+            .bind(account_id)
+            .bind(&shop)
+            .bind(&enc_token)
+            .bind(&settings)
+            .execute(&st.db)
+            .await?;
+        }
+    }
+    Ok(StatusCode::OK)
+}
+
+async fn custom_callback(
+    State(st): State<AppState>,
+    Path(account_id): Path<i64>,
+    Query(params): Query<Vec<(String, String)>>,
+) -> Redirect {
+    let frontend = st.frontend_url.trim_end_matches('/').to_string();
+    let dest = format!("{frontend}/app/accounts/{account_id}/settings/integrations/shopify");
+    let err_dest = format!("{dest}?error=true");
+    let get = |k: &str| {
+        params
+            .iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.as_str())
+    };
+
+    let row: Option<(i64, String, String, String, bool)> = sqlx::query_as(
+        "SELECT id, shop_domain, client_id, client_secret, enabled
+         FROM shopify_custom_apps WHERE account_id = $1 LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_optional(&st.db)
+    .await
+    .ok()
+    .flatten();
+    let Some((custom_app_id, shop_domain, client_id, enc_secret, enabled)) = row else {
+        return Redirect::to(&err_dest);
+    };
+    if !enabled {
+        return Redirect::to(&err_dest);
+    }
+    let client_secret = ar_encryption::decrypt(&enc_secret);
+    if get("shop").is_none_or(|s| normalize_shop_domain(s) != shop_domain)
+        || !verify_callback_hmac(&params, &client_secret)
+    {
+        return Redirect::to(&err_dest);
+    }
+    let Some(code) = get("code").filter(|c| !c.is_empty()) else {
+        let auth_url = format!(
+            "https://{}/admin/oauth/authorize?client_id={}&scope={}&redirect_uri={}/shopify/accounts/{}/callback",
+            shop_domain, client_id, REQUIRED_SCOPES, frontend, account_id
+        );
+        return Redirect::to(&auth_url);
+    };
+    let token_url = format!(
+        "{}/admin/oauth/access_token",
+        shopify_api_base(&shop_domain)
+    );
+    let Ok(resp) = reqwest::Client::new()
+        .post(&token_url)
+        .header("Content-Type", "application/json")
+        .body(
+            json!({ "client_id": client_id, "client_secret": client_secret, "code": code })
+                .to_string(),
+        )
+        .send()
+        .await
+    else {
+        return Redirect::to(&err_dest);
+    };
+    let v: Value =
+        serde_json::from_slice(&resp.bytes().await.unwrap_or_default()).unwrap_or(Value::Null);
+    let Some(access_token) = v["access_token"].as_str().filter(|s| !s.is_empty()) else {
+        return Redirect::to(&err_dest);
+    };
+    let Ok(enc_tok) = ar_encryption::encrypt_deterministic(access_token) else {
+        return Redirect::to(&err_dest);
+    };
+    let settings = json!({
+        "scope": v["scope"].as_str().unwrap_or(""),
+        "connected_at": chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true),
+        "installation_id": uuid::Uuid::new_v4().to_string(),
+        "custom_app_id": custom_app_id,
+    });
+    let _ = sqlx::query(
+        "DELETE FROM integrations_hooks WHERE account_id = $1::bigint AND app_id = 'shopify'",
+    )
+    .bind(account_id)
+    .execute(&st.db)
+    .await;
+    let _ = sqlx::query(
+        "INSERT INTO integrations_hooks (account_id, app_id, hook_type, status, reference_id, access_token, settings, created_at, updated_at)
+         VALUES ($1::bigint, 'shopify', 0, 1, $2, $3, $4, now(), now())",
+    )
+    .bind(account_id)
+    .bind(&shop_domain)
+    .bind(&enc_tok)
+    .bind(&settings)
+    .execute(&st.db)
+    .await;
+    Redirect::to(&dest)
+}
+
+async fn custom_webhook_events(
+    State(st): State<AppState>,
+    Path(account_id): Path<i64>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let enc_secret: Option<String> = sqlx::query_scalar(
+        "SELECT client_secret FROM shopify_custom_apps WHERE account_id = $1 AND enabled IS TRUE LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_optional(&st.db)
+    .await?;
+    let Some(enc_secret) = enc_secret else {
+        return Err(ApiError::not_found());
+    };
+    let secret = ar_encryption::decrypt(&enc_secret);
+    let hmac_hdr = headers
+        .get("x-shopify-hmac-sha256")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !verify_webhook_hmac(&body, hmac_hdr, &secret) {
+        return Err(ApiError(StatusCode::UNAUTHORIZED, "Invalid HMAC".into()));
+    }
+    let topic = headers
+        .get("x-shopify-topic")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if matches!(topic, "app/uninstalled" | "shop/redact") {
+        sqlx::query("DELETE FROM integrations_hooks WHERE account_id = $1 AND app_id = 'shopify'")
+            .bind(account_id as i32)
+            .execute(&st.db)
+            .await?;
+    }
     Ok(StatusCode::OK)
 }

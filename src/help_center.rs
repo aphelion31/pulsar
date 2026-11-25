@@ -2,7 +2,8 @@ use crate::common::*;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    response::Redirect,
+    http::{StatusCode, header},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use serde_json::{Value, json};
@@ -26,6 +27,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/portals/{portal}/logo",
             axum::routing::delete(portal_logo_delete),
+        )
+        .route(
+            "/portals/{portal}/remove_locale",
+            axum::routing::delete(portal_remove_locale),
         )
         .route(
             "/portals/{portal}/send_instructions",
@@ -64,6 +69,10 @@ pub fn routes() -> Router<AppState> {
             "/portals/{portal}/articles/bulk_actions/delete_articles",
             axum::routing::delete(articles_bulk_delete),
         )
+        .route(
+            "/portals/{portal}/articles/bulk_actions/translate",
+            post(articles_bulk_translate),
+        )
         .route("/search/articles", get(search_articles))
         .route(
             "/portals/{portal}/articles/{id}",
@@ -77,9 +86,18 @@ pub fn routes() -> Router<AppState> {
 pub fn public_routes() -> Router<AppState> {
     Router::new()
         .route("/hc/{portal}", get(public_redirect))
+        .route("/hc/{portal}/sitemap.xml", get(public_sitemap))
         .route("/hc/{portal}/{locale}", get(public_portal))
+        .route("/hc/{portal}/{locale}/search", get(public_search))
         .route("/hc/{portal}/{locale}/categories", get(public_categories))
-        .route("/hc/{portal}/{locale}/categories.json", get(public_categories))
+        .route(
+            "/hc/{portal}/{locale}/categories.json",
+            get(public_categories),
+        )
+        .route(
+            "/hc/{portal}/{locale}/categories/{category}",
+            get(public_category_show),
+        )
         .route("/hc/{portal}/{locale}/articles", get(public_articles))
         .route("/hc/{portal}/{locale}/articles.json", get(public_articles))
         .route(
@@ -529,6 +547,61 @@ async fn portal_logo_delete(
     }
     Ok(Json(json!({})))
 }
+async fn portal_remove_locale(
+    State(st): State<AppState>,
+    u: CurrentUser,
+    Path((account, slug)): Path<(i64, String)>,
+    Query(q): Query<Params>,
+    body: Option<Json<Value>>,
+) -> ApiResult {
+    require_account(&st.db, &u, account)
+        .await?
+        .require_admin()?;
+    let p = portal(&st.db, account, &slug).await?;
+    let locale = q
+        .get("locale")
+        .map(|s| s.trim().to_string())
+        .or_else(|| {
+            body.as_ref()
+                .and_then(|Json(v)| v["locale"].as_str().map(|s| s.trim().to_string()))
+        })
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::bad("locale is required"))?;
+    if locale == default_locale(&p) {
+        return Err(ApiError::bad("Cannot remove the default locale"));
+    }
+    let pid = id(&p);
+    let mut cfg = p["config"].clone();
+    if let Some(arr) = cfg.get_mut("allowed_locales").and_then(Value::as_array_mut) {
+        arr.retain(|v| v.as_str() != Some(locale.as_str()));
+    }
+    if let Some(arr) = cfg.get_mut("draft_locales").and_then(Value::as_array_mut) {
+        arr.retain(|v| v.as_str() != Some(locale.as_str()));
+    }
+    let mut tx = st.db.begin().await?;
+    sqlx::query("DELETE FROM articles WHERE portal_id=$1 AND locale=$2")
+        .bind(pid)
+        .bind(&locale)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM categories WHERE portal_id=$1 AND locale=$2")
+        .bind(pid)
+        .bind(&locale)
+        .execute(&mut *tx)
+        .await?;
+    let updated: Value = sqlx::query_scalar(
+        "UPDATE portals SET config=$3, updated_at=now() WHERE id=$1 AND account_id=$2 RETURNING to_jsonb(portals)",
+    )
+    .bind(pid)
+    .bind(account)
+    .bind(cfg)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Json(
+        portal_json(&st.db, &updated, u.id, false, None).await?,
+    ))
+}
 fn valid_email(s: &str) -> bool {
     let s = s.trim();
     let Some((local, domain)) = s.split_once('@') else {
@@ -582,7 +655,12 @@ async fn portal_send_instructions(
     let html = format!(
         "<p>Add the following CNAME record to your DNS provider to finish setting up <strong>{custom_domain}</strong>:</p><pre>{cname_record}</pre>"
     );
-    tracing::info!(to = email, custom_domain, cname_record, "portal CNAME instructions");
+    tracing::info!(
+        to = email,
+        custom_domain,
+        cname_record,
+        "portal CNAME instructions"
+    );
     if let Err(e) = crate::mailer::send_html(email, &subject, html).await {
         tracing::warn!(to = email, error = %e, "failed to send portal CNAME instructions");
     }
@@ -1080,7 +1158,10 @@ fn article_ids(body: &Value) -> Vec<i64> {
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                .filter_map(|v| {
+                    v.as_i64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -1112,7 +1193,8 @@ async fn articles_bulk_update_status(
         .get("status")
         .and_then(Value::as_str)
         .ok_or_else(|| ApiError::bad("Invalid status value"))?;
-    let status_num = status_number(status_str).map_err(|_| ApiError::bad("Invalid status value"))?;
+    let status_num =
+        status_number(status_str).map_err(|_| ApiError::bad("Invalid status value"))?;
     if status_num == 1
         && matched
             .iter()
@@ -1121,12 +1203,14 @@ async fn articles_bulk_update_status(
         return Err(ApiError::bad("Content can't be blank"));
     }
     let matched_ids: Vec<i64> = matched.into_iter().map(|(aid, _)| aid).collect();
-    sqlx::query("UPDATE articles SET status=$1, updated_at=now() WHERE portal_id=$2 AND id = ANY($3)")
-        .bind(status_num)
-        .bind(id(&p))
-        .bind(&matched_ids)
-        .execute(&st.db)
-        .await?;
+    sqlx::query(
+        "UPDATE articles SET status=$1, updated_at=now() WHERE portal_id=$2 AND id = ANY($3)",
+    )
+    .bind(status_num)
+    .bind(id(&p))
+    .bind(&matched_ids)
+    .execute(&st.db)
+    .await?;
     Ok(Json(json!({})))
 }
 async fn articles_bulk_update_category(
@@ -1154,7 +1238,10 @@ async fn articles_bulk_update_category(
     }
     let cid = body
         .get("category_id")
-        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
         .ok_or_else(|| ApiError::bad("Category not found in this portal"))?;
     let cat_ok: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM categories WHERE id=$1 AND portal_id=$2)")
@@ -1213,6 +1300,142 @@ async fn articles_bulk_delete(
         .await?;
     tx.commit().await?;
     Ok(Json(json!({})))
+}
+async fn articles_bulk_translate(
+    State(st): State<AppState>,
+    u: CurrentUser,
+    Path((account, slug)): Path<(i64, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    require_account(&st.db, &u, account)
+        .await?
+        .require_admin()?;
+    let p = portal(&st.db, account, &slug).await?;
+    let pid = id(&p);
+    let locale = body["locale"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::bad("locale is required"))?;
+    let allowed = p["config"]["allowed_locales"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(locale)));
+    if !allowed {
+        return Err(ApiError::bad("Locale is not enabled on this portal"));
+    }
+    let category_id = body["category_id"].as_i64();
+    if let Some(cid) = category_id {
+        let cat_ok: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM categories WHERE portal_id=$1 AND id=$2 AND locale=$3)",
+        )
+        .bind(pid)
+        .bind(cid)
+        .bind(locale)
+        .fetch_one(&st.db)
+        .await?;
+        if !cat_ok {
+            return Err(ApiError::bad("Category not found for target locale"));
+        }
+    }
+    let ids = article_ids(&body);
+    let sources: Vec<Value> = if ids.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_scalar("SELECT to_jsonb(a) FROM articles a WHERE portal_id=$1 AND id = ANY($2)")
+            .bind(pid)
+            .bind(&ids)
+            .fetch_all(&st.db)
+            .await?
+    };
+    if sources.is_empty() {
+        return Err(ApiError::bad("No articles found to process"));
+    }
+    let root_ids: Vec<i64> = sources
+        .iter()
+        .map(|a| a["associated_article_id"].as_i64().unwrap_or_else(|| id(a)))
+        .collect();
+    let existing: Vec<Value> = sqlx::query_scalar(
+        "SELECT to_jsonb(a) FROM articles a
+         WHERE portal_id=$1 AND locale=$2
+           AND (id = ANY($3) OR associated_article_id = ANY($3))",
+    )
+    .bind(pid)
+    .bind(locale)
+    .bind(&root_ids)
+    .fetch_all(&st.db)
+    .await?;
+    if existing
+        .iter()
+        .any(|a| a["associated_article_id"].is_null())
+    {
+        return Err(ApiError::bad("Cannot overwrite original article"));
+    }
+    let force = body["force"].as_bool().unwrap_or(false);
+    if !existing.is_empty() && !force {
+        let dups: Vec<Value> = existing
+            .iter()
+            .map(|a| json!({ "id": a["id"], "title": a["title"] }))
+            .collect();
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "duplicate_articles": dups })),
+        ));
+    }
+
+    let mut tx = st.db.begin().await?;
+    for src in &sources {
+        let root_id = src["associated_article_id"]
+            .as_i64()
+            .unwrap_or_else(|| id(src));
+        let title = src["title"].as_str().unwrap_or("Untitled");
+        let content = src["content"].as_str().unwrap_or("");
+        let description = src["description"].as_str().unwrap_or("");
+        let dup_id: Option<i64> = sqlx::query_scalar(
+            "SELECT id::bigint FROM articles WHERE portal_id=$1 AND locale=$2 AND associated_article_id=$3 LIMIT 1",
+        )
+        .bind(pid)
+        .bind(locale)
+        .bind(root_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(did) = dup_id {
+            sqlx::query(
+                "UPDATE articles SET title=$2, content=$3, description=$4, category_id=COALESCE($5, category_id), updated_at=now() WHERE id=$1",
+            )
+            .bind(did)
+            .bind(title)
+            .bind(content)
+            .bind(description)
+            .bind(category_id)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            let new_slug = format!(
+                "{}-{}-{}",
+                src["slug"].as_str().unwrap_or("article"),
+                locale,
+                &uuid::Uuid::new_v4().simple().to_string()[..6]
+            );
+            sqlx::query(
+                "INSERT INTO articles(account_id, portal_id, category_id, author_id, associated_article_id, title, slug, content, description, locale, status, created_at, updated_at)
+                 VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, now(), now())",
+            )
+            .bind(account)
+            .bind(pid)
+            .bind(category_id)
+            .bind(u.id)
+            .bind(root_id)
+            .bind(title)
+            .bind(new_slug)
+            .bind(content)
+            .bind(description)
+            .bind(locale)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    tx.commit().await?;
+    Ok((StatusCode::OK, Json(json!({}))))
 }
 // mirrors chatwoot/app/controllers/api/v1/accounts/search_controller.rb#articles
 async fn search_articles(
@@ -1367,8 +1590,60 @@ async fn public_category_articles(
 async fn public_article(
     State(st): State<AppState>,
     Path((slug, article)): Path<(String, String)>,
-) -> ApiResult {
+) -> Result<Response, ApiError> {
     let p = public_portal_row(&st.db, &slug).await?;
+    if let Some(stem) = article.strip_suffix(".png") {
+        let aid: Option<(i64, i32)> = sqlx::query_as(
+            "SELECT id::bigint, status FROM articles WHERE portal_id=$1 AND slug=$2 LIMIT 1",
+        )
+        .bind(id(&p))
+        .bind(stem)
+        .fetch_optional(&st.db)
+        .await?;
+        let Some((aid, status)) = aid else {
+            return Err(ApiError::not_found());
+        };
+        if status == 1 {
+            sqlx::query("UPDATE articles SET views = COALESCE(views, 0) + 1 WHERE id = $1")
+                .bind(aid)
+                .execute(&st.db)
+                .await?;
+        }
+        // 1x1 transparent PNG
+        const PIXEL: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        return Ok((
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "image/png"),
+                (header::CACHE_CONTROL, "private, max-age=86400"),
+            ],
+            PIXEL,
+        )
+            .into_response());
+    }
+    if let Some(stem) = article.strip_suffix(".md") {
+        let a: Value = sqlx::query_scalar(
+            "SELECT to_jsonb(a) FROM articles a WHERE portal_id=$1 AND slug=$2 AND status=1",
+        )
+        .bind(id(&p))
+        .bind(stem)
+        .fetch_optional(&st.db)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+        let content = a["content"].as_str().unwrap_or("").to_string();
+        return Ok((
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
+            content,
+        )
+            .into_response());
+    }
     let article = article.strip_suffix(".json").unwrap_or(&article);
     let a: Value = sqlx::query_scalar(
         "SELECT to_jsonb(a) FROM articles a WHERE portal_id=$1 AND slug=$2 AND status=1",
@@ -1377,5 +1652,96 @@ async fn public_article(
     .bind(article)
     .fetch_one(&st.db)
     .await?;
-    Ok(Json(article_json(&st.db, &a, true).await?))
+    Ok(Json(article_json(&st.db, &a, true).await?).into_response())
+}
+
+async fn public_sitemap(
+    State(st): State<AppState>,
+    Path(slug): Path<String>,
+) -> Result<Response, ApiError> {
+    let p = public_portal_row(&st.db, &slug).await?;
+    let disable_index = p["config"]["disable_search_indexing"]
+        .as_bool()
+        .unwrap_or(false);
+    let base = p["custom_domain"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| {
+            if s.contains("://") {
+                s.trim_end_matches('/').to_string()
+            } else {
+                format!("https://{}", s.trim_end_matches('/'))
+            }
+        })
+        .unwrap_or_else(|| st.frontend_url.trim_end_matches('/').to_string());
+    let rows: Vec<(String, String)> = if disable_index {
+        Vec::new()
+    } else {
+        sqlx::query_as(
+            "SELECT slug, to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')
+             FROM articles WHERE portal_id=$1 AND status=1 ORDER BY id",
+        )
+        .bind(id(&p))
+        .fetch_all(&st.db)
+        .await?
+    };
+    let mut xml = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n",
+    );
+    for (art_slug, lastmod) in rows {
+        xml.push_str(&format!(
+            "  <url>\n    <loc>{base}/hc/{slug}/articles/{art_slug}</loc>\n    <lastmod>{lastmod}</lastmod>\n  </url>\n"
+        ));
+    }
+    xml.push_str("</urlset>\n");
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
+        xml,
+    )
+        .into_response())
+}
+
+async fn public_search(
+    State(st): State<AppState>,
+    Path((slug, locale)): Path<(String, String)>,
+    Query(mut q): Query<Params>,
+) -> ApiResult {
+    if q.get("query").is_none_or(|s| s.trim().is_empty()) {
+        return Ok(Json(
+            json!({ "payload": [], "meta": { "articles_count": 0 } }),
+        ));
+    }
+    q.entry("per_page".into()).or_insert_with(|| "10".into());
+    public_articles_impl(&st.db, &slug, &locale, &q, None).await
+}
+
+async fn public_category_show(
+    State(st): State<AppState>,
+    Path((slug, locale, category)): Path<(String, String, String)>,
+) -> ApiResult {
+    let p = public_portal_row(&st.db, &slug).await?;
+    let c: Value = sqlx::query_scalar(
+        "SELECT to_jsonb(c) FROM categories c WHERE portal_id=$1 AND locale=$2 AND slug=$3 LIMIT 1",
+    )
+    .bind(id(&p))
+    .bind(&locale)
+    .bind(&category)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+    let mut cat = category_json(&st.db, &c, Some(&locale), true).await?;
+    let rows: Vec<Value> = sqlx::query_scalar(
+        "SELECT to_jsonb(a) FROM articles a WHERE a.portal_id=$1 AND a.category_id=$2 AND a.status=1 ORDER BY a.position ASC",
+    )
+    .bind(id(&p))
+    .bind(id(&c))
+    .fetch_all(&st.db)
+    .await?;
+    let mut arts = Vec::new();
+    for a in rows {
+        arts.push(article_json(&st.db, &a, true).await?);
+    }
+    cat["articles"] = json!(arts);
+    Ok(Json(cat))
 }
