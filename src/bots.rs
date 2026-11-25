@@ -2,11 +2,13 @@
 use crate::common::*;
 use axum::{
     Json, Router,
-    extract::{FromRequest, Multipart, Path, Request, State},
+    extract::{FromRequest, Multipart, Path, Query, Request, State},
     routing::{get, post},
 };
 use rand::{Rng, distributions::Alphanumeric};
 use serde_json::{Value, json};
+use sqlx::Row;
+use std::collections::HashMap;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -17,6 +19,14 @@ pub fn routes() -> Router<AppState> {
                 .patch(campaign_update)
                 .put(campaign_update)
                 .delete(campaign_delete),
+        )
+        .route(
+            "/campaigns/{id}/analytics/metrics",
+            get(campaign_analytics_metrics),
+        )
+        .route(
+            "/campaigns/{id}/analytics/contacts",
+            get(campaign_analytics_contacts),
         )
         .route("/agent_bots", get(bots).post(bot_create))
         .route(
@@ -44,7 +54,6 @@ pub fn routes() -> Router<AppState> {
         )
 }
 
-// ponytail: campaigns are stored only, not scheduled or sent.
 const CAMPAIGN_SELECT: &str = "SELECT jsonb_build_object('id',c.display_id,'title',c.title,'description',c.description,'account_id',c.account_id,'inbox',to_jsonb(i) - 'account_id','sender',CASE WHEN u.id IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('id',u.id,'name',u.name,'email',u.email,'account_id',c.account_id) END,'message',c.message,'template_params',c.template_params,'campaign_status',(ARRAY['active','completed','processing'])[c.campaign_status+1],'enabled',c.enabled,'campaign_type',(ARRAY['ongoing','one_off'])[c.campaign_type+1],'trigger_rules',c.trigger_rules,'trigger_only_during_business_hours',c.trigger_only_during_business_hours,'created_at',c.created_at,'updated_at',c.updated_at) || CASE WHEN c.campaign_type=1 THEN jsonb_build_object('scheduled_at',COALESCE(EXTRACT(EPOCH FROM c.scheduled_at)::bigint,0),'started_at',EXTRACT(EPOCH FROM c.started_at)::bigint,'completed_at',EXTRACT(EPOCH FROM c.completed_at)::bigint,'audience',c.audience) ELSE '{}'::jsonb END FROM campaigns c JOIN inboxes i ON i.id=c.inbox_id AND i.account_id=c.account_id LEFT JOIN users u ON u.id=c.sender_id AND EXISTS (SELECT 1 FROM account_users au WHERE au.account_id=c.account_id AND au.user_id=u.id) WHERE c.account_id=$1";
 const BOT_SELECT: &str = "SELECT jsonb_build_object('id',b.id,'name',b.name,'description',b.description,'thumbnail',NULL,'outgoing_url',b.outgoing_url,'bot_type',CASE b.bot_type WHEN 0 THEN 'webhook' WHEN 1 THEN 'dialogflow' ELSE 'webhook' END,'bot_config',b.bot_config,'account_id',b.account_id,'system_bot',false) || CASE WHEN $2 THEN jsonb_build_object('access_token',t.token,'secret',b.secret) ELSE '{}'::jsonb END FROM agent_bots b LEFT JOIN access_tokens t ON t.owner_type='AgentBot' AND t.owner_id=b.id WHERE b.account_id=$1";
 const APP_SELECT: &str = "SELECT jsonb_build_object('id',id,'title',title,'content',content,'created_at',created_at) FROM dashboard_apps WHERE account_id=$1";
@@ -295,6 +304,7 @@ async fn bot_create(
     tx.commit().await?;
     Ok(Json(bot_get(&st, a, id, true).await?))
 }
+
 async fn bot_update(
     State(st): State<AppState>,
     user: CurrentUser,
@@ -309,6 +319,7 @@ async fn bot_update(
     sqlx::query("UPDATE agent_bots SET name=$3->>'name',description=$3->>'description',outgoing_url=$3->>'outgoing_url',bot_type=CASE WHEN $3->>'bot_type'='dialogflow' THEN 1 ELSE 0 END,bot_config=$3->'bot_config',updated_at=now() WHERE account_id=$1 AND id=$2").bind(a).bind(id).bind(&v).execute(&st.db).await?;
     Ok(Json(bot_get(&st, a, id, true).await?))
 }
+
 async fn bot_delete(
     State(st): State<AppState>,
     user: CurrentUser,
@@ -536,4 +547,164 @@ async fn bot_reset_secret(
         return Err(ApiError::not_found());
     }
     Ok(Json(bot_get(&st, a, id, true).await?))
+}
+
+async fn resolve_campaign_id(
+    st: &AppState,
+    account_id: i64,
+    display_id: i64,
+) -> Result<i64, ApiError> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT id::bigint FROM campaigns WHERE account_id = $1 AND display_id = $2",
+    )
+    .bind(account_id)
+    .bind(display_id)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or_else(ApiError::not_found)
+}
+
+fn recipient_status_name(code: i32) -> &'static str {
+    match code {
+        0 => "sent",
+        1 => "delivered",
+        2 => "read",
+        3 => "failed",
+        _ => "skipped",
+    }
+}
+
+/// GET /campaigns/{id}/analytics/metrics
+async fn campaign_analytics_metrics(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, display_id)): Path<(i64, i64)>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id).await?;
+    let cid = resolve_campaign_id(&st, account_id, display_id).await?;
+    let rows: Vec<(i32, i64)> = sqlx::query_as(
+        "SELECT status, count(*)::bigint FROM campaign_recipients
+         WHERE account_id = $1 AND campaign_id = $2
+         GROUP BY status",
+    )
+    .bind(account_id)
+    .bind(cid)
+    .fetch_all(&st.db)
+    .await?;
+
+    let mut total = 0i64;
+    let (mut sent, mut delivered, mut read, mut failed, mut skipped) =
+        (0i64, 0i64, 0i64, 0i64, 0i64);
+    let mut status_counts = serde_json::Map::new();
+    for (st_code, cnt) in rows {
+        total += cnt;
+        status_counts.insert(recipient_status_name(st_code).into(), json!(cnt));
+        match st_code {
+            0 => sent += cnt,
+            1 => delivered += cnt,
+            2 => read += cnt,
+            3 => failed += cnt,
+            _ => skipped += cnt,
+        }
+    }
+    Ok(Json(json!({
+        "audience": total,
+        "sent": sent + delivered + read,
+        "delivered": delivered + read,
+        "read": read,
+        "failed": failed,
+        "skipped": skipped,
+        "status_counts": status_counts,
+    })))
+}
+
+/// GET /campaigns/{id}/analytics/contacts
+async fn campaign_analytics_contacts(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, display_id)): Path<(i64, i64)>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id).await?;
+    let cid = resolve_campaign_id(&st, account_id, display_id).await?;
+    let page = q
+        .get("page")
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1);
+    let per_page = q
+        .get("per_page")
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(25)
+        .clamp(1, 100);
+    let offset = (page - 1) * per_page;
+    let status_filter = q.get("status").and_then(|s| match s.as_str() {
+        "sent" => Some(0i32),
+        "delivered" => Some(1),
+        "read" => Some(2),
+        "failed" => Some(3),
+        "skipped" => Some(4),
+        _ => None,
+    });
+
+    let total_count: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM campaign_recipients
+         WHERE account_id = $1 AND campaign_id = $2
+           AND ($3::int IS NULL OR status = $3)",
+    )
+    .bind(account_id)
+    .bind(cid)
+    .bind(status_filter)
+    .fetch_one(&st.db)
+    .await?;
+
+    let rows = sqlx::query(
+        "SELECT cr.status, cr.message_content, cr.error_code, cr.error_title, cr.error_message,
+                c.id::bigint AS contact_id, c.name AS contact_name, c.email AS contact_email, c.phone_number AS contact_phone
+         FROM campaign_recipients cr
+         JOIN contacts c ON c.id = cr.contact_id
+         WHERE cr.account_id = $1 AND cr.campaign_id = $2
+           AND ($3::int IS NULL OR cr.status = $3)
+         ORDER BY cr.id DESC LIMIT $4 OFFSET $5",
+    )
+    .bind(account_id)
+    .bind(cid)
+    .bind(status_filter)
+    .bind(per_page)
+    .bind(offset)
+    .fetch_all(&st.db)
+    .await?;
+
+    let payload: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            let status_code: i32 = r.try_get("status").unwrap_or(0);
+            json!({
+                "contact": {
+                    "id": r.try_get::<i64, _>("contact_id").unwrap_or(0),
+                    "name": r.try_get::<Option<String>, _>("contact_name").unwrap_or(None),
+                    "email": r.try_get::<Option<String>, _>("contact_email").unwrap_or(None),
+                    "phone_number": r.try_get::<Option<String>, _>("contact_phone").unwrap_or(None),
+                },
+                "status": recipient_status_name(status_code),
+                "message_content": r.try_get::<Option<String>, _>("message_content").unwrap_or(None),
+                "error_code": r.try_get::<Option<String>, _>("error_code").unwrap_or(None),
+                "error_title": r.try_get::<Option<String>, _>("error_title").unwrap_or(None),
+                "error_message": r.try_get::<Option<String>, _>("error_message").unwrap_or(None),
+            })
+        })
+        .collect();
+    let total_pages = if total_count == 0 {
+        1
+    } else {
+        (total_count + per_page - 1) / per_page
+    };
+    Ok(Json(json!({
+        "payload": payload,
+        "meta": {
+            "current_page": page,
+            "total_pages": total_pages,
+            "total_count": total_count,
+        },
+    })))
 }

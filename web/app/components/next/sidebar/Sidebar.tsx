@@ -269,6 +269,14 @@ export default function Sidebar({ me, accountId }: SidebarProps) {
         ],
       },
 
+      // 4.5 Help Center
+      {
+        name: "Help Center",
+        label: "Help Center",
+        icon: "i-lucide-book-open",
+        to: `${acctPrefix}/portals`,
+      },
+
       // 5. Reports
       {
         name: "Reports",

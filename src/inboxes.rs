@@ -661,6 +661,168 @@ pub(crate) async fn inbox_json(
                 }
             }
         }
+        "Channel::FacebookPage" => {
+            let c = sqlx::query(
+                "SELECT page_id, provider_name, user_access_token
+                 FROM channel_facebook_pages WHERE id::bigint = $1 AND account_id::bigint = $2",
+            )
+            .bind(channel_id)
+            .bind(account_id)
+            .fetch_optional(db)
+            .await?;
+            if let Some(c) = c {
+                obj.insert(
+                    "page_id".into(),
+                    c.try_get::<Option<String>, _>("page_id")?.into(),
+                );
+                obj.insert(
+                    "provider_name".into(),
+                    c.try_get::<Option<String>, _>("provider_name")?.into(),
+                );
+                let tok = c.try_get::<Option<String>, _>("user_access_token")?;
+                obj.insert(
+                    "reauthorization_required".into(),
+                    json!(tok.is_none_or(|s| s.is_empty())),
+                );
+            }
+        }
+        "Channel::Instagram" => {
+            let c = sqlx::query(
+                "SELECT instagram_id, provider_name, access_token, expires_at
+                 FROM channel_instagram WHERE id::bigint = $1 AND account_id::bigint = $2",
+            )
+            .bind(channel_id)
+            .bind(account_id)
+            .fetch_optional(db)
+            .await?;
+            if let Some(c) = c {
+                obj.insert(
+                    "instagram_id".into(),
+                    c.try_get::<Option<String>, _>("instagram_id")?.into(),
+                );
+                obj.insert(
+                    "provider_name".into(),
+                    c.try_get::<Option<String>, _>("provider_name")?.into(),
+                );
+                let tok = c.try_get::<Option<String>, _>("access_token")?;
+                let exp = c.try_get::<Option<chrono::NaiveDateTime>, _>("expires_at")?;
+                let expired = exp.is_some_and(|e| e < chrono::Utc::now().naive_utc());
+                obj.insert(
+                    "reauthorization_required".into(),
+                    json!(tok.is_none_or(|s| s.is_empty()) || expired),
+                );
+            }
+        }
+        "Channel::Tiktok" => {
+            let c = sqlx::query(
+                "SELECT business_id, provider_name, access_token, expires_at
+                 FROM channel_tiktok WHERE id::bigint = $1 AND account_id::bigint = $2",
+            )
+            .bind(channel_id)
+            .bind(account_id)
+            .fetch_optional(db)
+            .await?;
+            if let Some(c) = c {
+                obj.insert(
+                    "business_id".into(),
+                    c.try_get::<Option<String>, _>("business_id")?.into(),
+                );
+                obj.insert(
+                    "provider_name".into(),
+                    c.try_get::<Option<String>, _>("provider_name")?.into(),
+                );
+                let tok = c.try_get::<Option<String>, _>("access_token")?;
+                let exp = c.try_get::<Option<chrono::NaiveDateTime>, _>("expires_at")?;
+                let expired = exp.is_some_and(|e| e < chrono::Utc::now().naive_utc());
+                obj.insert(
+                    "reauthorization_required".into(),
+                    json!(tok.is_none_or(|s| s.is_empty()) || expired),
+                );
+            }
+        }
+        "Channel::TwitterProfile" => {
+            let c = sqlx::query(
+                "SELECT profile_id, tweets_enabled
+                 FROM channel_twitter_profiles WHERE id::bigint = $1 AND account_id::bigint = $2",
+            )
+            .bind(channel_id)
+            .bind(account_id)
+            .fetch_optional(db)
+            .await?;
+            if let Some(c) = c {
+                obj.insert(
+                    "profile_id".into(),
+                    c.try_get::<Option<String>, _>("profile_id")?.into(),
+                );
+                obj.insert(
+                    "tweets_enabled".into(),
+                    c.try_get::<Option<bool>, _>("tweets_enabled")?.into(),
+                );
+            }
+        }
+        "Channel::Whatsapp" => {
+            let c = sqlx::query(
+                "SELECT phone_number, provider, provider_config, message_templates
+                 FROM channel_whatsapp WHERE id::bigint = $1 AND account_id::bigint = $2",
+            )
+            .bind(channel_id)
+            .bind(account_id)
+            .fetch_optional(db)
+            .await?;
+            if let Some(c) = c {
+                obj.insert(
+                    "phone_number".into(),
+                    c.try_get::<Option<String>, _>("phone_number")?.into(),
+                );
+                obj.insert(
+                    "provider".into(),
+                    c.try_get::<Option<String>, _>("provider")?.into(),
+                );
+                let tmpl = c
+                    .try_get::<Option<Value>, _>("message_templates")?
+                    .filter(|v| v.is_array())
+                    .unwrap_or_else(|| json!([]));
+                obj.insert("message_templates".into(), tmpl);
+                let cfg = c.try_get::<Option<Value>, _>("provider_config")?;
+                if admin {
+                    obj.insert("provider_config".into(), cfg.clone().into());
+                }
+                let is_embedded = cfg
+                    .as_ref()
+                    .and_then(|v| v["source"].as_str())
+                    .is_some_and(|s| s == "embedded_signup");
+                let has_key = cfg
+                    .as_ref()
+                    .and_then(|v| v["api_key"].as_str())
+                    .is_some_and(|s| !s.is_empty());
+                obj.insert(
+                    "reauthorization_required".into(),
+                    json!(is_embedded && !has_key),
+                );
+            }
+        }
+        "Channel::Telegram" => {
+            let bot_name: Option<String> = sqlx::query_scalar(
+                "SELECT bot_name FROM channel_telegram WHERE id::bigint = $1 AND account_id::bigint = $2",
+            )
+            .bind(channel_id)
+            .bind(account_id)
+            .fetch_optional(db)
+            .await?
+            .flatten();
+            obj.insert("bot_name".into(), bot_name.into());
+        }
+        "Channel::Line" => {
+            let line_channel_id: Option<String> = sqlx::query_scalar(
+                "SELECT line_channel_id FROM channel_line WHERE id::bigint = $1 AND account_id::bigint = $2",
+            )
+            .bind(channel_id)
+            .bind(account_id)
+            .fetch_optional(db)
+            .await?
+            .flatten();
+            obj.insert("line_channel_id".into(), line_channel_id.into());
+        }
         _ => {}
     }
     Ok(out)

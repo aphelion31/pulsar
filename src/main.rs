@@ -64,6 +64,9 @@ fn account_routes() -> Router<AppState> {
         .merge(data_imports::routes())
         .merge(channels::twilio::account_routes())
         .merge(channels::whatsapp::account_routes())
+        .merge(channels::facebook::account_routes())
+        .merge(channels::instagram::account_routes())
+        .merge(channels::social_oauth::account_routes())
         .merge(dyte::account_routes())
         .merge(shopify::account_routes())
         .fallback(web::not_implemented)
@@ -216,6 +219,9 @@ pub fn app(state: AppState) -> Router {
         .merge(channels::twilio::routes())
         .merge(channels::whatsapp::routes())
         .merge(channels::sms::routes())
+        .merge(channels::facebook::routes())
+        .merge(channels::instagram::routes())
+        .merge(channels::social_oauth::routes())
         .nest("/platform/api/v1", platform::routes())
         .merge(public_api::routes())
         .merge(help_center::public_routes())
@@ -346,6 +352,22 @@ async fn main() -> anyhow::Result<()> {
             (
                 "sms_outbound",
                 events::listener(listeners::sms_outbound::handle),
+            ),
+            (
+                "facebook_outbound",
+                events::listener(channels::facebook::outbound),
+            ),
+            (
+                "instagram_outbound",
+                events::listener(channels::instagram::outbound),
+            ),
+            (
+                "tiktok_outbound",
+                events::listener(channels::social_oauth::tiktok_outbound),
+            ),
+            (
+                "twitter_outbound",
+                events::listener(channels::social_oauth::twitter_outbound),
             ),
         ],
     );

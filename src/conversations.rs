@@ -499,6 +499,8 @@ pub(crate) async fn emit_conv(st: &AppState, id: i64, event: &str) -> Result<Con
 
 /// Internal carrier for messages.source_id through insert_message; never stored in content_attributes.
 const SOURCE_ID_KEY: &str = "__pulsar_source_id";
+/// Internal carrier for merging into messages.additional_attributes inside insert_message.
+pub(crate) const EXTRA_ADDITIONAL_ATTRS_KEY: &str = "__pulsar_additional_attributes";
 
 /// Insert a message, bump conversation activity, broadcast message.created. Returns the push payload.
 #[allow(clippy::too_many_arguments)]
@@ -517,6 +519,15 @@ pub(crate) async fn insert_message(
         .as_object_mut()
         .and_then(|o| o.remove(SOURCE_ID_KEY))
         .and_then(|v| v.as_str().map(str::to_string));
+    let mut extra_add_attrs = content_attributes
+        .as_object_mut()
+        .and_then(|o| o.remove(EXTRA_ADDITIONAL_ATTRS_KEY))
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    if let Some(e) = echo_id.filter(|e| !e.is_empty()) {
+        extra_add_attrs.insert("echo_id".into(), json!(e));
+    }
+    let add_attrs = Value::Object(extra_add_attrs);
     // chatwoot#15743: a client retrying a send with the same echo_id gets the original message back
     // instead of a duplicate. The echo_id is kept in additional_attributes; the advisory lock makes
     // concurrent retries safe without a schema change.
@@ -547,9 +558,7 @@ pub(crate) async fn insert_message(
     let m: Msg = sqlx::query_as(&format!(
         "INSERT INTO messages AS m (content, account_id, inbox_id, conversation_id, message_type, private, status, content_type,
             content_attributes, sender_type, sender_id, additional_attributes, source_id, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $8::json, $9, $10,
-                 CASE WHEN $11::text IS NULL THEN '{{}}'::jsonb ELSE jsonb_build_object('echo_id', $11::text) END,
-                 $12, now(), now()) RETURNING {MSG_COLS}"
+         VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $8::json, $9, $10, $11::jsonb, $12, now(), now()) RETURNING {MSG_COLS}"
     ))
     .bind(content)
     .bind(c.account_id as i32)
@@ -561,7 +570,7 @@ pub(crate) async fn insert_message(
     .bind(content_attributes)
     .bind(sender.map(|s| s.0))
     .bind(sender.map(|s| s.1))
-    .bind(echo_id.filter(|e| !e.is_empty()))
+    .bind(add_attrs)
     .bind(source_id)
     .fetch_one(&mut *tx)
     .await?;

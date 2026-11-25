@@ -18,11 +18,12 @@ ADRs: [DECISIONS.md](DECISIONS.md) | Terms: [GLOSSARY.md](GLOSSARY.md)
 - Gate: `cargo test` 46/46 passed, `pnpm typecheck && pnpm build` passed, `tools/wave1-parity.sh` (incl. `tools/smoke.sh`) passed against PostgreSQL 18.
 
 ## Wave 2 — Full Help Center + Remaining Messaging Channels
-- `open` | Backend `src/channels/facebook.rs`, `src/channels/instagram.rs` + outbound listeners
-- `open` | Backend `src/channels/social_oauth.rs` (TikTok, Twitter/X, Google & Microsoft email OAuth)
-- `open` | Backend `src/channels/whatsapp.rs` & `src/bots.rs` & `src/scheduler.rs` (WA manual setup, campaign analytics & scheduled dispatch)
-- `open` | Backend `src/help_center.rs` (sitemap.xml, `.md`, `.png` tracking pixel, public categories/articles/search)
-- `open` | UI Help Center dashboard (`portals/*`), `campaigns.whatsapp.tsx`, channel setup wizard (`inbox-new.tsx`)
+- `done` | Backend `src/channels/facebook.rs`, `src/channels/instagram.rs` + outbound listeners + `inbox_json` channel attributes
+- `done` | Backend `src/channels/social_oauth.rs` (TikTok, Twitter/X, Google & Microsoft email OAuth) + shared HMAC OAuth state in `src/common.rs`
+- `done` | Backend `src/channels/whatsapp.rs` & `src/bots.rs` & `src/scheduler.rs` (WA embedded signup/access request/manual setup, campaign analytics & scheduled dispatch)
+- `done` | Backend `src/help_center.rs` (sitemap.xml, `.md`, `.png` view tracking, public categories/articles/search, `remove_locale`, bulk `translate`)
+- `done` | UI Help Center dashboard (`help-center/{index,article-editor}.tsx`), `campaigns.whatsapp.tsx`, channel setup wizard (`inbox-new.tsx`), Sidebar link
+- Gate: `cargo test` 48/48 passed, `pnpm typecheck && pnpm build` passed, `tools/wave2-channels-hc.sh` passed against PostgreSQL 18 + mock social/Meta Graph APIs.
 
 ## Wave 3 — All Remaining Integrations
 - `open` | Backend `src/integrations/linear.rs`, `notion.rs`, `stripe.rs`, `shopify.rs` custom app & callbacks, `conversations` Google Translate + `dialogflow` listener + Slack webhook intake

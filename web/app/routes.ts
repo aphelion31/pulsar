@@ -68,10 +68,23 @@ export default [
     route("accounts/:accountId/campaigns/one_off", "routes/r2/campaigns-one-off.tsx", { id: "cw-campaigns-one-off" }),
     route("accounts/:accountId/campaigns/live_chat", "routes/campaigns.tsx", { id: "cw-campaigns-live-chat" }),
     route("accounts/:accountId/campaigns/sms", "routes/r2/campaigns-one-off.tsx", { id: "cw-campaigns-sms" }),
-    ph("accounts/:accountId/campaigns/whatsapp", "cw-campaigns-whatsapp"),
-    ph("accounts/:accountId/campaigns/whatsapp/new", "cw-campaigns-whatsapp-new"),
-    ph("accounts/:accountId/campaigns/whatsapp/:campaignId/analytics", "cw-campaigns-whatsapp-analytics"),
-    ph("accounts/:accountId/campaigns/whatsapp/:campaignId", "cw-campaigns-whatsapp-edit"),
+    route("accounts/:accountId/campaigns/whatsapp", "routes/campaigns.whatsapp.tsx", { id: "cw-campaigns-whatsapp" }),
+    route("accounts/:accountId/campaigns/whatsapp/new", "routes/campaigns.whatsapp.tsx", { id: "cw-campaigns-whatsapp-new" }),
+    route("accounts/:accountId/campaigns/whatsapp/:campaignId/analytics", "routes/campaigns.whatsapp.tsx", { id: "cw-campaigns-whatsapp-analytics" }),
+    route("accounts/:accountId/campaigns/whatsapp/:campaignId", "routes/campaigns.whatsapp.tsx", { id: "cw-campaigns-whatsapp-edit" }),
+
+    // Help Center Portals
+    route("accounts/:accountId/portals", "routes/help-center/index.tsx", { id: "cw-portals-index" }),
+    route("accounts/:accountId/portals/new", "routes/help-center/index.tsx", { id: "cw-portals-new" }),
+    route("accounts/:accountId/portals/:portalSlug/settings", "routes/help-center/index.tsx", { id: "cw-portals-settings" }),
+    route("accounts/:accountId/portals/:portalSlug/locales", "routes/help-center/index.tsx", { id: "cw-portals-locales" }),
+    route("accounts/:accountId/portals/:portalSlug/:locale/categories", "routes/help-center/index.tsx", { id: "cw-portals-categories" }),
+    route("accounts/:accountId/portals/:portalSlug/:locale/articles/new", "routes/help-center/article-editor.tsx", { id: "cw-portals-articles-new" }),
+    route("accounts/:accountId/portals/:portalSlug/:locale/articles/edit/:articleSlug", "routes/help-center/article-editor.tsx", { id: "cw-portals-articles-edit" }),
+    route("accounts/:accountId/portals/:portalSlug/:locale/articles/:tab?", "routes/help-center/index.tsx", { id: "cw-portals-articles-index" }),
+    route("accounts/:accountId/portals/:portalSlug/:locale/categories/:categorySlug/articles", "routes/help-center/index.tsx", { id: "cw-portals-category-articles" }),
+    route("accounts/:accountId/portals/:portalSlug/:locale/categories/:categorySlug/articles/new", "routes/help-center/article-editor.tsx", { id: "cw-portals-category-articles-new" }),
+    route("accounts/:accountId/portals/:portalSlug/:locale/categories/:categorySlug/articles/:articleSlug", "routes/help-center/article-editor.tsx", { id: "cw-portals-category-articles-edit" }),
 
     // Reports
     route("accounts/:accountId/reports", "routes/reports.tsx", { id: "cw-reports" }),

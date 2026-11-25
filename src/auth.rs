@@ -338,6 +338,34 @@ pub fn default_feature_flags() -> (i64, i64) {
     (a, b)
 }
 
+/// Toggle a named feature bit on (flags, feature_flags_ext_1) using config/features.yml order.
+pub fn set_feature(flags: &mut i64, flags_ext: &mut i64, name: &str, enabled: bool) -> bool {
+    let v: Vec<Value> = serde_json::from_str(include_str!("../features.json")).unwrap();
+    let (mut i0, mut i1) = (0u32, 0u32);
+    for f in v {
+        let col = f["column"].as_str().unwrap_or("feature_flags");
+        if f["name"].as_str() == Some(name) {
+            let (slot, bit) = if col == "feature_flags" {
+                (flags, 1i64 << i0)
+            } else {
+                (flags_ext, 1i64 << i1)
+            };
+            if enabled {
+                *slot |= bit;
+            } else {
+                *slot &= !bit;
+            }
+            return true;
+        }
+        if col == "feature_flags" {
+            i0 += 1;
+        } else {
+            i1 += 1;
+        }
+    }
+    false
+}
+
 pub fn role_name(r: i32) -> &'static str {
     if r == 1 { "administrator" } else { "agent" }
 }

@@ -242,3 +242,43 @@ pub fn ts(t: Option<chrono::NaiveDateTime>) -> i64 {
 pub fn now() -> chrono::NaiveDateTime {
     chrono::Utc::now().naive_utc()
 }
+
+/// Sign arbitrary JSON claims for OAuth state without touching jsonwebtoken's CryptoProvider.
+pub(crate) fn sign_oauth_claims(claims: &Value) -> String {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use hmac::{Hmac, Mac};
+    use sha2_compat::Sha256;
+
+    let secret =
+        std::env::var("SECRET_KEY_BASE").unwrap_or_else(|_| "pulsar-dev-secret-change-me".into());
+    let body = serde_json::to_vec(claims).unwrap_or_default();
+    let payload_b64 = URL_SAFE_NO_PAD.encode(&body);
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("hmac key");
+    mac.update(payload_b64.as_bytes());
+    let sig_b64 = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+    format!("{payload_b64}.{sig_b64}")
+}
+
+/// Verify HMAC signature and `exp` on an OAuth state token signed by `sign_oauth_claims`.
+pub(crate) fn verify_oauth_claims(token: &str) -> Option<Value> {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use hmac::{Hmac, Mac};
+    use sha2_compat::Sha256;
+
+    let (payload_b64, sig_b64) = token.split_once('.')?;
+    let sig = URL_SAFE_NO_PAD.decode(sig_b64).ok()?;
+    let secret =
+        std::env::var("SECRET_KEY_BASE").unwrap_or_else(|_| "pulsar-dev-secret-change-me".into());
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("hmac key");
+    mac.update(payload_b64.as_bytes());
+    mac.verify_slice(&sig).ok()?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
+    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    if claims["exp"]
+        .as_i64()
+        .is_some_and(|exp| exp < chrono::Utc::now().timestamp())
+    {
+        return None;
+    }
+    Some(claims)
+}
