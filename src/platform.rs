@@ -249,17 +249,128 @@ async fn account_delete(
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
     permit(&db, app, "Account", id).await?;
-    // ponytail: refuse deletion of populated accounts until the Rails dependent-destroy graph is implemented.
-    let occupied: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM account_users WHERE account_id=$1) OR EXISTS(SELECT 1 FROM inboxes WHERE account_id=$1) OR EXISTS(SELECT 1 FROM contacts WHERE account_id=$1) OR EXISTS(SELECT 1 FROM agent_bots WHERE account_id=$1)").bind(id).fetch_one(&db).await?;
-    if occupied {
-        return Err(ApiError::bad("Cannot safely delete a populated account"));
-    }
     let mut tx = db.begin().await?;
-    sqlx::query("DELETE FROM accounts WHERE id=$1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM platform_app_permissibles WHERE permissible_type='Account' AND permissible_id=$1").bind(id).execute(&mut *tx).await?;
+    // Delete dependent rows across non-cascading tables in dependency-safe order before removing the account.
+    const CASCADE_SQL: &[&str] = &[
+        "DELETE FROM pulsar_message_errors WHERE message_id IN (SELECT id FROM messages WHERE account_id = $1)",
+        "DELETE FROM active_storage_attachments WHERE (record_type = 'Attachment' AND record_id IN (SELECT id FROM attachments WHERE account_id = $1))
+            OR (record_type = 'Account' AND record_id = $1)
+            OR (record_type = 'Contact' AND record_id IN (SELECT id FROM contacts WHERE account_id = $1))
+            OR (record_type = 'Inbox' AND record_id IN (SELECT id FROM inboxes WHERE account_id = $1))
+            OR (record_type = 'Portal' AND record_id IN (SELECT id FROM portals WHERE account_id = $1))
+            OR (record_type = 'Article' AND record_id IN (SELECT id FROM articles WHERE account_id = $1))
+            OR (record_type = 'Campaign' AND record_id IN (SELECT id FROM campaigns WHERE account_id = $1))",
+        "DELETE FROM pulsar_widget_token_floors WHERE contact_inbox_id IN (SELECT id FROM contact_inboxes WHERE inbox_id IN (SELECT id FROM inboxes WHERE account_id = $1))",
+        "DELETE FROM pulsar_draft_messages WHERE conversation_id IN (SELECT id FROM conversations WHERE account_id = $1)",
+        "DELETE FROM taggings WHERE (taggable_type = 'Conversation' AND taggable_id IN (SELECT id FROM conversations WHERE account_id = $1))
+            OR (taggable_type = 'Contact' AND taggable_id IN (SELECT id FROM contacts WHERE account_id = $1))",
+        "DELETE FROM article_embeddings WHERE article_id IN (SELECT id FROM articles WHERE account_id = $1)",
+        "DELETE FROM related_categories WHERE category_id IN (SELECT id FROM categories WHERE account_id = $1)
+            OR related_category_id IN (SELECT id FROM categories WHERE account_id = $1)",
+        "DELETE FROM portals_members WHERE portal_id IN (SELECT id FROM portals WHERE account_id = $1)",
+        "DELETE FROM copilot_action_items WHERE copilot_run_id IN (SELECT id FROM copilot_runs WHERE account_id = $1)",
+        "DELETE FROM copilot_review_findings WHERE copilot_run_id IN (SELECT id FROM copilot_runs WHERE account_id = $1)",
+        "DELETE FROM copilot_tool_calls WHERE copilot_run_id IN (SELECT id FROM copilot_runs WHERE account_id = $1)",
+        "DELETE FROM conversation_monitor_scans WHERE monitor_id IN (SELECT id FROM conversation_monitors WHERE account_id = $1)",
+        "DELETE FROM data_import_errors WHERE data_import_id IN (SELECT id FROM data_imports WHERE account_id = $1)",
+        "DELETE FROM data_import_items WHERE data_import_id IN (SELECT id FROM data_imports WHERE account_id = $1)",
+        "DELETE FROM captain_inboxes WHERE inbox_id IN (SELECT id FROM inboxes WHERE account_id = $1)",
+        "DELETE FROM inbox_assignment_policies WHERE inbox_id IN (SELECT id FROM inboxes WHERE account_id = $1)",
+        "DELETE FROM inbox_capacity_limits WHERE inbox_id IN (SELECT id FROM inboxes WHERE account_id = $1)",
+        "DELETE FROM inbox_members WHERE inbox_id IN (SELECT id FROM inboxes WHERE account_id = $1)",
+        "DELETE FROM team_members WHERE team_id IN (SELECT id FROM teams WHERE account_id = $1)",
+        "DELETE FROM access_tokens WHERE owner_type = 'AgentBot' AND owner_id IN (SELECT id FROM agent_bots WHERE account_id = $1)",
+        "DELETE FROM audits WHERE associated_type = 'Account' AND associated_id = $1",
+        "DELETE FROM campaign_recipients WHERE account_id = $1",
+        "DELETE FROM conversation_monitor_automation_deliveries WHERE account_id = $1",
+        "DELETE FROM conversation_monitor_daily_usages WHERE account_id = $1",
+        "DELETE FROM conversation_monitor_evaluations WHERE account_id = $1",
+        "DELETE FROM conversation_monitor_work_items WHERE account_id = $1",
+        "DELETE FROM conversation_monitors WHERE account_id = $1",
+        "DELETE FROM automation_rule_pending_executions WHERE account_id = $1",
+        "DELETE FROM attachments WHERE account_id = $1",
+        "DELETE FROM mentions WHERE account_id = $1",
+        "DELETE FROM messages WHERE account_id = $1",
+        "DELETE FROM notes WHERE account_id = $1",
+        "DELETE FROM conversation_participants WHERE account_id = $1",
+        "DELETE FROM conversation_outcomes WHERE account_id = $1",
+        "DELETE FROM calls WHERE account_id = $1",
+        "DELETE FROM applied_slas WHERE account_id = $1",
+        "DELETE FROM sla_events WHERE account_id = $1",
+        "DELETE FROM csat_survey_responses WHERE account_id = $1",
+        "DELETE FROM reporting_events WHERE account_id = $1",
+        "DELETE FROM reporting_events_rollups WHERE account_id = $1",
+        "DELETE FROM agent_bot_inboxes WHERE account_id = $1",
+        "DELETE FROM copilot_messages WHERE account_id = $1",
+        "DELETE FROM copilot_runs WHERE account_id = $1",
+        "DELETE FROM copilot_threads WHERE account_id = $1",
+        "DELETE FROM captain_assistant_responses WHERE account_id = $1",
+        "DELETE FROM captain_custom_tools WHERE account_id = $1",
+        "DELETE FROM captain_documents WHERE account_id = $1",
+        "DELETE FROM captain_faq_observations WHERE account_id = $1",
+        "DELETE FROM captain_faq_suggestions WHERE account_id = $1",
+        "DELETE FROM captain_mcp_tools WHERE account_id = $1",
+        "DELETE FROM captain_mcp_servers WHERE account_id = $1",
+        "DELETE FROM captain_message_reports WHERE account_id = $1",
+        "DELETE FROM captain_scenarios WHERE account_id = $1",
+        "DELETE FROM captain_assistants WHERE account_id = $1",
+        "DELETE FROM articles WHERE account_id = $1",
+        "DELETE FROM categories WHERE account_id = $1",
+        "DELETE FROM folders WHERE account_id = $1",
+        "DELETE FROM contact_inboxes WHERE inbox_id IN (SELECT id FROM inboxes WHERE account_id = $1)",
+        "DELETE FROM conversations WHERE account_id = $1",
+        "DELETE FROM campaigns WHERE account_id = $1",
+        "DELETE FROM working_hours WHERE account_id = $1",
+        "DELETE FROM inboxes WHERE account_id = $1",
+        "DELETE FROM portals WHERE account_id = $1",
+        "DELETE FROM channel_api WHERE account_id = $1",
+        "DELETE FROM channel_email WHERE account_id = $1",
+        "DELETE FROM channel_facebook_pages WHERE account_id = $1",
+        "DELETE FROM channel_instagram WHERE account_id = $1",
+        "DELETE FROM channel_line WHERE account_id = $1",
+        "DELETE FROM channel_sms WHERE account_id = $1",
+        "DELETE FROM channel_telegram WHERE account_id = $1",
+        "DELETE FROM channel_tiktok WHERE account_id = $1",
+        "DELETE FROM channel_twilio_sms WHERE account_id = $1",
+        "DELETE FROM channel_twitter_profiles WHERE account_id = $1",
+        "DELETE FROM channel_web_widgets WHERE account_id = $1",
+        "DELETE FROM channel_whatsapp WHERE account_id = $1",
+        "DELETE FROM contacts WHERE account_id = $1",
+        "DELETE FROM companies WHERE account_id = $1",
+        "DELETE FROM teams WHERE account_id = $1",
+        "DELETE FROM agent_bots WHERE account_id = $1",
+        "DELETE FROM automation_rules WHERE account_id = $1",
+        "DELETE FROM canned_responses WHERE account_id = $1",
+        "DELETE FROM custom_attribute_definitions WHERE account_id = $1",
+        "DELETE FROM custom_filters WHERE account_id = $1",
+        "DELETE FROM custom_roles WHERE account_id = $1",
+        "DELETE FROM dashboard_apps WHERE account_id = $1",
+        "DELETE FROM data_import_mappings WHERE account_id = $1",
+        "DELETE FROM data_imports WHERE account_id = $1",
+        "DELETE FROM data_exports WHERE account_id = $1",
+        "DELETE FROM email_templates WHERE account_id = $1",
+        "DELETE FROM integrations_hooks WHERE account_id = $1",
+        "DELETE FROM labels WHERE account_id = $1",
+        "DELETE FROM leaves WHERE account_id = $1",
+        "DELETE FROM macros WHERE account_id = $1",
+        "DELETE FROM notifications WHERE account_id = $1",
+        "DELETE FROM notification_settings WHERE account_id = $1",
+        "DELETE FROM sla_policies WHERE account_id = $1",
+        "DELETE FROM agent_capacity_policies WHERE account_id = $1",
+        "DELETE FROM agent_sessions WHERE account_id = $1",
+        "DELETE FROM assignment_policies WHERE account_id = $1",
+        "DELETE FROM account_saml_settings WHERE account_id = $1",
+        "DELETE FROM account_users WHERE account_id = $1",
+        "DELETE FROM shopify_custom_apps WHERE account_id = $1",
+        "DELETE FROM webhooks WHERE account_id = $1",
+        "DELETE FROM pulsar_events WHERE account_id = $1",
+        "DELETE FROM pulsar_custom_domains WHERE account_id = $1",
+        "DELETE FROM accounts WHERE id = $1",
+        "DELETE FROM platform_app_permissibles WHERE permissible_type = 'Account' AND permissible_id = $1",
+    ];
+    for sql in CASCADE_SQL {
+        sqlx::query(sql).bind(id).execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(StatusCode::OK)
 }
@@ -373,13 +484,24 @@ async fn user_delete(
     Ok(StatusCode::OK)
 }
 async fn user_login(
-    State(db): State<PgPool>,
+    State(st): State<AppState>,
     Platform(app): Platform,
     Path(id): Path<i64>,
 ) -> ApiResult {
-    permit(&db, app, "User", id).await?;
-    // ponytail: SSO requires Redis-backed one-time token consumption; fail closed until supported.
-    Ok(Json(json!({"url": null})))
+    permit(&st.db, app, "User", id).await?;
+    let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&st.db)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let sso = crate::auth::issue_sso_token(&st.db, id).await?;
+    let qs = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("email", &email)
+        .append_pair("sso_auth_token", &sso)
+        .finish();
+    Ok(Json(json!({
+        "url": format!("{}/app/login?{qs}", st.frontend_url.trim_end_matches('/')),
+    })))
 }
 async fn user_token(
     State(db): State<PgPool>,

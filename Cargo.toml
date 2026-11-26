@@ -1,12 +1,13 @@
 [package]
 name = "pulsar"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 description = "Pulsar: lightweight Rust rewrite of Chatwoot with a React Router frontend"
 license = "MIT"
 
 [dependencies]
 aes-gcm = "0.10"
+p256 = { version = "0.13", features = ["ecdh", "ecdsa"] }
 pbkdf2 = "0.12"
 sha1 = "0.10"
 flate2 = "1"

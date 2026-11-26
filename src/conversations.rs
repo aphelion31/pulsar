@@ -124,6 +124,10 @@ pub fn routes() -> Router<AppState> {
             post(messages_translate),
         )
         .route(
+            "/conversations/{id}/messages/{message_id}/transcribe",
+            post(crate::voice::transcribe_message),
+        )
+        .route(
             "/conversations/{id}/messages/auto_translate",
             post(messages_auto_translate),
         )
@@ -183,13 +187,14 @@ pub(crate) struct Conv {
     pub(crate) priority: Option<i32>,
     pub(crate) waiting_since: Option<NaiveDateTime>,
     pub(crate) cached_label_list: Option<String>,
+    pub(crate) sla_policy_id: Option<i64>,
 }
 
 pub(crate) const CONV_COLS: &str = "c.id::bigint AS id, c.account_id::bigint AS account_id, c.inbox_id::bigint AS inbox_id, c.status,
   c.assignee_id::bigint AS assignee_id, c.created_at, c.updated_at, c.contact_id, c.display_id::bigint AS display_id,
   c.contact_last_seen_at, c.agent_last_seen_at, c.additional_attributes, c.contact_inbox_id, c.uuid::text AS uuid,
   c.last_activity_at, c.team_id, c.snoozed_until, c.custom_attributes, c.assignee_last_seen_at, c.first_reply_created_at,
-  c.priority, c.waiting_since, c.cached_label_list";
+  c.priority, c.waiting_since, c.cached_label_list, c.sla_policy_id::bigint AS sla_policy_id";
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct Msg {
@@ -281,22 +286,147 @@ async fn is_inbox_member(db: &PgPool, inbox_id: i64, user_id: i64) -> Result<boo
 // ---------- serializers ----------
 
 /// contact push_event_data + _contact.json.jbuilder fields (superset).
+type ContactRow = (
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<Value>,
+    Option<Value>,
+    bool,
+    Option<i32>,
+    Option<NaiveDateTime>,
+    NaiveDateTime,
+);
+
+type UserRow = (
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i32>,
+    Option<bool>,
+    Option<i32>,
+    Option<NaiveDateTime>,
+);
+
+type TeamRow = (i64, String, Option<String>, Option<bool>, i64);
+
+fn contact_value(r: &ContactRow, thumbnail: String) -> Value {
+    json!({
+        "id": r.0, "name": r.1, "email": r.2, "phone_number": r.3, "identifier": r.4,
+        "additional_attributes": r.5.clone().unwrap_or(json!({})), "custom_attributes": r.6.clone().unwrap_or(json!({})),
+        "blocked": r.7, "contact_type": name_of(&CONTACT_TYPES, r.8.unwrap_or(0)), "type": "contact",
+        "thumbnail": thumbnail, "availability_status": "offline",
+        "last_activity_at": r.9.map(|t| t.and_utc().timestamp()), "created_at": r.10.and_utc().timestamp(),
+    })
+}
+
+fn user_value(r: &UserRow, account_id: i64) -> Value {
+    let online = crate::cable::presence_snapshot().is_online(account_id, r.0);
+    json!({
+        "id": r.0, "name": r.1, "available_name": r.2.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| r.1.clone()),
+        "email": r.3, "avatar_url": "", "thumbnail": "", "type": "user",
+        "availability_status": if online { availability_name(r.4.unwrap_or(0)) } else { "offline" },
+        "auto_offline": r.5.unwrap_or(true), "role": role_name(r.6.unwrap_or(0)), "confirmed": r.7.is_some(),
+        "provider": "email", "account_id": account_id,
+    })
+}
+
+fn team_value(r: &TeamRow) -> Value {
+    json!({ "id": r.0, "name": r.1, "description": r.2, "allow_auto_assign": r.3, "account_id": r.4 })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_msg_value(
+    m: &Msg,
+    c: &Conv,
+    sender: Value,
+    source_id: Option<&str>,
+    unread: i64,
+    atts: Vec<Value>,
+    external_error: Option<&str>,
+) -> Value {
+    let mut v = json!({
+        "id": m.id, "content": m.content, "account_id": m.account_id, "inbox_id": m.inbox_id,
+        "conversation_id": c.display_id, "message_type": m.message_type,
+        "content_type": name_of(&CONTENT_TYPES, m.content_type),
+        "status": name_of(&MSG_STATUSES, m.status.unwrap_or(0)),
+        "content_attributes": m.content_attributes.clone().unwrap_or(json!({})),
+        "created_at": m.created_at.and_utc().timestamp(), "updated_at": m.updated_at,
+        "private": m.private, "source_id": m.source_id, "sender_type": m.sender_type, "sender_id": m.sender_id,
+        "external_source_ids": m.external_source_ids.clone().unwrap_or(json!({})),
+        "additional_attributes": m.additional_attributes.clone().unwrap_or(json!({})),
+        "processed_message_content": m.processed_message_content, "sentiment": m.sentiment.clone().unwrap_or(json!({})),
+        "conversation": {
+            "assignee_id": c.assignee_id, "unread_count": unread,
+            "last_activity_at": c.last_activity_at.and_utc().timestamp(), "contact_inbox": { "source_id": source_id },
+        },
+    });
+    if !sender.is_null() {
+        v["sender"] = sender;
+    }
+    if !atts.is_empty() {
+        v["attachments"] = json!(atts);
+    }
+    if let Some(err) = external_error {
+        v["external_error"] = json!(err);
+    }
+    v
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_conv_value(
+    c: &Conv,
+    channel: Option<String>,
+    sid: Option<String>,
+    hmac: Option<bool>,
+    sender: Value,
+    assignee: Option<Value>,
+    team: Option<Value>,
+    unread: i64,
+    last_any: Value,
+    last_non_activity: Value,
+) -> Value {
+    let mut meta = json!({ "sender": sender, "channel": channel, "hmac_verified": hmac });
+    if let Some(a) = assignee {
+        meta["assignee"] = a;
+        meta["assignee_type"] = json!("User");
+    }
+    if let Some(t) = team
+        && !t.is_null()
+    {
+        meta["team"] = t;
+    }
+    let muted = sender
+        .get("blocked")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let ts = |t: Option<NaiveDateTime>| t.map(|t| t.and_utc().timestamp()).unwrap_or(0);
+    json!({
+        "meta": meta, "id": c.display_id, "messages": if last_any.is_null() { json!([]) } else { json!([last_any]) },
+        "account_id": c.account_id, "uuid": c.uuid, "inbox_id": c.inbox_id, "channel": channel,
+        "additional_attributes": c.additional_attributes.clone().unwrap_or(json!({})),
+        "custom_attributes": c.custom_attributes.clone().unwrap_or(json!({})),
+        "agent_last_seen_at": ts(c.agent_last_seen_at), "assignee_last_seen_at": ts(c.assignee_last_seen_at),
+        "contact_last_seen_at": ts(c.contact_last_seen_at), "can_reply": true, "anonymous_caller": false,
+        "contact_inbox": { "source_id": sid },
+        "labels": c.labels(), "muted": muted, "snoozed_until": c.snoozed_until,
+        "status": name_of(&STATUSES, c.status), "created_at": c.created_at.and_utc().timestamp(),
+        "updated_at": c.updated_at.and_utc().timestamp_millis() as f64 / 1000.0,
+        "timestamp": c.last_activity_at.and_utc().timestamp(), "last_activity_at": c.last_activity_at.and_utc().timestamp(),
+        "first_reply_created_at": ts(c.first_reply_created_at), "unread_count": unread,
+        "last_non_activity_message": last_non_activity,
+        "priority": c.priority.map(|p| name_of(&PRIORITIES, p)), "waiting_since": ts(c.waiting_since),
+        "sla_policy_id": c.sla_policy_id,
+    })
+}
+
+/// contact push_event_data + _contact.json.jbuilder fields (superset).
 pub(crate) async fn contact_json(db: &PgPool, id: Option<i64>) -> Value {
     let Some(id) = id else { return json!({}) };
-    type Row = (
-        i64,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<Value>,
-        Option<Value>,
-        bool,
-        Option<i32>,
-        Option<NaiveDateTime>,
-        NaiveDateTime,
-    );
-    let r: Option<Row> = sqlx::query_as(
+    let r: Option<ContactRow> = sqlx::query_as(
         "SELECT id::bigint, name, email, phone_number, identifier, additional_attributes, custom_attributes, blocked, contact_type,
                 last_activity_at, created_at FROM contacts WHERE id = $1",
     )
@@ -306,28 +436,13 @@ pub(crate) async fn contact_json(db: &PgPool, id: Option<i64>) -> Value {
     .ok()
     .flatten();
     let Some(r) = r else { return json!({}) };
-    json!({
-        "id": r.0, "name": r.1, "email": r.2, "phone_number": r.3, "identifier": r.4,
-        "additional_attributes": r.5.unwrap_or(json!({})), "custom_attributes": r.6.unwrap_or(json!({})),
-        "blocked": r.7, "contact_type": name_of(&CONTACT_TYPES, r.8.unwrap_or(0)), "type": "contact",
-        "thumbnail": crate::storage::avatar_url(db, "Contact", r.0).await, "availability_status": "offline",
-        "last_activity_at": r.9.map(|t| t.and_utc().timestamp()), "created_at": r.10.and_utc().timestamp(),
-    })
+    let thumb = crate::storage::avatar_url(db, "Contact", r.0).await;
+    contact_value(&r, thumb)
 }
 
 /// user push_event_data + _agent.json.jbuilder fields (superset).
 pub(crate) async fn user_json(db: &PgPool, account_id: i64, uid: i64) -> Value {
-    type Row = (
-        i64,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<i32>,
-        Option<bool>,
-        Option<i32>,
-        Option<NaiveDateTime>,
-    );
-    let r: Option<Row> = sqlx::query_as(
+    let r: Option<UserRow> = sqlx::query_as(
         "SELECT u.id::bigint, u.name, u.display_name, u.email, au.availability, au.auto_offline, au.role, u.confirmed_at
          FROM users u LEFT JOIN account_users au ON au.user_id = u.id AND au.account_id = $2 WHERE u.id = $1",
     )
@@ -337,29 +452,20 @@ pub(crate) async fn user_json(db: &PgPool, account_id: i64, uid: i64) -> Value {
     .await
     .ok()
     .flatten();
-    let Some(r) = r else { return Value::Null };
-    let online = crate::cable::presence_snapshot().is_online(account_id, uid);
-    json!({
-        "id": r.0, "name": r.1, "available_name": r.2.clone().filter(|s| !s.is_empty()).unwrap_or(r.1.clone()),
-        "email": r.3, "avatar_url": "", "thumbnail": "", "type": "user",
-        "availability_status": if online { availability_name(r.4.unwrap_or(0)) } else { "offline" },
-        "auto_offline": r.5.unwrap_or(true), "role": role_name(r.6.unwrap_or(0)), "confirmed": r.7.is_some(),
-        "provider": "email", "account_id": account_id,
-    })
+    r.map(|r| user_value(&r, account_id)).unwrap_or(Value::Null)
 }
 
 async fn team_json(db: &PgPool, team_id: Option<i64>) -> Value {
     let Some(t) = team_id else { return Value::Null };
-    let r: Option<(i64, String, Option<String>, Option<bool>, i64)> = sqlx::query_as(
-        "SELECT id, name, description, allow_auto_assign, account_id FROM teams WHERE id = $1",
+    let r: Option<TeamRow> = sqlx::query_as(
+        "SELECT id::bigint, name, description, allow_auto_assign, account_id::bigint FROM teams WHERE id = $1",
     )
     .bind(t)
     .fetch_optional(db)
     .await
     .ok()
     .flatten();
-    r.map(|r| json!({ "id": r.0, "name": r.1, "description": r.2, "allow_auto_assign": r.3, "account_id": r.4 }))
-        .unwrap_or(Value::Null)
+    r.map(|r| team_value(&r)).unwrap_or(Value::Null)
 }
 
 async fn unread_count(db: &PgPool, c: &Conv) -> i64 {
@@ -397,30 +503,17 @@ pub(crate) async fn msg_json(db: &PgPool, m: &Msg, c: &Conv) -> Value {
         _ => Value::Null,
     };
     let (sid, _) = source_id(db, c).await;
-    let mut v = json!({
-        "id": m.id, "content": m.content, "account_id": m.account_id, "inbox_id": m.inbox_id,
-        "conversation_id": c.display_id, "message_type": m.message_type,
-        "content_type": name_of(&CONTENT_TYPES, m.content_type),
-        "status": name_of(&MSG_STATUSES, m.status.unwrap_or(0)),
-        "content_attributes": m.content_attributes.clone().unwrap_or(json!({})),
-        "created_at": m.created_at.and_utc().timestamp(), "updated_at": m.updated_at,
-        "private": m.private, "source_id": m.source_id, "sender_type": m.sender_type, "sender_id": m.sender_id,
-        "external_source_ids": m.external_source_ids.clone().unwrap_or(json!({})),
-        "additional_attributes": m.additional_attributes.clone().unwrap_or(json!({})),
-        "processed_message_content": m.processed_message_content, "sentiment": m.sentiment.clone().unwrap_or(json!({})),
-        "conversation": {
-            "assignee_id": c.assignee_id, "unread_count": unread_count(db, c).await,
-            "last_activity_at": c.last_activity_at.and_utc().timestamp(), "contact_inbox": { "source_id": sid },
-        },
-    });
-    if !sender.is_null() {
-        v["sender"] = sender;
-    }
+    let unread = unread_count(db, c).await;
     let atts = crate::storage::attachments_json(db, m.id).await;
-    if !atts.is_empty() {
-        v["attachments"] = json!(atts);
-    }
-    v
+    let err: Option<String> = sqlx::query_scalar(
+        "SELECT external_error FROM pulsar_message_errors WHERE message_id = $1",
+    )
+    .bind(m.id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    build_msg_value(m, c, sender, sid.as_deref(), unread, atts, err.as_deref())
 }
 
 async fn last_message(db: &PgPool, c: &Conv, non_activity: bool) -> Value {
@@ -455,38 +548,295 @@ pub(crate) async fn conv_json(db: &PgPool, c: &Conv) -> Value {
             .flatten()
             .flatten();
     let (sid, hmac) = source_id(db, c).await;
-    let mut meta = json!({ "sender": contact_json(db, c.contact_id).await, "channel": channel, "hmac_verified": hmac });
-    if let Some(a) = c.assignee_id {
-        meta["assignee"] = user_json(db, c.account_id, a).await;
-        meta["assignee_type"] = json!("User");
-    }
-    let team = team_json(db, c.team_id).await;
-    if !team.is_null() {
-        meta["team"] = team;
-    }
-    let last = last_message(db, c, false).await;
-    let ts = |t: Option<NaiveDateTime>| t.map(|t| t.and_utc().timestamp()).unwrap_or(0);
-    json!({
-        "meta": meta, "id": c.display_id, "messages": if last.is_null() { json!([]) } else { json!([last]) },
-        "account_id": c.account_id, "uuid": c.uuid, "inbox_id": c.inbox_id, "channel": channel,
-        "additional_attributes": c.additional_attributes.clone().unwrap_or(json!({})),
-        "custom_attributes": c.custom_attributes.clone().unwrap_or(json!({})),
-        "agent_last_seen_at": ts(c.agent_last_seen_at), "assignee_last_seen_at": ts(c.assignee_last_seen_at),
-        "contact_last_seen_at": ts(c.contact_last_seen_at), "can_reply": true, "anonymous_caller": false,
-        "contact_inbox": { "source_id": sid },
-        "labels": c.labels(), "muted": false, "snoozed_until": c.snoozed_until,
-        "status": name_of(&STATUSES, c.status), "created_at": c.created_at.and_utc().timestamp(),
-        "updated_at": c.updated_at.and_utc().timestamp_millis() as f64 / 1000.0,
-        "timestamp": c.last_activity_at.and_utc().timestamp(), "last_activity_at": c.last_activity_at.and_utc().timestamp(),
-        "first_reply_created_at": ts(c.first_reply_created_at), "unread_count": unread_count(db, c).await,
-        "last_non_activity_message": last_message(db, c, true).await,
-        "priority": c.priority.map(|p| name_of(&PRIORITIES, p)), "waiting_since": ts(c.waiting_since),
-        "sla_policy_id": null,
-    })
+    let sender = contact_json(db, c.contact_id).await;
+    let assignee = match c.assignee_id {
+        Some(a) => Some(user_json(db, c.account_id, a).await),
+        None => None,
+    };
+    let team = c.team_id.map(|_| ());
+    let team_val = if team.is_some() {
+        Some(team_json(db, c.team_id).await)
+    } else {
+        None
+    };
+    let unread = unread_count(db, c).await;
+    let last_any = last_message(db, c, false).await;
+    let last_non_activity = last_message(db, c, true).await;
+    build_conv_value(
+        c,
+        channel,
+        sid,
+        hmac,
+        sender,
+        assignee,
+        team_val,
+        unread,
+        last_any,
+        last_non_activity,
+    )
 }
 
-pub(crate) async fn emit(st: &AppState, c: &Conv, event: &str, data: Value) {
-    crate::events::publish(event, c.account_id, data.clone(), None);
+/// Set-based batch serializer for conversation listings, avoiding N+1 lookups.
+pub(crate) async fn convs_json_batch(db: &PgPool, account_id: i64, rows: &[Conv]) -> Vec<Value> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let mut conv_ids: Vec<i64> = Vec::with_capacity(rows.len());
+    let mut inbox_ids: Vec<i64> = Vec::new();
+    let mut contact_inbox_ids: Vec<i64> = Vec::new();
+    let mut contact_ids: Vec<i64> = Vec::new();
+    let mut user_ids: Vec<i64> = Vec::new();
+    let mut team_ids: Vec<i64> = Vec::new();
+
+    for c in rows {
+        conv_ids.push(c.id);
+        inbox_ids.push(c.inbox_id);
+        if let Some(ci) = c.contact_inbox_id {
+            contact_inbox_ids.push(ci);
+        }
+        if let Some(cid) = c.contact_id {
+            contact_ids.push(cid);
+        }
+        if let Some(aid) = c.assignee_id {
+            user_ids.push(aid);
+        }
+        if let Some(tid) = c.team_id {
+            team_ids.push(tid);
+        }
+    }
+    inbox_ids.sort_unstable();
+    inbox_ids.dedup();
+    contact_inbox_ids.sort_unstable();
+    contact_inbox_ids.dedup();
+    team_ids.sort_unstable();
+    team_ids.dedup();
+
+    let last_any_rows: Vec<Msg> = sqlx::query_as(&format!(
+        "SELECT DISTINCT ON (m.conversation_id) {MSG_COLS}
+         FROM messages m
+         WHERE m.account_id = $1 AND m.conversation_id = ANY($2)
+         ORDER BY m.conversation_id, m.created_at DESC, m.id DESC"
+    ))
+    .bind(account_id)
+    .bind(&conv_ids)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    let last_non_rows: Vec<Msg> = sqlx::query_as(&format!(
+        "SELECT DISTINCT ON (m.conversation_id) {MSG_COLS}
+         FROM messages m
+         WHERE m.account_id = $1 AND m.conversation_id = ANY($2) AND m.message_type <> 2
+         ORDER BY m.conversation_id, m.created_at DESC, m.id DESC"
+    ))
+    .bind(account_id)
+    .bind(&conv_ids)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    let mut msg_ids: Vec<i64> = Vec::new();
+    for m in last_any_rows.iter().chain(last_non_rows.iter()) {
+        msg_ids.push(m.id);
+        if let (Some("User"), Some(uid)) = (m.sender_type.as_deref(), m.sender_id) {
+            user_ids.push(uid);
+        } else if let (Some("Contact"), Some(cid)) = (m.sender_type.as_deref(), m.sender_id) {
+            contact_ids.push(cid);
+        }
+    }
+    msg_ids.sort_unstable();
+    msg_ids.dedup();
+    contact_ids.sort_unstable();
+    contact_ids.dedup();
+    user_ids.sort_unstable();
+    user_ids.dedup();
+
+    let channels: HashMap<i64, Option<String>> = if inbox_ids.is_empty() {
+        HashMap::new()
+    } else {
+        sqlx::query_as::<_, (i64, Option<String>)>(
+            "SELECT id::bigint, channel_type FROM inboxes WHERE id = ANY($1)",
+        )
+        .bind(&inbox_ids)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+    };
+
+    let contact_inboxes: HashMap<i64, (Option<String>, Option<bool>)> = if contact_inbox_ids.is_empty() {
+        HashMap::new()
+    } else {
+        sqlx::query_as::<_, (i64, String, Option<bool>)>(
+            "SELECT id::bigint, source_id, hmac_verified FROM contact_inboxes WHERE id = ANY($1)",
+        )
+        .bind(&contact_inbox_ids)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, s, h)| (id, (Some(s), h)))
+        .collect()
+    };
+
+    let contact_thumbs = crate::storage::avatar_urls_batch(db, "Contact", &contact_ids).await;
+    let contacts: HashMap<i64, Value> = if contact_ids.is_empty() {
+        HashMap::new()
+    } else {
+        sqlx::query_as::<_, ContactRow>(
+            "SELECT id::bigint, name, email, phone_number, identifier, additional_attributes, custom_attributes, blocked, contact_type,
+                    last_activity_at, created_at FROM contacts WHERE id = ANY($1)",
+        )
+        .bind(&contact_ids)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            let thumb = contact_thumbs.get(&r.0).cloned().unwrap_or_default();
+            (r.0, contact_value(&r, thumb))
+        })
+        .collect()
+    };
+
+    let users: HashMap<i64, Value> = if user_ids.is_empty() {
+        HashMap::new()
+    } else {
+        sqlx::query_as::<_, UserRow>(
+            "SELECT u.id::bigint, u.name, u.display_name, u.email, au.availability, au.auto_offline, au.role, u.confirmed_at
+             FROM users u LEFT JOIN account_users au ON au.user_id = u.id AND au.account_id = $2 WHERE u.id = ANY($1)",
+        )
+        .bind(&user_ids)
+        .bind(account_id)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| (r.0, user_value(&r, account_id)))
+        .collect()
+    };
+
+    let teams: HashMap<i64, Value> = if team_ids.is_empty() {
+        HashMap::new()
+    } else {
+        sqlx::query_as::<_, TeamRow>(
+            "SELECT id::bigint, name, description, allow_auto_assign, account_id::bigint FROM teams WHERE id = ANY($1)",
+        )
+        .bind(&team_ids)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| (r.0, team_value(&r)))
+        .collect()
+    };
+
+    let unreads: HashMap<i64, i64> = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT c.id::bigint,
+                (SELECT COUNT(*)::bigint FROM (
+                    SELECT 1 FROM messages m
+                    WHERE m.conversation_id = c.id AND m.account_id = c.account_id AND m.message_type = 0
+                      AND (c.agent_last_seen_at IS NULL OR m.created_at > c.agent_last_seen_at)
+                    LIMIT 10
+                ) s)
+         FROM conversations c WHERE c.id = ANY($1)",
+    )
+    .bind(&conv_ids)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .collect();
+
+    let mut atts_map = crate::storage::attachments_json_batch(db, &msg_ids).await;
+    let errors_map: HashMap<i64, String> = if msg_ids.is_empty() {
+        HashMap::new()
+    } else {
+        sqlx::query_as::<_, (i64, String)>(
+            "SELECT message_id::bigint, external_error FROM pulsar_message_errors WHERE message_id = ANY($1)",
+        )
+        .bind(&msg_ids)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+    };
+
+    let last_any_map: HashMap<i64, Msg> = last_any_rows
+        .into_iter()
+        .map(|m| (m.conversation_id, m))
+        .collect();
+    let last_non_map: HashMap<i64, Msg> = last_non_rows
+        .into_iter()
+        .map(|m| (m.conversation_id, m))
+        .collect();
+
+    let format_msg = |m: &Msg, c: &Conv, sid: Option<&str>, unread: i64, atts: &[Value]| {
+        let sender = match (m.sender_type.as_deref(), m.sender_id) {
+            (Some("User"), Some(uid)) => users.get(&uid).cloned().unwrap_or(Value::Null),
+            (Some("Contact"), Some(cid)) => contacts.get(&cid).cloned().unwrap_or_else(|| json!({})),
+            _ => Value::Null,
+        };
+        let err = errors_map.get(&m.id).map(String::as_str);
+        build_msg_value(m, c, sender, sid, unread, atts.to_vec(), err)
+    };
+
+    rows.iter()
+        .map(|c| {
+            let channel = channels.get(&c.inbox_id).cloned().flatten();
+            let (sid, hmac) = c
+                .contact_inbox_id
+                .and_then(|ci| contact_inboxes.get(&ci).cloned())
+                .unwrap_or((None, None));
+            let sender = c
+                .contact_id
+                .and_then(|cid| contacts.get(&cid).cloned())
+                .unwrap_or_else(|| json!({}));
+            let assignee = c
+                .assignee_id
+                .map(|aid| users.get(&aid).cloned().unwrap_or(Value::Null));
+            let team = c.team_id.and_then(|tid| teams.get(&tid).cloned());
+            let unread = *unreads.get(&c.id).unwrap_or(&0);
+            let last_any = last_any_map
+                .get(&c.id)
+                .map(|m| {
+                    let atts = atts_map.get(&m.id).map(Vec::as_slice).unwrap_or(&[]);
+                    format_msg(m, c, sid.as_deref(), unread, atts)
+                })
+                .unwrap_or(Value::Null);
+            let last_non = last_non_map
+                .get(&c.id)
+                .map(|m| {
+                    let atts = atts_map.remove(&m.id).unwrap_or_default();
+                    format_msg(m, c, sid.as_deref(), unread, &atts)
+                })
+                .unwrap_or(Value::Null);
+            build_conv_value(
+                c,
+                channel,
+                sid,
+                hmac,
+                sender,
+                assignee,
+                team,
+                unread,
+                last_any,
+                last_non,
+            )
+        })
+        .collect()
+}
+
+pub(crate) async fn emit_changed(
+    st: &AppState,
+    c: &Conv,
+    event: &str,
+    data: Value,
+    changed: Option<Value>,
+) {
+    crate::events::publish(event, c.account_id, data.clone(), changed);
     st.hub
         .to_inbox(
             &st.db,
@@ -499,11 +849,70 @@ pub(crate) async fn emit(st: &AppState, c: &Conv, event: &str, data: Value) {
         .await;
 }
 
-pub(crate) async fn emit_conv(st: &AppState, id: i64, event: &str) -> Result<Conv, ApiError> {
+pub(crate) async fn emit(st: &AppState, c: &Conv, event: &str, data: Value) {
+    emit_changed(st, c, event, data, None).await;
+}
+
+pub(crate) async fn emit_conv_changed(
+    st: &AppState,
+    id: i64,
+    event: &str,
+    changed: Option<Value>,
+) -> Result<Conv, ApiError> {
     let c = reload(&st.db, id).await?;
     let data = conv_json(&st.db, &c).await;
-    emit(st, &c, event, data).await;
+    emit_changed(st, &c, event, data, changed).await;
     Ok(c)
+}
+
+pub(crate) async fn emit_conv(st: &AppState, id: i64, event: &str) -> Result<Conv, ApiError> {
+    emit_conv_changed(st, id, event, None).await
+}
+
+/// 24-hour customer messaging window check for WhatsApp/Meta channels (Chatwoot `can_reply?`).
+pub(crate) async fn within_messaging_window(db: &PgPool, conv_id: i64) -> bool {
+    let row: Option<(String, Option<i32>)> = sqlx::query_as(
+        "SELECT i.channel_type, tw.medium
+         FROM conversations c
+         JOIN inboxes i ON i.id = c.inbox_id
+         LEFT JOIN channel_twilio_sms tw ON i.channel_type = 'Channel::TwilioSms' AND tw.id = i.channel_id
+         WHERE c.id = $1",
+    )
+    .bind(conv_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    let Some((ch, tw_medium)) = row else {
+        return true;
+    };
+    let is_windowed = matches!(
+        ch.as_str(),
+        "Channel::Whatsapp" | "Channel::FacebookPage" | "Channel::Instagram"
+    ) || (ch == "Channel::TwilioSms" && tw_medium == Some(1));
+    if !is_windowed {
+        return true;
+    }
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id = $1 AND message_type = 0 AND created_at > now() - interval '24 hours')",
+    )
+    .bind(conv_id as i32)
+    .fetch_one(db)
+    .await
+    .unwrap_or(true)
+}
+
+pub(crate) async fn attach_label_by_name(
+    db: &PgPool,
+    account_id: i64,
+    conv_id: i64,
+    label: &str,
+) -> Result<(), ApiError> {
+    let valid = known_labels(db, account_id, vec![label.to_string()]).await?;
+    if !valid.is_empty() {
+        let _ = patch_labels(db, conv_id, &valid, &[]).await?;
+    }
+    Ok(())
 }
 
 /// Internal carrier for messages.source_id through insert_message; never stored in content_attributes.
@@ -740,17 +1149,7 @@ async fn index(
     let rows: Vec<Conv> = bind_base!(sqlx::query_as(&sql), f, au)
         .fetch_all(&st.db)
         .await?;
-    // Chatwoot PR #15719 (N+1 on the list): each row needs ~8 small lookups. Run rows concurrently, capped
-    // below the pool size so one list request cannot starve the rest.
-    // ponytail: still 8 queries per row; batch them into set-based queries if lists grow past 25 rows.
-    let mut payload = Vec::with_capacity(rows.len());
-    for chunk in rows.chunks(4) {
-        let mut futs = Vec::with_capacity(chunk.len());
-        for c in chunk {
-            futs.push(conv_json(&st.db, c));
-        }
-        payload.extend(futures::future::join_all(futs).await);
-    }
+    let payload = convs_json_batch(&st.db, account_id, &rows).await;
     Ok(Json(
         json!({ "data": { "meta": meta, "payload": payload } }),
     ))
@@ -1079,6 +1478,41 @@ async fn update_conversation(
             .execute(&st.db)
             .await?;
     }
+    if let Some(sla_val) = b.get("sla_policy_id") {
+        let sla_id = if sla_val.is_null() {
+            None
+        } else {
+            let sid = num(sla_val).ok_or_else(|| ApiError::bad("Invalid sla_policy_id"))?;
+            let ok: Option<i64> = sqlx::query_scalar(
+                "SELECT id::bigint FROM sla_policies WHERE id = $1 AND account_id = $2",
+            )
+            .bind(sid)
+            .bind(account_id)
+            .fetch_optional(&st.db)
+            .await?;
+            if ok.is_none() {
+                return Err(ApiError::not_found());
+            }
+            Some(sid)
+        };
+        sqlx::query("UPDATE conversations SET sla_policy_id = $1, updated_at = now() WHERE id = $2")
+            .bind(sla_id)
+            .bind(c.id)
+            .execute(&st.db)
+            .await?;
+        if let Some(sid) = sla_id {
+            sqlx::query(
+                "INSERT INTO applied_slas (account_id, sla_policy_id, conversation_id, sla_status, created_at, updated_at)
+                 VALUES ($1, $2, $3, 0, now(), now())
+                 ON CONFLICT (account_id, sla_policy_id, conversation_id) DO NOTHING",
+            )
+            .bind(account_id)
+            .bind(sid)
+            .bind(c.id)
+            .execute(&st.db)
+            .await?;
+        }
+    }
     let c = emit_conv(&st, c.id, "conversation.updated").await?;
     Ok(Json(conv_json(&st.db, &c).await))
 }
@@ -1101,6 +1535,8 @@ async fn destroy_conversation(
         "DELETE FROM conversation_participants WHERE conversation_id = $1",
         "DELETE FROM csat_survey_responses WHERE conversation_id = $1",
         "DELETE FROM reporting_events WHERE conversation_id = $1",
+        "DELETE FROM sla_events WHERE conversation_id = $1",
+        "DELETE FROM applied_slas WHERE conversation_id = $1",
         "DELETE FROM automation_rule_pending_executions WHERE conversation_id = $1",
         "DELETE FROM notifications WHERE primary_actor_type = 'Conversation' AND primary_actor_id = $1",
         "DELETE FROM taggings WHERE taggable_type = 'Conversation' AND taggable_id = $1",
@@ -1390,7 +1826,10 @@ async fn toggle_status(
         };
         activity(&st, &c, text).await?;
     }
-    emit_conv(&st, c.id, "conversation.status_changed").await?;
+    let changed = (new != c.status).then(|| {
+        json!({ "status": { "previous_value": c.status, "current_value": new } })
+    });
+    emit_conv_changed(&st, c.id, "conversation.status_changed", changed).await?;
     Ok(Json(json!({ "meta": {}, "payload": {
         "success": true, "conversation_id": c.display_id, "current_status": name_of(&STATUSES, new), "snoozed_until": snooze,
     } })))
@@ -1496,7 +1935,13 @@ async fn assign(
             };
             activity(&st, &c, text).await?;
         }
-        emit_conv(&st, c.id, "assignee.changed").await?;
+        emit_conv_changed(
+            &st,
+            c.id,
+            "assignee.changed",
+            Some(json!({ "actor_id": user.id, "previous_assignee_id": c.assignee_id })),
+        )
+        .await?;
         return Ok(Json(agent));
     }
     if let Some(v) = b.get("team_id") {
@@ -1962,7 +2407,6 @@ async fn messages_create_any(
 }
 
 /// POST /conversations/{id}/messages {content, private, message_type?, content_type?, content_attributes?, echo_id?}
-/// ponytail: JSON only, no multipart attachments; API-channel webhook delivery not ported.
 async fn messages_create(
     State(st): State<AppState>,
     user: CurrentUser,
@@ -2094,8 +2538,25 @@ async fn messages_update(
     }
     let m = load_msg(&st.db, &c, message_id).await?;
     let status = b["status"].as_str().unwrap_or_default();
-    // Chatwoot stores external_error on the message. The messages table here has no such column, so
-    // the error text is accepted and dropped. ponytail: add pulsar_message_errors when a channel needs it.
+    if let Some(ext_err) = b.get("external_error").and_then(Value::as_str) {
+        let trimmed = ext_err.trim();
+        if trimmed.is_empty() {
+            sqlx::query("DELETE FROM pulsar_message_errors WHERE message_id = $1")
+                .bind(m.id)
+                .execute(&st.db)
+                .await?;
+        } else {
+            sqlx::query(
+                "INSERT INTO pulsar_message_errors (message_id, external_error, updated_at)
+                 VALUES ($1, $2, now())
+                 ON CONFLICT (message_id) DO UPDATE SET external_error = EXCLUDED.external_error, updated_at = now()",
+            )
+            .bind(m.id)
+            .bind(trimmed)
+            .execute(&st.db)
+            .await?;
+        }
+    }
     let Some(next) = status_transition(m.status.unwrap_or(0), status) else {
         // StatusUpdateService returns false for a backward transition; the record is returned unchanged.
         return Ok(Json(msg_json(&st.db, &m, &c).await));
@@ -2722,7 +3183,13 @@ async fn bulk_actions_create(
                     };
                     activity(&st, &c, text).await?;
                 }
-                emit_conv(&st, c.id, "assignee.changed").await?;
+                emit_conv_changed(
+                    &st,
+                    c.id,
+                    "assignee.changed",
+                    Some(json!({ "actor_id": user.id, "previous_assignee_id": c.assignee_id })),
+                )
+                .await?;
             }
 
             if let Some(new_team) = team_opt {
@@ -2776,7 +3243,10 @@ async fn bulk_actions_create(
                     };
                     activity(&st, &c, text).await?;
                 }
-                emit_conv(&st, c.id, "conversation.status_changed").await?;
+                let changed = (new_status != c.status).then(|| {
+                    json!({ "status": { "previous_value": c.status, "current_value": new_status } })
+                });
+                emit_conv_changed(&st, c.id, "conversation.status_changed", changed).await?;
             }
         }
 

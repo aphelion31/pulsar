@@ -1,5 +1,4 @@
-//! ActionCable-compatible websocket at /cable. In-process pub/sub (no Redis).
-//! ponytail: single-node only. Add Redis/PG LISTEN fanout when running >1 instance.
+//! ActionCable-compatible websocket at /cable with optional multi-node Postgres LISTEN/NOTIFY fan-out.
 use std::{
     collections::HashMap,
     sync::{Arc, LazyLock, Mutex},
@@ -22,10 +21,22 @@ use crate::common::AppState;
 
 type Tx = UnboundedSender<String>;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Hub {
     /// stream name -> list of (conn id, sender, identifier json)
     streams: Arc<Mutex<HashMap<String, Vec<(u64, Tx, String)>>>>,
+    db: Option<PgPool>,
+    node_id: String,
+}
+
+impl Default for Hub {
+    fn default() -> Self {
+        Self {
+            streams: Arc::new(Mutex::new(HashMap::new())),
+            db: None,
+            node_id: uuid::Uuid::new_v4().simple().to_string(),
+        }
+    }
 }
 
 /// (account_id, user_id) -> last heartbeat. Contacts: (account_id, -contact_id).
@@ -72,8 +83,33 @@ pub fn presence_snapshot() -> PresenceSnapshot {
 }
 
 impl Hub {
-    /// Send `{event, data}` to every subscriber of each stream (pubsub tokens or `account_{id}`).
-    pub fn broadcast(&self, streams: &[String], event: &str, data: Value) {
+    pub fn with_db(db: PgPool) -> Self {
+        Self {
+            db: Some(db),
+            ..Self::default()
+        }
+    }
+
+    fn notify_peers(&self, msg: Value) {
+        let Some(db) = self.db.clone() else {
+            return;
+        };
+        let Ok(payload) = serde_json::to_string(&msg) else {
+            return;
+        };
+        // PostgreSQL NOTIFY hard limit is 8000 bytes; guard at 7500.
+        if payload.len() > 7500 {
+            return;
+        }
+        tokio::spawn(async move {
+            let _ = sqlx::query("SELECT pg_notify('pulsar_cable_events', $1)")
+                .bind(payload)
+                .execute(&db)
+                .await;
+        });
+    }
+
+    fn broadcast_local(&self, streams: &[String], event: &str, data: &Value) {
         let map = self.streams.lock().unwrap();
         let mut seen = std::collections::HashSet::new();
         for s in streams {
@@ -85,6 +121,18 @@ impl Hub {
                 }
             }
         }
+    }
+
+    /// Send `{event, data}` to every subscriber of each stream (pubsub tokens or `account_{id}`).
+    pub fn broadcast(&self, streams: &[String], event: &str, data: Value) {
+        self.broadcast_local(streams, event, &data);
+        self.notify_peers(json!({
+            "node": self.node_id,
+            "kind": "broadcast",
+            "streams": streams,
+            "event": event,
+            "data": data,
+        }));
     }
 
     /// Broadcast to all agents of an account (stream `account_{id}`).
@@ -104,6 +152,12 @@ impl Hub {
             .entry(account_id)
             .or_default()
             .insert(model.to_string(), chrono::Utc::now().timestamp_millis());
+        self.notify_peers(json!({
+            "node": self.node_id,
+            "kind": "cache",
+            "account_id": account_id,
+            "model": model,
+        }));
         self.to_account(
             account_id,
             "account.cache_invalidated",
@@ -194,6 +248,64 @@ impl Hub {
         m.values_mut().for_each(|v| v.retain(|(c, _, _)| *c != cid));
         m.retain(|_, v| !v.is_empty());
     }
+}
+
+/// Listen for remote node broadcasts/presence/cache events over PostgreSQL `LISTEN/NOTIFY`.
+pub fn spawn_pg_fanout(hub: Hub, db: PgPool) {
+    tokio::spawn(async move {
+        loop {
+            let Ok(mut listener) = sqlx::postgres::PgListener::connect_with(&db).await else {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            };
+            if listener.listen("pulsar_cable_events").await.is_err() {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+            while let Ok(notif) = listener.recv().await {
+                let Ok(v) = serde_json::from_str::<Value>(notif.payload()) else {
+                    continue;
+                };
+                if v["node"].as_str() == Some(&hub.node_id) {
+                    continue;
+                }
+                match v["kind"].as_str() {
+                    Some("broadcast") => {
+                        let streams: Vec<String> = v["streams"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|s| s.as_str().map(str::to_string))
+                            .collect();
+                        if let Some(event) = v["event"].as_str() {
+                            hub.broadcast_local(&streams, event, &v["data"]);
+                        }
+                    }
+                    Some("presence") => {
+                        if let (Some(a), Some(eid)) =
+                            (v["account_id"].as_i64(), v["entity_id"].as_i64())
+                        {
+                            PRESENCE.lock().unwrap().insert((a, eid), Instant::now());
+                        }
+                    }
+                    Some("cache") => {
+                        if let (Some(a), Some(model)) =
+                            (v["account_id"].as_i64(), v["model"].as_str())
+                        {
+                            CACHE_KEYS
+                                .lock()
+                                .unwrap()
+                                .entry(a)
+                                .or_default()
+                                .insert(model.to_string(), chrono::Utc::now().timestamp_millis());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    });
 }
 
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -341,6 +453,12 @@ async fn heartbeat(st: &AppState, who: &Who, params: &Value) {
         _ => return,
     };
     PRESENCE.lock().unwrap().insert(key, Instant::now());
+    st.hub.notify_peers(json!({
+        "node": st.hub.node_id,
+        "kind": "presence",
+        "account_id": account,
+        "entity_id": key.1,
+    }));
     let mut data = Hub::presence_payload(&st.db, account).await;
     if let Who::User { id, .. } = who {
         let wp: Option<(bool, bool)> = sqlx::query_as(&format!(

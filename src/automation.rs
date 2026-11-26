@@ -285,7 +285,7 @@ async fn macros_delete(
         .await?;
     Ok(Json(json!({})))
 }
-// ponytail: rules stored, not executed; add event listener when needed
+// Automation rules are evaluated asynchronously by src/listeners/automation.rs on conversation/message events.
 async fn rules_index(State(st): State<AppState>, Path(a): Path<i64>, u: CurrentUser) -> ApiResult {
     require_account(&st.db, &u, a).await?.require_admin()?;
     let rows: Vec<Value> = sqlx::query_scalar(&format!(

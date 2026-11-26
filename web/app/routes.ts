@@ -130,6 +130,7 @@ export default [
     route("accounts/:accountId/reports/bot", "routes/reports.tsx", { id: "cw-reports-bot" }),
     route("accounts/:accountId/reports/monitors", "routes/reports.monitors.tsx", { id: "cw-reports-monitors" }),
     route("accounts/:accountId/reports/monitors/:monitorId", "routes/reports.monitor-detail.tsx", { id: "cw-reports-monitor-detail" }),
+    route("accounts/:accountId/reports/year-in-review", "routes/reports.year-in-review.tsx", { id: "cw-reports-year-in-review" }),
 
     // Profile
     route("accounts/:accountId/profile", "routes/settings/profile.tsx", { id: "cw-profile" }),
@@ -174,6 +175,7 @@ export default [
     route("accounts/:accountId/settings/integrations/shopify", "routes/settings/integrations/shopify.tsx", { id: "cw-settings-integrations-shopify" }),
     route("accounts/:accountId/settings/integrations/:integration_id", "routes/settings/integrations/hook-detail.tsx", { id: "cw-settings-integrations-detail" }),
     route("accounts/:accountId/settings/data", "routes/r3/data-imports.tsx", { id: "cw-settings-data" }),
+    route("accounts/:accountId/settings/data/exports/:dataExportId", "routes/r3/data-export-detail.tsx", { id: "cw-settings-data-export-detail" }),
     route("accounts/:accountId/settings/data/:dataImportId", "routes/r3/data-import-detail.tsx", { id: "cw-settings-data-detail" }),
     route("accounts/:accountId/settings/labels/list", "routes/settings/labels.tsx"),
     route("accounts/:accountId/settings/macros", "routes/settings/macros.tsx"),

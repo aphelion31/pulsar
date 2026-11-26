@@ -4,13 +4,13 @@ use std::{
 };
 
 use hmac::{Hmac, Mac};
-use serde_json::json;
+use serde_json::{Value, json};
 use sha2_compat::Sha256;
-use sqlx::Row;
+use sqlx::{PgPool, Row};
 
 use crate::{common::AppState, events::Event};
 
-fn public_ip(ip: IpAddr) -> bool {
+pub(crate) fn public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
             let o = ip.octets();
@@ -40,8 +40,8 @@ fn public_ip(ip: IpAddr) -> bool {
     }
 }
 
-async fn deliver(url: &str, secret: Option<&str>, body: &str) -> anyhow::Result<()> {
-    let url = url::Url::parse(url)?;
+pub(crate) async fn validated_client(raw_url: &str, timeout_secs: u64) -> anyhow::Result<(url::Url, reqwest::Client)> {
+    let url = url::Url::parse(raw_url)?;
     anyhow::ensure!(
         matches!(url.scheme(), "http" | "https")
             && url.username().is_empty()
@@ -56,24 +56,60 @@ async fn deliver(url: &str, secret: Option<&str>, body: &str) -> anyhow::Result<
         .ok_or_else(|| anyhow::anyhow!("missing port"))?;
     let addresses: Vec<SocketAddr> = tokio::net::lookup_host((host, port)).await?.collect();
     anyhow::ensure!(!addresses.is_empty(), "host has no addresses");
-    if std::env::var("PULSAR_WEBHOOK_ALLOW_PRIVATE").as_deref() != Ok("1") {
+    if std::env::var("PULSAR_WEBHOOK_ALLOW_PRIVATE").as_deref() != Ok("1")
+        && std::env::var("WEB_PUSH_ALLOW_PRIVATE").as_deref() != Ok("1")
+    {
         anyhow::ensure!(
             addresses.iter().all(|a| public_ip(a.ip())),
             "private webhook address refused"
         );
     }
-    let timeout = std::env::var("WEBHOOK_TIMEOUT")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(5);
     // Pin validated DNS results, disable redirects and proxies to prevent DNS rebinding and redirect SSRF.
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .resolve_to_addrs(host, &addresses)
-        .timeout(Duration::from_secs(timeout))
+        .timeout(Duration::from_secs(timeout_secs))
         .build()?;
+    Ok((url, client))
+}
+
+pub(crate) async fn safe_fetch_bytes(
+    raw_url: &str,
+    max_bytes: usize,
+) -> anyhow::Result<(Vec<u8>, String)> {
+    let (url, client) = validated_client(raw_url, 15).await?;
+    let resp = client.get(url).send().await?.error_for_status()?;
+    if let Some(len) = resp.content_length() {
+        anyhow::ensure!((len as usize) <= max_bytes, "remote media exceeds limit");
+    }
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let bytes = resp.bytes().await?;
+    anyhow::ensure!(bytes.len() <= max_bytes, "remote media exceeds limit");
+    Ok((bytes.to_vec(), ct))
+}
+
+pub(crate) async fn deliver(url: &str, secret: Option<&str>, body: &str) -> anyhow::Result<()> {
+    deliver_with_headers(url, secret, body, &[]).await
+}
+
+pub(crate) async fn deliver_with_headers(
+    url: &str,
+    secret: Option<&str>,
+    body: &str,
+    extra_headers: &[(&str, &str)],
+) -> anyhow::Result<()> {
+    let timeout = std::env::var("WEBHOOK_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(5);
+    let (url, client) = validated_client(url, timeout).await?;
     let mut request = client
         .post(url)
         .header("Content-Type", "application/json")
@@ -88,12 +124,93 @@ async fn deliver(url: &str, secret: Option<&str>, body: &str) -> anyhow::Result<
             format!("sha256={}", hex::encode(mac.finalize().into_bytes())),
         );
     }
+    for (k, v) in extra_headers {
+        request = request.header(*k, *v);
+    }
     request
         .body(body.to_owned())
         .send()
         .await?
         .error_for_status()?;
     Ok(())
+}
+
+pub(crate) async fn build_event_payload(
+    db: &PgPool,
+    ev: &Event,
+) -> anyhow::Result<Option<(Option<i64>, Value)>> {
+    let event = ev.name.replace('.', "_");
+    let is_message = event.starts_with("message_");
+    let mut payload = ev.data.clone();
+    let mut inbox_id = payload["inbox_id"].as_i64();
+    if is_message {
+        let id = payload["id"]
+            .as_i64()
+            .ok_or_else(|| anyhow::anyhow!("missing message id"))?;
+        let row = sqlx::query(
+            "SELECT m.message_type, m.private, m.conversation_id::bigint AS conversation_id,
+                    m.inbox_id::bigint AS inbox_id, i.name AS inbox_name, a.name AS account_name
+             FROM messages m
+             JOIN inboxes i ON i.id=m.inbox_id AND i.account_id=m.account_id
+             JOIN accounts a ON a.id=m.account_id
+             WHERE m.id=$1 AND m.account_id=$2",
+        )
+        .bind(id as i32)
+        .bind(ev.account_id as i32)
+        .fetch_optional(db)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let kind: i32 = row.try_get("message_type")?;
+        let private: bool = row.try_get("private")?;
+        if !matches!(kind, 0 | 1 | 3) || private {
+            return Ok(None);
+        }
+        let conv = crate::conversations::reload(db, row.try_get("conversation_id")?)
+            .await
+            .map_err(|e| anyhow::anyhow!("conversation reload: {e:?}"))?;
+        let mut conversation = crate::conversations::conv_json(db, &conv).await;
+        let account = json!({"id": ev.account_id, "name": row.try_get::<String,_>("account_name")?});
+        conversation["account"] = account.clone();
+        inbox_id = Some(row.try_get("inbox_id")?);
+        let original = payload;
+        payload = json!({
+            "account": account,
+            "additional_attributes": original["additional_attributes"],
+            "content_attributes": original["content_attributes"],
+            "content_type": original["content_type"],
+            "content": original["content"],
+            "conversation": conversation,
+            "created_at": original["created_at"],
+            "id": id,
+            "inbox": {"id": inbox_id, "name": row.try_get::<String,_>("inbox_name")?},
+            "message_type": match kind {0 => "incoming", 1 => "outgoing", _ => "template"},
+            "private": private,
+            "sender": original["sender"],
+            "source_id": original["source_id"]
+        });
+        if let Some(attachments) = original.get("attachments") {
+            payload["attachments"] = attachments.clone();
+        }
+    }
+    let Some(object) = payload.as_object_mut() else {
+        return Ok(None);
+    };
+    object.insert("event".into(), json!(event));
+    if matches!(
+        event.as_str(),
+        "conversation_status_changed"
+            | "conversation_updated"
+            | "contact_updated"
+            | "inbox_updated"
+    ) {
+        object.insert(
+            "changed_attributes".into(),
+            ev.changed.clone().unwrap_or(json!({})),
+        );
+    }
+    Ok(Some((inbox_id, payload)))
 }
 
 pub async fn handle(st: AppState, ev: Event) {
@@ -130,52 +247,9 @@ async fn process(st: &AppState, ev: &Event) -> anyhow::Result<()> {
         return Ok(());
     }
     let is_message = event.starts_with("message_");
-    let mut payload = ev.data.clone();
-    let mut inbox_id = payload["inbox_id"].as_i64();
-    if is_message {
-        let id = payload["id"]
-            .as_i64()
-            .ok_or_else(|| anyhow::anyhow!("missing message id"))?;
-        let row = sqlx::query("SELECT m.message_type, m.private, m.conversation_id::bigint AS conversation_id, m.inbox_id::bigint AS inbox_id, i.name AS inbox_name, a.name AS account_name FROM messages m JOIN inboxes i ON i.id=m.inbox_id AND i.account_id=m.account_id JOIN accounts a ON a.id=m.account_id WHERE m.id=$1 AND m.account_id=$2")
-            .bind(id as i32).bind(ev.account_id as i32).fetch_optional(&st.db).await?;
-        let Some(row) = row else {
-            return Ok(());
-        };
-        let kind: i32 = row.try_get("message_type")?;
-        let private: bool = row.try_get("private")?;
-        if !matches!(kind, 0 | 1 | 3) || private {
-            return Ok(());
-        }
-        let conv = crate::conversations::reload(&st.db, row.try_get("conversation_id")?)
-            .await
-            .map_err(|e| anyhow::anyhow!("conversation reload: {e:?}"))?;
-        let mut conversation = crate::conversations::conv_json(&st.db, &conv).await;
-        let account =
-            json!({"id": ev.account_id, "name": row.try_get::<String,_>("account_name")?});
-        conversation["account"] = account.clone();
-        inbox_id = Some(row.try_get("inbox_id")?);
-        let original = payload;
-        payload = json!({"account": account, "additional_attributes": original["additional_attributes"], "content_attributes": original["content_attributes"], "content_type": original["content_type"], "content": original["content"], "conversation": conversation, "created_at": original["created_at"], "id": id, "inbox": {"id": inbox_id, "name": row.try_get::<String,_>("inbox_name")?}, "message_type": match kind {0 => "incoming", 1 => "outgoing", _ => "template"}, "private": private, "sender": original["sender"], "source_id": original["source_id"]});
-        if let Some(attachments) = original.get("attachments") {
-            payload["attachments"] = attachments.clone();
-        }
-    }
-    let Some(object) = payload.as_object_mut() else {
+    let Some((inbox_id, payload)) = build_event_payload(&st.db, ev).await? else {
         return Ok(());
     };
-    object.insert("event".into(), json!(event));
-    if matches!(
-        event.as_str(),
-        "conversation_status_changed"
-            | "conversation_updated"
-            | "contact_updated"
-            | "inbox_updated"
-    ) {
-        object.insert(
-            "changed_attributes".into(),
-            ev.changed.clone().unwrap_or(json!({})),
-        );
-    }
     let body = serde_json::to_string(&payload)?;
     let flags: Option<(i64, i64)> =
         sqlx::query_as("SELECT feature_flags, feature_flags_ext_1 FROM accounts WHERE id=$1")

@@ -7,10 +7,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
+use axum::{
+    Json, Router,
+    body::Bytes,
+    extract::{Multipart, State},
+    http::StatusCode,
+    routing::post,
+};
+use base64::Engine as _;
 use chrono::{Duration as ChronoDuration, Utc};
 use futures::StreamExt;
 use mail_parser::{MessageParser, TextList};
-use serde_json::json;
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsConnector, rustls};
@@ -52,13 +60,14 @@ struct EmailInbox {
     imap_login: String,
     imap_password: String,
     imap_enable_ssl: bool,
+    imap_authentication: Option<String>,
 }
 
 async fn fetch_all(st: &AppState) -> anyhow::Result<()> {
     // Mirrors FetchImapEmailInboxesJob#should_fetch_emails?: skip suspended accounts and imap-disabled channels.
     let rows: Vec<EmailInbox> = sqlx::query_as(
         "SELECT i.id AS inbox_id, i.account_id, ce.imap_address, ce.imap_port, ce.imap_login,
-                ce.imap_password, ce.imap_enable_ssl
+                ce.imap_password, ce.imap_enable_ssl, ce.imap_authentication
          FROM inboxes i
          JOIN channel_email ce ON ce.id = i.channel_id
          JOIN accounts a ON a.id = i.account_id
@@ -110,6 +119,98 @@ async fn fetch_raw_messages(ch: &EmailInbox) -> anyhow::Result<Vec<Vec<u8>>> {
     }
 }
 
+struct CramMd5Auth {
+    user: String,
+    pass: String,
+}
+
+impl async_imap::Authenticator for CramMd5Auth {
+    type Response = Vec<u8>;
+    fn process(&mut self, challenge: &[u8]) -> Self::Response {
+        let digest = hmac_md5(self.pass.as_bytes(), challenge);
+        format!("{} {}", self.user, hex::encode(digest)).into_bytes()
+    }
+}
+
+/// Pure-Rust RFC 1321 MD5 + RFC 2104 HMAC-MD5 solely for IMAP CRAM-MD5 auth (zero extra Cargo deps).
+fn md5_digest(input: &[u8]) -> [u8; 16] {
+    const S: [u32; 64] = [
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
+        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
+        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
+    const K: [u32; 64] = [
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
+        0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193,
+        0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d,
+        0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
+        0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
+        0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244,
+        0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
+        0xeb86d391,
+    ];
+    let bit_len = (input.len() as u64).wrapping_mul(8);
+    let mut msg = input.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_le_bytes());
+
+    let (mut a0, mut b0, mut c0, mut d0) =
+        (0x67452301u32, 0xefcdab89u32, 0x98badcfeu32, 0x10325476u32);
+    for chunk in msg.chunks_exact(64) {
+        let mut m = [0u32; 16];
+        for (i, w) in m.iter_mut().enumerate() {
+            *w = u32::from_le_bytes(chunk[i * 4..i * 4 + 4].try_into().unwrap());
+        }
+        let (mut a, mut b, mut c, mut d) = (a0, b0, c0, d0);
+        for i in 0..64 {
+            let (f, g) = match i {
+                0..=15 => ((b & c) | ((!b) & d), i),
+                16..=31 => ((d & b) | ((!d) & c), (5 * i + 1) % 16),
+                32..=47 => (b ^ c ^ d, (3 * i + 5) % 16),
+                _ => (c ^ (b | (!d)), (7 * i) % 16),
+            };
+            let next_d = d;
+            d = c;
+            c = b;
+            let sum = a.wrapping_add(f).wrapping_add(K[i]).wrapping_add(m[g]);
+            b = b.wrapping_add(sum.rotate_left(S[i]));
+            a = next_d;
+        }
+        a0 = a0.wrapping_add(a);
+        b0 = b0.wrapping_add(b);
+        c0 = c0.wrapping_add(c);
+        d0 = d0.wrapping_add(d);
+    }
+    let mut out = [0u8; 16];
+    out[0..4].copy_from_slice(&a0.to_le_bytes());
+    out[4..8].copy_from_slice(&b0.to_le_bytes());
+    out[8..12].copy_from_slice(&c0.to_le_bytes());
+    out[12..16].copy_from_slice(&d0.to_le_bytes());
+    out
+}
+
+fn hmac_md5(key: &[u8], data: &[u8]) -> [u8; 16] {
+    let mut k = [0u8; 64];
+    if key.len() > 64 {
+        k[..16].copy_from_slice(&md5_digest(key));
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let mut inner = Vec::with_capacity(64 + data.len());
+    inner.extend(k.iter().map(|b| b ^ 0x36));
+    inner.extend_from_slice(data);
+    let inner_hash = md5_digest(&inner);
+    let mut outer = Vec::with_capacity(64 + 16);
+    outer.extend(k.iter().map(|b| b ^ 0x5c));
+    outer.extend_from_slice(&inner_hash);
+    md5_digest(&outer)
+}
+
 async fn session_fetch<T>(
     client: async_imap::Client<T>,
     ch: &EmailInbox,
@@ -117,15 +218,28 @@ async fn session_fetch<T>(
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + std::fmt::Debug + Send,
 {
-    // Plain LOGIN only. Chatwoot also allows cram-md5; add when an inbox needs it.
-    // ponytail: cram-md5 not wired, add when a provider requires it.
-    let mut session = client
-        .login(
-            &ch.imap_login,
-            &crate::ar_encryption::decrypt(&ch.imap_password),
-        )
-        .await
-        .map_err(|(e, _)| anyhow!("imap login failed: {e}"))?;
+    let pass = crate::ar_encryption::decrypt(&ch.imap_password);
+    let use_cram = ch
+        .imap_authentication
+        .as_deref()
+        .is_some_and(|m| m.eq_ignore_ascii_case("cram-md5") || m.eq_ignore_ascii_case("cram_md5"));
+    let mut session = if use_cram {
+        client
+            .authenticate(
+                "CRAM-MD5",
+                CramMd5Auth {
+                    user: ch.imap_login.clone(),
+                    pass,
+                },
+            )
+            .await
+            .map_err(|(e, _)| anyhow!("imap cram-md5 login failed: {e}"))?
+    } else {
+        client
+            .login(&ch.imap_login, &pass)
+            .await
+            .map_err(|(e, _)| anyhow!("imap login failed: {e}"))?
+    };
     session.select("INBOX").await.context("select INBOX")?;
     let since = (Utc::now() - ChronoDuration::days(1))
         .format("%d-%b-%Y")
@@ -543,4 +657,302 @@ mod live {
             .await?;
         result
     }
+}
+
+/// ActionMailbox-compatible HTTP inbound email webhooks for Mailgun, SendGrid, Postmark, Mandrill,
+/// generic SMTP/Postfix relay, and Amazon SES/SNS.
+pub(crate) fn webhook_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/rails/action_mailbox/mailgun/inbound_emails/mime",
+            post(mailgun_inbound),
+        )
+        .route(
+            "/rails/action_mailbox/sendgrid/inbound_emails",
+            post(sendgrid_inbound),
+        )
+        .route(
+            "/rails/action_mailbox/postmark/inbound_emails",
+            post(postmark_inbound),
+        )
+        .route(
+            "/rails/action_mailbox/mandrill/inbound_emails",
+            post(mandrill_inbound),
+        )
+        .route(
+            "/rails/action_mailbox/relay/inbound_emails",
+            post(relay_inbound),
+        )
+        .route(
+            "/rails/action_mailbox/amazon/inbound_emails",
+            post(amazon_inbound),
+        )
+}
+
+async fn find_email_channel(db: &PgPool, candidates: &[String]) -> Option<(i64, i64)> {
+    let lower: Vec<String> = candidates
+        .iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| s.contains('@'))
+        .collect();
+    if lower.is_empty() {
+        return None;
+    }
+    sqlx::query_as(
+        "SELECT i.account_id::bigint, i.id::bigint
+         FROM inboxes i
+         JOIN channel_email ce ON ce.id = i.channel_id
+         JOIN accounts a ON a.id = i.account_id
+         WHERE i.channel_type = 'Channel::Email'
+           AND COALESCE(a.status, 0) <> 1
+           AND (lower(ce.email) = ANY($1) OR lower(ce.forward_to_email) = ANY($1))
+         ORDER BY i.id LIMIT 1",
+    )
+    .bind(&lower)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
+}
+
+fn synth_rfc822(from: &str, to: &str, subject: &str, msg_id: &str, text: &str) -> Vec<u8> {
+    let mid = if msg_id.starts_with('<') {
+        msg_id.to_string()
+    } else {
+        format!("<{msg_id}>")
+    };
+    format!(
+        "From: {from}\r\nTo: {to}\r\nSubject: {subject}\r\nMessage-ID: {mid}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{text}\r\n"
+    )
+    .into_bytes()
+}
+
+async fn route_raw_email(st: &AppState, raw: &[u8], hint_recipients: &[String]) -> StatusCode {
+    let mut candidates = hint_recipients.to_vec();
+    if let Ok(parsed) = parse_mail(raw) {
+        candidates.extend(
+            parsed
+                .to
+                .split(',')
+                .chain(parsed.cc.split(','))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+        );
+    }
+    let Some((account_id, inbox_id)) = find_email_channel(&st.db, &candidates).await else {
+        tracing::warn!(recipients = ?candidates, "inbound email webhook matched no Channel::Email inbox");
+        return StatusCode::NO_CONTENT;
+    };
+    match ingest_raw(st, account_id, inbox_id, raw).await {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(e) => {
+            tracing::error!(inbox_id, error = %e, "inbound email webhook ingest failed");
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
+    }
+}
+
+async fn mailgun_inbound(State(st): State<AppState>, mut mp: Multipart) -> StatusCode {
+    let mut raw_mime: Option<Vec<u8>> = None;
+    let mut recipient = String::new();
+    let mut sender = String::new();
+    let mut subject = String::new();
+    let mut text = String::new();
+    let mut msg_id = String::new();
+
+    while let Ok(Some(field)) = mp.next_field().await {
+        let name = field.name().unwrap_or_default().to_string();
+        match name.as_str() {
+            "body-mime" => {
+                if let Ok(b) = field.bytes().await {
+                    raw_mime = Some(b.to_vec());
+                }
+            }
+            "recipient" | "To" => recipient = field.text().await.unwrap_or_default(),
+            "sender" | "from" | "From" => sender = field.text().await.unwrap_or_default(),
+            "subject" | "Subject" => subject = field.text().await.unwrap_or_default(),
+            "body-plain" | "stripped-text" => text = field.text().await.unwrap_or_default(),
+            "Message-Id" | "message-id" => msg_id = field.text().await.unwrap_or_default(),
+            _ => {}
+        }
+    }
+    let hints: Vec<String> = recipient
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if let Some(raw) = raw_mime {
+        return route_raw_email(&st, &raw, &hints).await;
+    }
+    if sender.is_empty() || recipient.is_empty() {
+        return StatusCode::UNPROCESSABLE_ENTITY;
+    }
+    let mid = if msg_id.is_empty() {
+        format!("mailgun-{}@pulsar.local", uuid::Uuid::new_v4().simple())
+    } else {
+        msg_id
+    };
+    let raw = synth_rfc822(&sender, &recipient, &subject, &mid, &text);
+    route_raw_email(&st, &raw, &hints).await
+}
+
+async fn sendgrid_inbound(State(st): State<AppState>, mut mp: Multipart) -> StatusCode {
+    let mut raw_mime: Option<Vec<u8>> = None;
+    let mut to = String::new();
+    let mut from = String::new();
+    let mut subject = String::new();
+    let mut text = String::new();
+    while let Ok(Some(field)) = mp.next_field().await {
+        let name = field.name().unwrap_or_default().to_string();
+        match name.as_str() {
+            "email" => {
+                if let Ok(b) = field.bytes().await {
+                    raw_mime = Some(b.to_vec());
+                }
+            }
+            "to" => to = field.text().await.unwrap_or_default(),
+            "from" => from = field.text().await.unwrap_or_default(),
+            "subject" => subject = field.text().await.unwrap_or_default(),
+            "text" => text = field.text().await.unwrap_or_default(),
+            _ => {}
+        }
+    }
+    let hints: Vec<String> = to
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if let Some(raw) = raw_mime {
+        return route_raw_email(&st, &raw, &hints).await;
+    }
+    if from.is_empty() || to.is_empty() {
+        return StatusCode::UNPROCESSABLE_ENTITY;
+    }
+    let mid = format!("sendgrid-{}@pulsar.local", uuid::Uuid::new_v4().simple());
+    let raw = synth_rfc822(&from, &to, &subject, &mid, &text);
+    route_raw_email(&st, &raw, &hints).await
+}
+
+async fn postmark_inbound(State(st): State<AppState>, Json(v): Json<Value>) -> StatusCode {
+    let mut hints = Vec::new();
+    if let Some(s) = v["OriginalRecipient"].as_str().filter(|s| !s.is_empty()) {
+        hints.push(s.to_string());
+    }
+    if let Some(arr) = v["ToFull"].as_array() {
+        for item in arr {
+            if let Some(e) = item["Email"].as_str() {
+                hints.push(e.to_string());
+            }
+        }
+    }
+    if let Some(raw) = v["RawEmail"].as_str().filter(|s| !s.is_empty()) {
+        return route_raw_email(&st, raw.as_bytes(), &hints).await;
+    }
+    let from = v["FromFull"]["Email"]
+        .as_str()
+        .or_else(|| v["From"].as_str())
+        .unwrap_or_default();
+    let to = v["To"]
+        .as_str()
+        .or_else(|| hints.first().map(String::as_str))
+        .unwrap_or_default();
+    if from.is_empty() || to.is_empty() {
+        return StatusCode::UNPROCESSABLE_ENTITY;
+    }
+    let subject = v["Subject"].as_str().unwrap_or_default();
+    let text = v["TextBody"]
+        .as_str()
+        .or_else(|| v["StrippedTextReply"].as_str())
+        .unwrap_or_default();
+    let mid = v["MessageID"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("postmark-{}@pulsar.local", uuid::Uuid::new_v4().simple()));
+    let raw = synth_rfc822(from, to, subject, &mid, text);
+    route_raw_email(&st, &raw, &hints).await
+}
+
+async fn mandrill_inbound(State(st): State<AppState>, body: Bytes) -> StatusCode {
+    let events: Value = if let Ok(v) = serde_json::from_slice::<Value>(&body) {
+        v
+    } else if let Some((_, payload)) =
+        url::form_urlencoded::parse(&body).find(|(k, _)| k == "mandrill_events")
+    {
+        serde_json::from_str(&payload).unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    let Some(arr) = events.as_array() else {
+        return StatusCode::NO_CONTENT;
+    };
+    for ev in arr {
+        let msg = &ev["msg"];
+        let mut hints = Vec::new();
+        if let Some(e) = msg["email"].as_str() {
+            hints.push(e.to_string());
+        }
+        if let Some(raw) = msg["raw_msg"].as_str().filter(|s| !s.is_empty()) {
+            let _ = route_raw_email(&st, raw.as_bytes(), &hints).await;
+            continue;
+        }
+        let from = msg["from_email"].as_str().unwrap_or_default();
+        let to = hints.first().map(String::as_str).unwrap_or_default();
+        if !from.is_empty() && !to.is_empty() {
+            let subject = msg["subject"].as_str().unwrap_or_default();
+            let text = msg["text"].as_str().unwrap_or_default();
+            let mid = msg["headers"]["Message-Id"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("mandrill-{}@pulsar.local", uuid::Uuid::new_v4().simple()));
+            let raw = synth_rfc822(from, to, subject, &mid, text);
+            let _ = route_raw_email(&st, &raw, &hints).await;
+        }
+    }
+    StatusCode::NO_CONTENT
+}
+
+async fn relay_inbound(State(st): State<AppState>, body: Bytes) -> StatusCode {
+    if body.is_empty() {
+        return StatusCode::UNPROCESSABLE_ENTITY;
+    }
+    route_raw_email(&st, &body, &[]).await
+}
+
+async fn amazon_inbound(State(st): State<AppState>, Json(env): Json<Value>) -> StatusCode {
+    if env["Type"].as_str() == Some("SubscriptionConfirmation")
+        && let Some(sub_url) = env["SubscribeURL"].as_str()
+    {
+        let _ = crate::listeners::webhooks::safe_fetch_bytes(sub_url, 64 * 1024).await;
+        return StatusCode::NO_CONTENT;
+    }
+    let msg: Value = match &env["Message"] {
+        Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
+        other => other.clone(),
+    };
+    let mut hints = Vec::new();
+    if let Some(arr) = msg["mail"]["destination"].as_array() {
+        for d in arr {
+            if let Some(s) = d.as_str() {
+                hints.push(s.to_string());
+            }
+        }
+    }
+    if let Some(arr) = msg["receipt"]["recipients"].as_array() {
+        for r in arr {
+            if let Some(s) = r.as_str() {
+                hints.push(s.to_string());
+            }
+        }
+    }
+    if let Some(content) = msg["content"].as_str().filter(|s| !s.is_empty()) {
+        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(content) {
+            return route_raw_email(&st, &decoded, &hints).await;
+        }
+        return route_raw_email(&st, content.as_bytes(), &hints).await;
+    }
+    StatusCode::NO_CONTENT
 }

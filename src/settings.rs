@@ -1,5 +1,5 @@
 //! Labels, canned responses, custom attributes, custom filters, notifications, notification settings,
-//! cache keys, search, and empty stubs for unported settings pages.
+//! cache keys, search, working hours, branded email layout, and reporting events.
 use std::collections::HashMap;
 
 use axum::{
@@ -857,8 +857,7 @@ async fn cf_destroy(
 }
 
 // ---------- notifications ----------
-// ponytail: notifications are read/managed here but not generated yet (no listener port). Add when mentions/assignment
-// notifications are needed.
+// Notifications are generated asynchronously by src/listeners/notifications.rs on conversation/message/mention events.
 
 #[derive(sqlx::FromRow)]
 struct Notif {

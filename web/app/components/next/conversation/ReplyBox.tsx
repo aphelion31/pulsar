@@ -1,11 +1,6 @@
 // Chatwoot-style ReplyBox: Reply / Private Note tabs, Markdown toolbar, "/" Canned, "@" Mentions, Emoji Picker, KB Article insert, Voice Recorder, Attachments, Captain AI.
 import {
-  Bold,
   BookOpen,
-  Code,
-  Italic,
-  Link as LinkIcon,
-  List,
   Maximize2,
   Mic,
   Minimize2,
@@ -19,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Avatar from "~/components/next/Avatar";
+import { RichTextEditor } from "~/components/next/RichTextEditor";
 import { acct, api, type Agent, type Canned, type Message } from "~/lib/api";
 import { bytes } from "~/lib/format";
 
@@ -145,28 +141,18 @@ export function ReplyBox({
     }
   }
 
-  function wrapSelection(before: string, after = "") {
-    const el = textareaRef.current;
-    if (!el) return;
-    const start = el.selectionStart ?? text.length;
-    const end = el.selectionEnd ?? text.length;
-    const sel = text.slice(start, end) || "text";
-    const next = text.slice(0, start) + before + sel + after + text.slice(end);
-    setText(next);
-    setTimeout(() => {
-      el.focus();
-      el.setSelectionRange(start + before.length, start + before.length + sel.length);
-    }, 0);
-  }
-
   function insertText(snippet: string) {
     const el = textareaRef.current;
-    const pos = el?.selectionStart ?? text.length;
+    if (!el) {
+      setText((prev) => prev + snippet);
+      return;
+    }
+    const pos = el.selectionStart ?? text.length;
     const next = text.slice(0, pos) + snippet + text.slice(pos);
     setText(next);
     setTimeout(() => {
-      el?.focus();
-      el?.setSelectionRange(pos + snippet.length, pos + snippet.length);
+      el.focus();
+      el.setSelectionRange(pos + snippet.length, pos + snippet.length);
     }, 0);
   }
 
@@ -535,31 +521,22 @@ export function ReplyBox({
           </div>
         )}
 
-        {/* Formatting Strip + Editor */}
+        {/* Dual-mode Rich WYSIWYG + Markdown Editor */}
         <div className="px-3 pt-2">
-          <div className="mb-1 flex items-center gap-0.5 text-n-slate-10">
-            <button type="button" onClick={() => wrapSelection("**", "**")} title="Bold" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-              <Bold className="size-3.5" />
-            </button>
-            <button type="button" onClick={() => wrapSelection("_", "_")} title="Italic" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-              <Italic className="size-3.5" />
-            </button>
-            <button type="button" onClick={() => wrapSelection("`", "`")} title="Code" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-              <Code className="size-3.5" />
-            </button>
-            <button type="button" onClick={() => wrapSelection("[", "](https://)")} title="Link" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-              <LinkIcon className="size-3.5" />
-            </button>
-            <button type="button" onClick={() => wrapSelection("- ")} title="List" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-              <List className="size-3.5" />
-            </button>
-          </div>
-
-          <textarea
-            ref={textareaRef}
-            aria-label={note ? "Private note" : "Reply"}
+          <RichTextEditor
             value={text}
-            onChange={(e) => handleTextChange(e.target.value)}
+            onChange={handleTextChange}
+            compact
+            allowSplit
+            ariaLabel={note ? "Private note" : "Reply"}
+            rows={expanded ? 9 : 3}
+            minHeightClass={expanded ? "min-h-[168px]" : "min-h-[76px]"}
+            textareaRef={textareaRef}
+            placeholder={
+              note
+                ? "Write a private note... Type @ to mention teammates or / for canned responses"
+                : "Shift + Enter for new line. Start with '/' to select a Canned Response."
+            }
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
@@ -571,13 +548,6 @@ export function ReplyBox({
                 setArticleOpen(false);
               }
             }}
-            rows={expanded ? 9 : 3}
-            placeholder={
-              note
-                ? "Write a private note... Type @ to mention teammates or / for canned responses"
-                : "Shift + Enter for new line. Start with '/' to select a Canned Response."
-            }
-            className="w-full resize-none bg-transparent py-1 text-sm leading-relaxed text-n-slate-12 outline-none placeholder:text-n-slate-10"
           />
 
           {files.length > 0 && (

@@ -1,6 +1,7 @@
 import {
   Check,
   ChevronRight,
+  Globe,
   Keyboard,
   LogOut,
   Monitor,
@@ -15,6 +16,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import Avatar from "~/components/next/Avatar";
 import { api, signOut, type Profile } from "~/lib/api";
+import { getLocale, setLocale, SUPPORTED_LOCALES } from "~/lib/i18n";
 import { getTheme, setTheme, type ThemeMode } from "~/lib/theme";
 import { openCommandBar } from "~/components/next/CommandBar";
 
@@ -42,6 +44,7 @@ export default function SidebarProfileMenu({
     () => (me.accounts.find((a) => a.id === accountId) ?? me.accounts[0])?.availability || "online"
   );
   const [theme, setThemeState] = useState<ThemeMode>(getTheme);
+  const [locale, setLocaleState] = useState<string>(getLocale);
   const containerRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
@@ -51,11 +54,14 @@ export default function SidebarProfileMenu({
       if (next) setAvailability(next);
     };
     const syncTheme = () => setThemeState(getTheme());
+    const syncLocale = () => setLocaleState(getLocale());
     window.addEventListener("pulsar:availability-changed", syncAvail);
     window.addEventListener("pulsar:theme-changed", syncTheme);
+    window.addEventListener("pulsar:locale-changed", syncLocale);
     return () => {
       window.removeEventListener("pulsar:availability-changed", syncAvail);
       window.removeEventListener("pulsar:theme-changed", syncTheme);
+      window.removeEventListener("pulsar:locale-changed", syncLocale);
     };
   }, []);
 
@@ -192,6 +198,31 @@ export default function SidebarProfileMenu({
                 );
               })}
             </div>
+          </div>
+
+          {/* Language selector */}
+          <div className="px-2 py-1.5 border-b border-n-weak mb-1">
+            <label className="flex items-center justify-between gap-2 text-xs text-n-slate-11">
+              <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-n-slate-10">
+                <Globe className="size-3.5" /> Language
+              </span>
+              <select
+                aria-label="Language"
+                value={locale}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setLocaleState(next);
+                  void setLocale(next);
+                }}
+                className="h-7 max-w-36 rounded-md border border-n-weak bg-n-background px-2 text-xs text-n-slate-12 outline-none focus:border-n-brand"
+              >
+                {SUPPORTED_LOCALES.map((l) => (
+                  <option key={l.code} value={l.code}>
+                    {l.name}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           <ul className="m-0 list-none">

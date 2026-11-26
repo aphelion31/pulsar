@@ -305,13 +305,13 @@ async fn installation_config_str(db: &PgPool, name: &str) -> Option<String> {
     val.and_then(|v| parse_yaml_or_json_str(&v))
 }
 
-struct LlmConfig {
-    base_url: String,
-    api_key: String,
-    model: String,
+pub(crate) struct LlmConfig {
+    pub(crate) base_url: String,
+    pub(crate) api_key: String,
+    pub(crate) model: String,
 }
 
-async fn resolve_llm_config(
+pub(crate) async fn resolve_llm_config(
     db: &PgPool,
     model_override: Option<&str>,
 ) -> Result<LlmConfig, ApiError> {
@@ -358,7 +358,7 @@ async fn resolve_llm_config(
     })
 }
 
-async fn call_llm_chat(
+pub(crate) async fn call_llm_chat(
     cfg: &LlmConfig,
     messages: Vec<Value>,
     temperature: f64,

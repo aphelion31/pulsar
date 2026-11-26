@@ -66,18 +66,27 @@ pub async fn reset(email: &str, link: &str) -> anyhow::Result<()> {
     let body = format!(
         "Hello {email}!\n\nSomeone has requested a link to change your password. You can do this through the link below.\n\n{link}\n\nIf you didn't request this, please ignore this email.\nYour password won't change until you access the link above and create a new one."
     );
+    send_plain(email, subject, body, "password reset").await
+}
+
+pub async fn invite(email: &str, link: &str) -> anyhow::Result<()> {
+    let subject = "Invitation instructions";
+    let body = format!(
+        "Hello {email}!\n\nYou have been invited to Pulsar. You can set your password and activate your access through the link below.\n\n{link}"
+    );
+    send_plain(email, subject, body, "agent invite").await
+}
+
+async fn send_plain(email: &str, subject: &str, body: String, kind: &str) -> anyhow::Result<()> {
     let Some(host) = std::env::var("SMTP_ADDRESS")
         .ok()
         .filter(|h| !h.trim().is_empty())
     else {
-        // The body carries a live reset token: only print it when explicitly asked (local dev/tests).
+        // Body can carry a live reset token: only log it when explicitly asked (local dev/tests).
         if std::env::var("PULSAR_LOG_MAIL").as_deref() == Ok("1") {
-            tracing::info!(to = email, subject, body, "password reset email");
+            tracing::info!(to = email, subject, body, "{kind} email");
         } else {
-            tracing::warn!(
-                to = email,
-                "SMTP_ADDRESS not set; password reset email not sent"
-            );
+            tracing::warn!(to = email, "SMTP_ADDRESS not set; {kind} email not sent");
         }
         return Ok(());
     };

@@ -268,7 +268,12 @@ function DataExportsPanel({ accountId }: { accountId: number }) {
           {exports.map((ex) => (
             <li key={ex.id} className="flex items-center justify-between gap-4 py-3">
               <div>
-                <div className="text-[14px] font-medium text-ink">{ex.name}</div>
+                <Link
+                  to={`/accounts/${accountId}/settings/data/exports/${ex.id}`}
+                  className="text-[14px] font-medium text-ink hover:text-accent hover:underline"
+                >
+                  {ex.name}
+                </Link>
                 <div className="text-[12px] text-ink-3 capitalize">
                   {ex.data_type} · {ex.status} · {ex.processed_records} records
                 </div>

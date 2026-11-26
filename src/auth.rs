@@ -1,9 +1,11 @@
 //! devise_token_auth compatible auth + profile + account endpoints.
+use std::collections::HashMap;
+
 use axum::{
     Json,
-    extract::{FromRequest, Multipart, Path, Request, State},
+    extract::{FromRequest, Multipart, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
 };
 use base64::Engine;
 use rand::Rng;
@@ -20,11 +22,17 @@ pub async fn notification_subscription_destroy(
     user: CurrentUser,
     req: Request,
 ) -> ApiResult<StatusCode> {
-    let query_token = req.uri().query().and_then(|q| {
-        url::form_urlencoded::parse(q.as_bytes())
-            .find(|(k, _)| k == "push_token")
-            .map(|(_, v)| v.into_owned())
-    });
+    let mut query_token: Option<String> = None;
+    for k in ["push_token", "endpoint", "identifier"] {
+        if let Some(v) = req.uri().query().and_then(|q| {
+            url::form_urlencoded::parse(q.as_bytes())
+                .find(|(qk, _)| qk == k)
+                .map(|(_, qv)| qv.into_owned())
+        }) {
+            query_token = Some(v);
+            break;
+        }
+    }
     let content_type = req
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
@@ -39,18 +47,33 @@ pub async fn notification_subscription_destroy(
             serde_json::from_slice(&body).map_err(|_| ApiError::bad("Invalid JSON"))?;
         value
             .get("push_token")
+            .or_else(|| value.get("endpoint"))
+            .or_else(|| value.get("identifier"))
             .and_then(Value::as_str)
             .map(str::to_owned)
     } else if content_type.starts_with("application/x-www-form-urlencoded") {
         url::form_urlencoded::parse(&body)
-            .find(|(k, _)| k == "push_token")
+            .find(|(k, _)| matches!(k.as_ref(), "push_token" | "endpoint" | "identifier"))
             .map(|(_, v)| v.into_owned())
     } else {
         None
     };
-    if let Some(token) = body_token.or(query_token) {
-        sqlx::query("DELETE FROM notification_subscriptions WHERE id = (SELECT id FROM notification_subscriptions WHERE user_id = $1 AND subscription_attributes->>'push_token' = $2 ORDER BY id LIMIT 1)")
-            .bind(user.id).bind(token).execute(&db).await?;
+    if let Some(token) = body_token.or(query_token).filter(|t| !t.trim().is_empty()) {
+        sqlx::query(
+            "DELETE FROM notification_subscriptions
+             WHERE id IN (
+                 SELECT id FROM notification_subscriptions
+                 WHERE user_id = $1
+                   AND (identifier = $2
+                        OR subscription_attributes->>'push_token' = $2
+                        OR subscription_attributes->>'endpoint' = $2)
+                 ORDER BY id LIMIT 1
+             )",
+        )
+        .bind(user.id)
+        .bind(token)
+        .execute(&db)
+        .await?;
     }
     Ok(StatusCode::OK)
 }
@@ -230,7 +253,7 @@ pub async fn trusted_devices_destroy(
     Ok(StatusCode::OK)
 }
 
-fn random_token(bytes: usize) -> String {
+pub(crate) fn random_token(bytes: usize) -> String {
     let mut b = vec![0u8; bytes];
     rand::thread_rng().fill(&mut b[..]);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
@@ -257,12 +280,15 @@ pub fn token_valid(tokens: Option<&Value>, client: &str, token: &str) -> bool {
 /// bcrypt cost 10 is ~50 ms, and every dashboard request carries a devise token: without this, each
 /// request paid it on the async runtime. Cache successful checks keyed by sha256(token, stored hash), so a
 /// rotated or revoked token (new stored hash) is re-verified and a wrong token never hits the cache.
-/// Same idea as devise_token_auth's `token_validation_response` cache.
-/// ponytail: unbounded set cleared at 10k entries; use an LRU if tokens churn faster than that.
+/// Same idea as devise_token_auth's `token_validation_response` bounded FIFO cache.
 fn bcrypt_cached(token: &str, hash: &str) -> bool {
     use sha2::{Digest, Sha256};
-    use std::{collections::HashSet, sync::Mutex};
-    static OK: std::sync::LazyLock<Mutex<HashSet<[u8; 32]>>> =
+    use std::{
+        collections::{HashSet, VecDeque},
+        sync::Mutex,
+    };
+    const CAP: usize = 10_000;
+    static OK: std::sync::LazyLock<Mutex<(HashSet<[u8; 32]>, VecDeque<[u8; 32]>)>> =
         std::sync::LazyLock::new(Default::default);
     let key: [u8; 32] = Sha256::new()
         .chain_update(token)
@@ -270,16 +296,21 @@ fn bcrypt_cached(token: &str, hash: &str) -> bool {
         .chain_update(hash)
         .finalize()
         .into();
-    if OK.lock().map(|s| s.contains(&key)).unwrap_or(false) {
+    if OK.lock().map(|g| g.0.contains(&key)).unwrap_or(false) {
         return true;
     }
     let ok = bcrypt::verify(token, hash).unwrap_or(false);
     if ok {
-        if let Ok(mut s) = OK.lock() {
-            if s.len() >= 10_000 {
-                s.clear();
+        if let Ok(mut g) = OK.lock() {
+            if !g.0.contains(&key) {
+                if g.1.len() >= CAP
+                    && let Some(oldest) = g.1.pop_front()
+                {
+                    g.0.remove(&oldest);
+                }
+                g.0.insert(key);
+                g.1.push_back(key);
             }
-            s.insert(key);
         }
     }
     ok
@@ -458,10 +489,44 @@ pub(crate) fn auth_headers(uid: &str, client: &str, token: &str, expiry: i64) ->
     h
 }
 
-/// Failed-login throttle per normalized email (in memory, per process): 10 failures per 15 minutes lock
-/// further attempts for that email. Successful logins do not count, so a busy user is never locked out.
-/// ponytail: per-process; multi-instance deploys need a shared store or the proxy's limit_req.
-fn login_failures(email: &str, record_failure: bool) -> usize {
+/// Failed-login throttle per normalized email: 10 failures per 15 minutes lock further attempts.
+/// Uses in-memory tracking on single-node deployments, and PostgreSQL (`pulsar_rate_limits`)
+/// when `PULSAR_MULTI_NODE=1`.
+/// Generic 15-minute sliding/bucket rate limit check backed by in-memory map or `pulsar_rate_limits`.
+pub(crate) async fn check_rate_limit(db: &PgPool, key: &str, record_hit: bool) -> usize {
+    if std::env::var("PULSAR_MULTI_NODE").as_deref() == Ok("1") {
+        if record_hit {
+            let hits: i32 = sqlx::query_scalar(
+                "INSERT INTO pulsar_rate_limits (bucket, hits, window_start)
+                 VALUES ($1, 1, now())
+                 ON CONFLICT (bucket) DO UPDATE SET
+                   hits = CASE WHEN pulsar_rate_limits.window_start < now() - interval '15 minutes' THEN 1 ELSE pulsar_rate_limits.hits + 1 END,
+                   window_start = CASE WHEN pulsar_rate_limits.window_start < now() - interval '15 minutes' THEN now() ELSE pulsar_rate_limits.window_start END
+                 RETURNING hits",
+            )
+            .bind(key)
+            .fetch_one(db)
+            .await
+            .unwrap_or(0);
+            return hits.max(0) as usize;
+        }
+        let hits: Option<i32> = sqlx::query_scalar(
+            "SELECT hits FROM pulsar_rate_limits WHERE bucket = $1 AND window_start >= now() - interval '15 minutes'",
+        )
+        .bind(key)
+        .fetch_optional(db)
+        .await
+        .unwrap_or(None);
+        return hits.unwrap_or(0).max(0) as usize;
+    }
+    mem_login_failures(key, record_hit)
+}
+
+async fn check_login_failures(db: &PgPool, key: &str, record_failure: bool) -> usize {
+    check_rate_limit(db, key, record_failure).await
+}
+
+fn mem_login_failures(email: &str, record_failure: bool) -> usize {
     use std::{
         collections::HashMap,
         sync::Mutex,
@@ -484,7 +549,7 @@ fn login_failures(email: &str, record_failure: bool) -> usize {
 }
 const LOGIN_FAILURE_LIMIT: usize = 10;
 
-fn reset_digest(token: &str) -> String {
+pub(crate) fn reset_digest(token: &str) -> String {
     use hmac::{Hmac, Mac};
     let secret =
         std::env::var("SECRET_KEY_BASE").unwrap_or_else(|_| "pulsar-dev-secret-change-me".into());
@@ -511,7 +576,7 @@ pub async fn request_password_reset(
         .trim()
         .to_lowercase();
     // Separate throttle namespace avoids affecting sign-in lockout.
-    if login_failures(&format!("reset:{email}"), true) <= LOGIN_FAILURE_LIMIT {
+    if check_login_failures(&db, &format!("reset:{email}"), true).await <= LOGIN_FAILURE_LIMIT {
         let token = random_token(24);
         let row: Option<(String,)> = sqlx::query_as("UPDATE users SET reset_password_token=$1, reset_password_sent_at=now(), updated_at=now() WHERE lower(email)=$2 AND provider='email' RETURNING email")
             .bind(reset_digest(&token)).bind(&email).fetch_optional(&db).await?;
@@ -612,29 +677,29 @@ pub async fn sign_in(
     // Chatwoot #5171 (lockable) / rack_attack 'login/email': after 10 failed attempts for an email within 15
     // minutes, refuse further attempts, whether or not the account exists.
     let key = email.trim().to_lowercase();
-    if login_failures(&key, false) >= LOGIN_FAILURE_LIMIT {
+    if check_login_failures(&db, &key, false).await >= LOGIN_FAILURE_LIMIT {
         return Err(ApiError(
             StatusCode::TOO_MANY_REQUESTS,
             "Too many login attempts. Please try again later.".into(),
         ));
     }
-    let fail = || {
-        login_failures(&key, true);
-        bad()
-    };
     let row: Option<(i64, String, String, Option<Value>, Option<chrono::NaiveDateTime>)> = sqlx::query_as(
         "SELECT id::bigint, uid, encrypted_password, tokens::jsonb, confirmed_at FROM users WHERE lower(email) = $1 AND provider='email'",
     )
-    .bind(email.trim().to_lowercase())
+    .bind(&key)
     .fetch_optional(&db)
     .await?;
-    let (id, uid, enc, tokens, confirmed) = row.ok_or_else(fail)?;
+    let Some((id, uid, enc, tokens, confirmed)) = row else {
+        check_login_failures(&db, &key, true).await;
+        return Err(bad());
+    };
     let pw_ok =
         tokio::task::spawn_blocking(move || bcrypt::verify(&password, &enc).unwrap_or(false))
             .await
             .unwrap_or(false);
     if !pw_ok {
-        return Err(fail());
+        check_login_failures(&db, &key, true).await;
+        return Err(bad());
     }
     if confirmed.is_none() {
         return Err(ApiError(
@@ -683,7 +748,7 @@ async fn sign_in_mfa(db: &PgPool, mfa_token: &str, body: &Value) -> ApiResult<Re
     };
     let id = crate::mfa::verify_mfa_token(mfa_token).ok_or_else(bad)?;
     let key = format!("mfa:{id}");
-    if login_failures(&key, false) >= LOGIN_FAILURE_LIMIT {
+    if check_login_failures(db, &key, false).await >= LOGIN_FAILURE_LIMIT {
         return Err(ApiError(
             StatusCode::TOO_MANY_REQUESTS,
             "Too many login attempts. Please try again later.".into(),
@@ -692,7 +757,7 @@ async fn sign_in_mfa(db: &PgPool, mfa_token: &str, body: &Value) -> ApiResult<Re
     let otp = body["otp_code"].as_str();
     let backup = body["backup_code"].as_str();
     if !crate::mfa::consume_for_sign_in(db, id, otp, backup).await? {
-        login_failures(&key, true);
+        check_login_failures(db, &key, true).await;
         return Err(ApiError(
             StatusCode::UNPROCESSABLE_ENTITY,
             "Invalid verification code".into(),
@@ -903,9 +968,28 @@ pub async fn profile_avatar_destroy(State(db): State<PgPool>, user: CurrentUser)
     Ok(Json(user_json(&db, user.id).await?))
 }
 
-/// POST /api/v1/profile/resend_confirmation. Confirmation email sending is not ported; mirrors Chatwoot's `head :ok`.
-pub async fn resend_confirmation(_user: CurrentUser) -> StatusCode {
-    StatusCode::OK
+/// POST /api/v1/profile/resend_confirmation: generates a fresh confirmation token and sends the confirmation email if unconfirmed.
+pub async fn resend_confirmation(
+    State(db): State<PgPool>,
+    user: CurrentUser,
+) -> ApiResult<StatusCode> {
+    let row: Option<(String, String, Option<chrono::NaiveDateTime>)> =
+        sqlx::query_as("SELECT name, email, confirmed_at FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_optional(&db)
+            .await?;
+    if let Some((name, email, None)) = row {
+        let token = random_token(20);
+        sqlx::query(
+            "UPDATE users SET confirmation_token = $1, confirmation_sent_at = now(), updated_at = now() WHERE id = $2",
+        )
+        .bind(&token)
+        .bind(user.id)
+        .execute(&db)
+        .await?;
+        crate::registration::send_confirmation_email(&email, &name, &token, None).await;
+    }
+    Ok(StatusCode::OK)
 }
 
 /// POST /api/v1/profile/reset_access_token: regenerates the user's API access token.
@@ -1186,6 +1270,269 @@ pub async fn update_active_at(
         .execute(&db)
         .await?;
     Ok(StatusCode::OK)
+}
+
+/// Mint a single-use, 5-minute SSO token stored hashed in `pulsar_sso_tokens`.
+pub(crate) async fn issue_sso_token(db: &PgPool, user_id: i64) -> Result<String, ApiError> {
+    let _ = sqlx::query("DELETE FROM pulsar_sso_tokens WHERE expires_at < now()")
+        .execute(db)
+        .await;
+    let raw = random_token(32);
+    sqlx::query(
+        "INSERT INTO pulsar_sso_tokens (token, user_id, expires_at) VALUES ($1, $2, now() + interval '5 minutes')",
+    )
+    .bind(reset_digest(&raw))
+    .bind(user_id)
+    .execute(db)
+    .await?;
+    Ok(raw)
+}
+
+/// POST /auth/sso_exchange {email?, sso_auth_token}
+pub async fn sso_exchange(State(db): State<PgPool>, Json(body): Json<Value>) -> ApiResult<Response> {
+    let raw = body["sso_auth_token"]
+        .as_str()
+        .or_else(|| body["token"].as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "Invalid SSO token".into()))?;
+    let email_filter = body["email"]
+        .as_str()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
+
+    let user_id: Option<i64> = sqlx::query_scalar(
+        "DELETE FROM pulsar_sso_tokens WHERE token = $1 AND expires_at > now() RETURNING user_id::bigint",
+    )
+    .bind(reset_digest(raw))
+    .fetch_optional(&db)
+    .await?;
+    let Some(user_id) = user_id else {
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "Invalid or expired SSO token".into(),
+        ));
+    };
+
+    let row: Option<(String, String, Option<Value>, Option<chrono::NaiveDateTime>)> = sqlx::query_as(
+        "SELECT uid, email, tokens::jsonb, confirmed_at FROM users WHERE id = $1::bigint",
+    )
+    .bind(user_id)
+    .fetch_optional(&db)
+    .await?;
+    let Some((uid, user_email, tokens, confirmed)) = row else {
+        return Err(ApiError(StatusCode::UNAUTHORIZED, "Invalid SSO user".into()));
+    };
+    if let Some(ref want) = email_filter
+        && user_email.trim().to_lowercase() != *want
+    {
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "SSO email mismatch".into(),
+        ));
+    }
+    if confirmed.is_none() {
+        sqlx::query("UPDATE users SET confirmed_at = now(), updated_at = now() WHERE id = $1::bigint")
+            .bind(user_id)
+            .execute(&db)
+            .await?;
+    }
+    let (client, token, expiry) = issue_token(&db, user_id, tokens).await?;
+    sqlx::query(
+        "UPDATE users SET sign_in_count = sign_in_count + 1, last_sign_in_at = current_sign_in_at, current_sign_in_at = now() WHERE id = $1::bigint",
+    )
+    .bind(user_id)
+    .execute(&db)
+    .await?;
+    let data = user_json(&db, user_id).await?;
+    Ok((
+        auth_headers(&uid, &client, &token, expiry),
+        Json(json!({ "data": data })),
+    )
+        .into_response())
+}
+
+fn sign_oauth_state(ts: i64, nonce: &str) -> String {
+    let sig = &reset_digest(&format!("google_oauth:{ts}.{nonce}"))[..32];
+    format!("{ts}.{nonce}.{sig}")
+}
+
+fn verify_oauth_state(state: &str) -> bool {
+    let mut parts = state.split('.');
+    let (Some(ts_s), Some(nonce), Some(sig), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    let Ok(ts) = ts_s.parse::<i64>() else {
+        return false;
+    };
+    let now = chrono::Utc::now().timestamp();
+    if (now - ts).abs() > 600 || nonce.is_empty() {
+        return false;
+    }
+    let expected = &reset_digest(&format!("google_oauth:{ts}.{nonce}"))[..32];
+    crate::mfa::ct_eq(expected.as_bytes(), sig.as_bytes())
+}
+
+fn google_redirect_uri(st: &AppState) -> String {
+    std::env::var("GOOGLE_OAUTH_REDIRECT_URI")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            format!(
+                "{}/omniauth/google_oauth2/callback",
+                st.frontend_url.trim_end_matches('/')
+            )
+        })
+}
+
+/// GET /omniauth/google_oauth2
+pub async fn google_omniauth_start(State(st): State<AppState>) -> Response {
+    let base = st.frontend_url.trim_end_matches('/');
+    let Some(client_id) = std::env::var("GOOGLE_OAUTH_CLIENT_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        return Redirect::to(&format!("{base}/app/login?error=omniauth_not_configured"))
+            .into_response();
+    };
+    let auth_url = std::env::var("GOOGLE_OAUTH_AUTH_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "https://accounts.google.com/o/oauth2/v2/auth".into());
+    let state = sign_oauth_state(chrono::Utc::now().timestamp(), &random_token(12));
+    let redirect_uri = google_redirect_uri(&st);
+    let qs = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("client_id", &client_id)
+        .append_pair("redirect_uri", &redirect_uri)
+        .append_pair("response_type", "code")
+        .append_pair("scope", "openid email profile")
+        .append_pair("state", &state)
+        .append_pair("prompt", "select_account")
+        .append_pair("access_type", "online")
+        .finish();
+    let sep = if auth_url.contains('?') { "&" } else { "?" };
+    Redirect::to(&format!("{auth_url}{sep}{qs}")).into_response()
+}
+
+/// GET /omniauth/google_oauth2/callback
+pub async fn google_omniauth_callback(
+    State(st): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let base = st.frontend_url.trim_end_matches('/');
+    let fail = |code: &str| Redirect::to(&format!("{base}/app/login?error={code}")).into_response();
+
+    if params.contains_key("error") {
+        return fail("omniauth_denied");
+    }
+    let Some(state) = params.get("state").map(String::as_str) else {
+        return fail("omniauth_invalid_state");
+    };
+    if !verify_oauth_state(state) {
+        return fail("omniauth_invalid_state");
+    }
+    let Some(code) = params
+        .get("code")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    else {
+        return fail("omniauth_missing_code");
+    };
+    let (Some(client_id), Some(client_secret)) = (
+        std::env::var("GOOGLE_OAUTH_CLIENT_ID")
+            .ok()
+            .filter(|s| !s.trim().is_empty()),
+        std::env::var("GOOGLE_OAUTH_CLIENT_SECRET")
+            .ok()
+            .filter(|s| !s.trim().is_empty()),
+    ) else {
+        return fail("omniauth_not_configured");
+    };
+    let token_url = std::env::var("GOOGLE_OAUTH_TOKEN_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://oauth2.googleapis.com/token".into());
+    let userinfo_url = std::env::var("GOOGLE_OAUTH_USERINFO_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://www.googleapis.com/oauth2/v3/userinfo".into());
+    let redirect_uri = google_redirect_uri(&st);
+
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    else {
+        return fail("omniauth_http_error");
+    };
+    let body_form = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("code", code)
+        .append_pair("client_id", client_id.trim())
+        .append_pair("client_secret", client_secret.trim())
+        .append_pair("redirect_uri", &redirect_uri)
+        .append_pair("grant_type", "authorization_code")
+        .finish();
+    let Ok(tok_resp) = client
+        .post(&token_url)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(body_form)
+        .send()
+        .await
+    else {
+        return fail("omniauth_token_exchange_failed");
+    };
+    if !tok_resp.status().is_success() {
+        return fail("omniauth_token_exchange_failed");
+    }
+    let tok_json: Value = serde_json::from_slice(&tok_resp.bytes().await.unwrap_or_default())
+        .unwrap_or(Value::Null);
+    let Some(access_token) = tok_json["access_token"].as_str().filter(|s| !s.is_empty()) else {
+        return fail("omniauth_token_missing");
+    };
+    let Ok(ui_resp) = client
+        .get(&userinfo_url)
+        .bearer_auth(access_token)
+        .send()
+        .await
+    else {
+        return fail("omniauth_userinfo_failed");
+    };
+    if !ui_resp.status().is_success() {
+        return fail("omniauth_userinfo_failed");
+    }
+    let ui_json: Value =
+        serde_json::from_slice(&ui_resp.bytes().await.unwrap_or_default()).unwrap_or(Value::Null);
+    if ui_json.get("email_verified").and_then(Value::as_bool) == Some(false) {
+        return fail("omniauth_email_unverified");
+    }
+    let Some(email) = ui_json["email"]
+        .as_str()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s.contains('@'))
+    else {
+        return fail("omniauth_email_missing");
+    };
+    let user_id: Option<i64> =
+        sqlx::query_scalar("SELECT id::bigint FROM users WHERE lower(email) = $1 ORDER BY id LIMIT 1")
+            .bind(&email)
+            .fetch_optional(&st.db)
+            .await
+            .unwrap_or(None);
+    let Some(uid) = user_id else {
+        return fail("omniauth_user_not_found");
+    };
+    let Ok(sso) = issue_sso_token(&st.db, uid).await else {
+        return fail("omniauth_sso_failed");
+    };
+    let qs = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("email", &email)
+        .append_pair("sso_auth_token", &sso)
+        .finish();
+    Redirect::to(&format!("{base}/app/login?{qs}")).into_response()
 }
 
 #[cfg(test)]

@@ -23,6 +23,7 @@ const PAGE_SIZE: i64 = 25;
 pub fn account_routes() -> Router<AppState> {
     Router::new()
         .route("/calls", get(calls_index))
+        .route("/calls/{id}/transcribe", post(transcribe_call))
         .route("/contacts/{contact_id}/call", post(contact_call))
         .route("/whatsapp_calls/initiate", post(wa_call_initiate))
         .route("/whatsapp_calls/{id}", get(wa_call_show))
@@ -1359,4 +1360,208 @@ async fn set_whatsapp_callback_permission(
     )
     .await?;
     Ok(StatusCode::OK)
+}
+
+async fn call_whisper_transcribe(
+    db: &PgPool,
+    filename: &str,
+    content_type: &str,
+    audio_bytes: &[u8],
+) -> Result<String, ApiError> {
+    let llm = crate::captain::resolve_llm_config(db, None).await?;
+    let base_url = std::env::var("WHISPER_API_URL")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(llm.base_url);
+    let api_key = std::env::var("WHISPER_API_KEY")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(llm.api_key);
+    if api_key.is_empty() && base_url.contains("api.openai.com") {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Audio transcription requires OPENAI_API_KEY or CAPTAIN_LLM_API_KEY".into(),
+        ));
+    }
+    let model = std::env::var("WHISPER_MODEL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "whisper-1".into());
+    let safe_name: String = filename
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let safe_name = if safe_name.is_empty() {
+        "audio.ogg".to_string()
+    } else {
+        safe_name
+    };
+    let safe_ct = if content_type.contains('/') && !content_type.contains(['\r', '\n']) {
+        content_type
+    } else {
+        "audio/ogg"
+    };
+
+    let boundary = format!("----PulsarWhisper{}", uuid::Uuid::new_v4().simple());
+    let mut body = Vec::with_capacity(audio_bytes.len() + 512);
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{model}\r\n\
+             --{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{safe_name}\"\r\nContent-Type: {safe_ct}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(audio_bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|_| ApiError::bad("Failed to initialize transcription client"))?;
+    let mut req = client
+        .post(format!("{base_url}/audio/transcriptions"))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body);
+    if !api_key.is_empty() {
+        req = req.bearer_auth(api_key);
+    }
+    let resp = req.send().await.map_err(|e| {
+        tracing::warn!(error = %e, "whisper request failed");
+        ApiError(
+            StatusCode::BAD_GATEWAY,
+            "Transcription provider request failed".into(),
+        )
+    })?;
+    let status = resp.status();
+    let raw = resp.bytes().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(ApiError(
+            StatusCode::BAD_GATEWAY,
+            format!("Transcription provider returned {status}"),
+        ));
+    }
+    let parsed: Value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
+    let text = parsed["text"]
+        .as_str()
+        .map(str::trim)
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| String::from_utf8_lossy(&raw).trim().to_string());
+    Ok(text)
+}
+
+/// POST /api/v1/accounts/{account_id}/conversations/{display_id}/messages/{message_id}/transcribe
+pub(crate) async fn transcribe_message(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, display_id, message_id)): Path<(i64, i64, i64)>,
+) -> ApiResult {
+    let au = require_account(&st.db, &user, account_id).await?;
+    let row: Option<(i64, i64, Option<String>)> = sqlx::query_as(
+        "SELECT c.id::bigint, c.inbox_id::bigint, m.content_attributes::jsonb->>'transcribed_text'
+         FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+         WHERE c.account_id = $1 AND c.display_id = $2 AND m.id = $3 AND m.account_id = $1",
+    )
+    .bind(account_id)
+    .bind(display_id)
+    .bind(message_id)
+    .fetch_optional(&st.db)
+    .await?;
+    let (conv_id, inbox_id, existing_text) = row.ok_or_else(ApiError::not_found)?;
+    if !au.is_admin() {
+        let member: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM inbox_members WHERE inbox_id = $1 AND user_id = $2")
+                .bind(inbox_id as i32)
+                .bind(user.id as i32)
+                .fetch_optional(&st.db)
+                .await?;
+        if member.is_none() {
+            return Err(ApiError::not_found());
+        }
+    }
+    if let Some(existing) = existing_text.filter(|s| !s.trim().is_empty()) {
+        return Ok(Json(json!({
+            "content": existing,
+            "transcribed_text": existing,
+            "message_id": message_id,
+            "conversation_id": conv_id,
+        })));
+    }
+    let (filename, ct, bytes) = crate::storage::read_first_audio_blob(&st.db, message_id).await?;
+    let text = call_whisper_transcribe(&st.db, &filename, &ct, &bytes).await?;
+    sqlx::query(
+        "UPDATE messages
+         SET content_attributes = (COALESCE(content_attributes::jsonb, '{}'::jsonb) || jsonb_build_object('transcribed_text', $1::text))::json,
+             updated_at = now()
+         WHERE id = $2::bigint AND account_id = $3",
+    )
+    .bind(&text)
+    .bind(message_id)
+    .bind(account_id as i32)
+    .execute(&st.db)
+    .await?;
+    Ok(Json(json!({
+        "content": text,
+        "transcribed_text": text,
+        "message_id": message_id,
+        "conversation_id": conv_id,
+    })))
+}
+
+/// POST /api/v1/accounts/{account_id}/calls/{id}/transcribe
+async fn transcribe_call(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    body: Option<Json<Value>>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id).await?;
+    let row: Option<(Option<Value>, Option<String>)> = sqlx::query_as(
+        "SELECT meta, transcript FROM calls WHERE account_id = $1 AND id = $2",
+    )
+    .bind(account_id)
+    .bind(id)
+    .fetch_optional(&st.db)
+    .await?;
+    let (meta, existing_transcript) = row.ok_or_else(ApiError::not_found)?;
+    if let Some(t) = existing_transcript.filter(|s| !s.trim().is_empty()) {
+        let mut call = call_json(&st.db, account_id, id).await?;
+        call["transcript"] = json!(t);
+        return Ok(Json(call));
+    }
+    let rec_url = body
+        .as_ref()
+        .and_then(|b| sopt(&b.0, "recording_url"))
+        .or_else(|| {
+            meta.as_ref()
+                .and_then(|m| m["recording_url"].as_str())
+                .map(str::to_string)
+        })
+        .ok_or_else(|| ApiError::bad("Call has no recording_url"))?;
+    let (bytes, ct) = crate::listeners::webhooks::safe_fetch_bytes(&rec_url, 25 * 1024 * 1024)
+        .await
+        .map_err(|_| ApiError::bad("Failed to fetch call recording"))?;
+    let text = call_whisper_transcribe(&st.db, "call-recording.mp3", &ct, &bytes).await?;
+    sqlx::query("UPDATE calls SET transcript = $1, updated_at = now() WHERE account_id = $2 AND id = $3")
+        .bind(&text)
+        .bind(account_id)
+        .bind(id)
+        .execute(&st.db)
+        .await?;
+    let val = call_json(&st.db, account_id, id).await?;
+    st.hub.to_account(account_id, "voice_call.updated", val.clone());
+    Ok(Json(val))
 }

@@ -1,7 +1,8 @@
-import { ArrowLeft, Bold, Code, Eye, Heading2, Italic, Link as LinkIcon, List, Save, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { ArrowLeft, Save, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
 import Button from "~/components/next/Button";
+import { RichTextEditor } from "~/components/next/RichTextEditor";
 import { acct, api } from "~/lib/api";
 import type { ShellCtx } from "../shell";
 
@@ -34,24 +35,9 @@ export default function HelpCenterArticleEditor() {
   const [categoryId, setCategoryId] = useState<string>("");
   const [status, setStatus] = useState<"draft" | "published" | "archived">("draft");
   const [metaTags, setMetaTags] = useState("");
-  const [preview, setPreview] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
-
-  function insertMd(before: string, after = "") {
-    const el = bodyRef.current;
-    if (!el) return;
-    const s = el.selectionStart ?? content.length;
-    const e = el.selectionEnd ?? content.length;
-    const sel = content.slice(s, e) || "text";
-    setContent(content.slice(0, s) + before + sel + after + content.slice(e));
-    setTimeout(() => {
-      el.focus();
-      el.setSelectionRange(s + before.length, s + before.length + sel.length);
-    }, 0);
-  }
 
   useEffect(() => {
     if (!portalSlug) return;
@@ -185,9 +171,6 @@ export default function HelpCenterArticleEditor() {
           <h1 className="text-lg font-medium">{isEdit ? "Edit Article" : "New Article"}</h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button outline slate sm onClick={() => setPreview((v) => !v)} label={preview ? "Edit" : "Preview"}>
-            <Eye className="size-3.5" />
-          </Button>
           {isEdit && articleId && (
             <Button ghost ruby sm onClick={handleDelete} label="Delete">
               <Trash2 className="size-3.5" />
@@ -218,30 +201,18 @@ export default function HelpCenterArticleEditor() {
               placeholder="Article title"
               className="w-full rounded-xl border border-n-weak bg-n-solid-1 px-4 py-3 text-xl font-medium outline-none focus:border-n-brand"
             />
-            {preview ? (
-              <div className="min-h-[420px] whitespace-pre-wrap rounded-xl border border-n-weak bg-n-solid-1 p-6 text-sm leading-relaxed">
-                {content || "Nothing to preview yet."}
-              </div>
-            ) : (
-              <div className="overflow-hidden rounded-xl border border-n-weak bg-n-solid-1">
-                <div className="flex items-center gap-1 border-b border-n-weak bg-n-solid-2 px-3 py-1.5 text-n-slate-11">
-                  <button type="button" onClick={() => insertMd("## ")} title="Heading" className="grid size-7 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12"><Heading2 className="size-4" /></button>
-                  <button type="button" onClick={() => insertMd("**", "**")} title="Bold" className="grid size-7 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12"><Bold className="size-4" /></button>
-                  <button type="button" onClick={() => insertMd("_", "_")} title="Italic" className="grid size-7 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12"><Italic className="size-4" /></button>
-                  <button type="button" onClick={() => insertMd("`", "`")} title="Code" className="grid size-7 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12"><Code className="size-4" /></button>
-                  <button type="button" onClick={() => insertMd("[", "](https://)")} title="Link" className="grid size-7 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12"><LinkIcon className="size-4" /></button>
-                  <button type="button" onClick={() => insertMd("- ")} title="Bullet list" className="grid size-7 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12"><List className="size-4" /></button>
-                </div>
-                <textarea
-                  ref={bodyRef}
-                  rows={18}
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  placeholder="Write article content in Markdown..."
-                  className="w-full resize-y bg-transparent p-4 font-mono text-sm outline-none"
-                />
-              </div>
-            )}
+            <div className="overflow-hidden rounded-xl border border-n-weak bg-n-solid-1">
+              <RichTextEditor
+                value={content}
+                onChange={setContent}
+                allowHeading
+                allowSplit
+                rows={18}
+                minHeightClass="min-h-[420px]"
+                ariaLabel="Article body"
+                placeholder="Write article content..."
+              />
+            </div>
           </div>
 
           <aside className="space-y-4 rounded-xl border border-n-weak bg-n-solid-1 p-5 h-fit">

@@ -12,6 +12,7 @@ mod common;
 mod companies;
 mod contacts;
 mod conversations;
+mod custom_domains;
 mod data_exports;
 mod data_imports;
 mod dyte;
@@ -40,6 +41,7 @@ mod storage;
 mod super_admin;
 mod voice;
 mod web;
+mod web_push;
 mod widget;
 
 use axum::{
@@ -67,6 +69,7 @@ fn account_routes() -> Router<AppState> {
         .merge(automation::routes())
         .merge(bots::routes())
         .merge(account_more::routes())
+        .merge(custom_domains::routes())
         .merge(data_exports::routes())
         .merge(data_imports::routes())
         .merge(channels::twilio::account_routes())
@@ -153,7 +156,7 @@ async fn enterprise_billing_summary(
     let attrs = attrs.unwrap_or_else(|| serde_json::json!({}));
     Ok(axum::Json(serde_json::json!({
         "id": account_id,
-        "plan": attrs.get("plan_name").and_then(|v| v.as_str()).unwrap_or("Enterprise"),
+        "plan": attrs.get("plan_name").and_then(|v| v.as_str()).unwrap_or("Open Source Enterprise"),
         "billing_currency": attrs.get("billing_currency").and_then(|v| v.as_str()).unwrap_or("usd"),
         "stripe_customer_id": attrs.get("stripe_customer_id"),
         "marked_for_deletion_at": attrs.get("marked_for_deletion_at"),
@@ -298,6 +301,12 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(web::health))
         .route("/auth/sign_in", post(auth::sign_in))
+        .route("/auth/sso_exchange", post(auth::sso_exchange))
+        .route("/omniauth/google_oauth2", get(auth::google_omniauth_start))
+        .route(
+            "/omniauth/google_oauth2/callback",
+            get(auth::google_omniauth_callback),
+        )
         .route("/auth/confirmation", post(registration::confirm))
         .route(
             "/resend_confirmation",
@@ -391,14 +400,9 @@ pub fn app(state: AppState) -> Router {
             "/api/v1/changelog",
             get(|| async { axum::Json(serde_json::json!({ "posts": [] })) }),
         )
-        .route(
-            "/api",
-            get(|| async {
-                axum::Json(
-                    serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "app": "pulsar" }),
-                )
-            }),
-        )
+        .route("/api", get(web::api_info))
+        .route("/swagger", get(web::swagger_ui))
+        .route("/swagger/openapi.json", get(web::openapi_json))
         .route(
             "/robots.txt",
             get(|| async { "User-agent: *\nDisallow: /app\n" }),
@@ -475,6 +479,7 @@ pub fn app(state: AppState) -> Router {
             post(enterprise_checkout_stub),
         )
         .merge(captain::public_routes())
+        .merge(email_inbound::webhook_routes())
         .merge(voice::public_routes())
         .merge(widget::routes())
         .merge(dyte::widget_routes())
@@ -505,6 +510,7 @@ pub fn app(state: AppState) -> Router {
         )
         .nest_service("/app/", spa)
         .route_service("/sdk.js", ServeFile::new(web_dir.join("sdk.js")))
+        .route_service("/sw.js", ServeFile::new(web_dir.join("sw.js")))
         // Negotiated via Accept-Encoding; skips tiny bodies, images and SSE/ws upgrades by default.
         .layer(tower_http::compression::CompressionLayer::new())
         .layer(tower_http::trace::TraceLayer::new_for_http())
@@ -579,16 +585,22 @@ async fn main() -> anyhow::Result<()> {
         .execute(&db)
         .await
         .map_err(|e| anyhow::anyhow!("creating data_exports: {e}"))?;
+    sqlx::raw_sql(include_str!("../migrations/0007_parity_extras.sql"))
+        .execute(&db)
+        .await
+        .map_err(|e| anyhow::anyhow!("creating parity extras: {e}"))?;
 
+    let hub = cable::Hub::with_db(db.clone());
     let state = AppState {
         db,
-        hub: cable::Hub::default(),
+        hub,
         public_dir: std::env::var("WEB_DIR")
             .unwrap_or_else(|_| "web/build/client".into())
             .into(),
         frontend_url: std::env::var("FRONTEND_URL")
             .unwrap_or_else(|_| "http://localhost:3000".into()),
     };
+    cable::spawn_pg_fanout(state.hub.clone(), state.db.clone());
     // Async listeners (Chatwoot AsyncDispatcher). Each lane registers its listener here.
     events::start(
         state.clone(),
@@ -603,6 +615,12 @@ async fn main() -> anyhow::Result<()> {
                 events::listener(listeners::automation::handle),
             ),
             ("csat", events::listener(listeners::csat::handle)),
+            (
+                "reporting_events",
+                events::listener(listeners::reporting_events::handle),
+            ),
+            ("agent_bots", events::listener(listeners::agent_bots::handle)),
+            ("captain", events::listener(listeners::captain::handle)),
             (
                 "email_outbound",
                 events::listener(listeners::email_outbound::handle),

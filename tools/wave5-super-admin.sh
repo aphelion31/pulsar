@@ -161,7 +161,7 @@ st, exp_re, _ = req("POST", f"/api/v1/accounts/{aid}/data_exports/{eid}/rerun", 
 assert st == 200 and exp_re["id"] != eid, (st, exp_re)
 
 st, bs, _ = req("GET", f"/enterprise/api/v1/accounts/{aid}/billing_summary", headers=sa_hdr)
-assert st == 200 and bs["plan"] == "Enterprise", (st, bs)
+assert st == 200 and bs["plan"] == "Open Source Enterprise", (st, bs)
 st, leg, _ = req("GET", f"/enterprise/api/v1/accounts/{aid}/legal_compliance", headers=sa_hdr)
 assert st == 200 and "dpa_signing_url" in leg, (st, leg)
 st, top, _ = req("GET", f"/enterprise/api/v1/accounts/{aid}/topup_options", headers=sa_hdr)

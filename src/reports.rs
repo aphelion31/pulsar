@@ -22,6 +22,9 @@ pub struct ReportParams {
     pub since: Option<String>,
     pub r#until: Option<String>,
     pub group_by: Option<String>,
+    pub bucket_timestamp: Option<String>,
+    pub page: Option<String>,
+    pub per_page: Option<String>,
     pub business_hours: Option<Value>,
     pub timezone_offset: Option<Value>,
 }
@@ -181,9 +184,31 @@ async fn reports_index(
             query_reply_time_timeseries(&st.db, account_id, dim_type, dim_id, since, until, trunc)
                 .await?
         }
-        "bot_resolutions_count" | "bot_handoffs_count" => {
-            // ponytail: bot resolutions not tracked; return empty buckets
-            Vec::new()
+        "bot_resolutions_count" => {
+            query_reporting_events_timeseries(
+                &st.db,
+                account_id,
+                "conversation_bot_resolved",
+                dim_type,
+                dim_id,
+                since,
+                until,
+                trunc,
+            )
+            .await?
+        }
+        "bot_handoffs_count" => {
+            query_reporting_events_timeseries(
+                &st.db,
+                account_id,
+                "conversation_bot_handoff",
+                dim_type,
+                dim_id,
+                since,
+                until,
+                trunc,
+            )
+            .await?
         }
         _ => Vec::new(),
     };
@@ -1331,15 +1356,111 @@ async fn summary_reports_label(
     reports_labels(State(st), user, Path(account_id), Query(params)).await
 }
 
+async fn query_reporting_events_timeseries(
+    db: &PgPool,
+    account_id: i64,
+    event_name: &str,
+    dim_type: &str,
+    dim_id: Option<i64>,
+    since: Option<NaiveDateTime>,
+    until: Option<NaiveDateTime>,
+    trunc: &str,
+) -> Result<Vec<Value>, ApiError> {
+    let sql = format!(
+        r#"
+        SELECT
+            EXTRACT(EPOCH FROM date_trunc('{trunc}', r.created_at))::bigint AS ts,
+            COUNT(DISTINCT r.conversation_id)::bigint AS count
+        FROM reporting_events r
+        LEFT JOIN conversations c ON c.id = r.conversation_id AND c.account_id = r.account_id
+        WHERE r.account_id = $1
+          AND r.name = $2
+          AND ($3::timestamp IS NULL OR r.created_at >= $3)
+          AND ($4::timestamp IS NULL OR r.created_at <= $4)
+          AND (
+            CASE $5
+                WHEN 'agent' THEN COALESCE(r.user_id, c.assignee_id) = $6
+                WHEN 'inbox' THEN COALESCE(r.inbox_id, c.inbox_id) = $6
+                WHEN 'team'  THEN c.team_id = $6
+                WHEN 'label' THEN EXISTS (
+                    SELECT 1 FROM taggings tg
+                    JOIN tags t ON t.id = tg.tag_id
+                    JOIN labels l ON l.title = t.name AND l.account_id = r.account_id
+                    WHERE tg.taggable_type = 'Conversation'
+                      AND tg.taggable_id = r.conversation_id
+                      AND tg.context = 'labels'
+                      AND l.id = $6
+                )
+                ELSE TRUE
+            END
+          )
+        GROUP BY 1
+        ORDER BY 1 ASC
+        "#
+    );
+    let rows = sqlx::query(&sql)
+        .bind(account_id)
+        .bind(event_name)
+        .bind(since)
+        .bind(until)
+        .bind(dim_type)
+        .bind(dim_id)
+        .fetch_all(db)
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let ts: i64 = r.get("ts");
+            let count: i64 = r.get("count");
+            json!({ "value": count, "timestamp": ts })
+        })
+        .collect())
+}
+
 async fn summary_reports_channel(
     State(st): State<AppState>,
     user: CurrentUser,
     Path(account_id): Path<i64>,
-    Query(_params): Query<ReportParams>,
+    Query(params): Query<ReportParams>,
 ) -> ApiResult {
     let _au = require_report_viewer(&st.db, &user, account_id).await?;
-    // ponytail: channel summary unused in core dashboard, return empty array
-    Ok(Json(json!([])))
+    let since = parse_ts(params.since.as_deref());
+    let until = parse_ts(params.r#until.as_deref());
+    let rows = sqlx::query(
+        "SELECT i.channel_type,
+                COUNT(c.id)::bigint AS conversations_count,
+                COUNT(c.id) FILTER (WHERE c.status = 0)::bigint AS open_count,
+                COUNT(c.id) FILTER (WHERE c.status = 1)::bigint AS resolved_count,
+                COUNT(c.id) FILTER (WHERE c.status = 2)::bigint AS pending_count,
+                COUNT(c.id) FILTER (WHERE c.status = 3)::bigint AS snoozed_count
+         FROM conversations c
+         JOIN inboxes i ON i.id = c.inbox_id AND i.account_id = c.account_id
+         WHERE c.account_id = $1
+           AND ($2::timestamp IS NULL OR c.created_at >= $2)
+           AND ($3::timestamp IS NULL OR c.created_at <= $3)
+         GROUP BY i.channel_type
+         ORDER BY conversations_count DESC, i.channel_type ASC",
+    )
+    .bind(account_id)
+    .bind(since)
+    .bind(until)
+    .fetch_all(&st.db)
+    .await?;
+    Ok(Json(Value::Array(
+        rows.into_iter()
+            .map(|r| {
+                json!({
+                    "channel_type": r.get::<String, _>("channel_type"),
+                    "conversations_count": r.get::<i64, _>("conversations_count"),
+                    "open": r.get::<i64, _>("open_count"),
+                    "resolved": r.get::<i64, _>("resolved_count"),
+                    "pending": r.get::<i64, _>("pending_count"),
+                    "snoozed": r.get::<i64, _>("snoozed_count"),
+                })
+            })
+            .collect(),
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -1444,6 +1565,96 @@ async fn live_grouped_conversation_metrics(
 // ---------------------------------------------------------------------------
 // Other Reports Endpoints to keep Vue dashboard happy
 // ---------------------------------------------------------------------------
+fn conv_status_label(status: i32) -> &'static str {
+    match status {
+        0 => "open",
+        1 => "resolved",
+        2 => "pending",
+        3 => "snoozed",
+        _ => "open",
+    }
+}
+
+fn drilldown_bounds(params: &ReportParams) -> (Option<NaiveDateTime>, Option<NaiveDateTime>) {
+    let since = parse_ts(params.since.as_deref());
+    let until = parse_ts(params.r#until.as_deref());
+    let Some(bts) = parse_num_param(params.bucket_timestamp.as_deref()) else {
+        return (since, until);
+    };
+    let Some(b_start) = DateTime::from_timestamp(bts, 0) else {
+        return (since, until);
+    };
+    let b_end = match params.group_by.as_deref().unwrap_or("day") {
+        "hour" => b_start + chrono::Duration::hours(1),
+        "week" => b_start + chrono::Duration::weeks(1),
+        "month" => b_start
+            .checked_add_months(chrono::Months::new(1))
+            .unwrap_or_else(|| b_start + chrono::Duration::days(30)),
+        "year" => b_start
+            .checked_add_months(chrono::Months::new(12))
+            .unwrap_or_else(|| b_start + chrono::Duration::days(365)),
+        _ => b_start + chrono::Duration::days(1),
+    };
+    let start = match since {
+        Some(s) => s.max(b_start.naive_utc()),
+        None => b_start.naive_utc(),
+    };
+    let end = match until {
+        Some(u) => u.min(b_end.naive_utc()),
+        None => b_end.naive_utc(),
+    };
+    (Some(start), Some(end))
+}
+
+fn dim_predicate_conv(dim_type_idx: &str, id_idx: &str) -> String {
+    format!(
+        "CASE {dim_type_idx}
+            WHEN 'agent' THEN c.assignee_id = {id_idx}
+            WHEN 'inbox' THEN c.inbox_id = {id_idx}
+            WHEN 'team' THEN c.team_id = {id_idx}
+            WHEN 'label' THEN EXISTS (
+                SELECT 1 FROM taggings tg
+                JOIN tags t ON t.id = tg.tag_id
+                JOIN labels l ON l.title = t.name AND l.account_id = c.account_id
+                WHERE tg.taggable_type = 'Conversation'
+                  AND tg.taggable_id = c.id
+                  AND tg.context = 'labels'
+                  AND l.id = {id_idx}
+            )
+            ELSE TRUE
+         END"
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn conv_drilldown_json(
+    cid: i64,
+    did: i64,
+    contact_id: Option<i64>,
+    contact_name: Option<&str>,
+    inbox_id: i64,
+    inbox_name: Option<&str>,
+    assignee_id: Option<i64>,
+    assignee_name: Option<&str>,
+    status: i32,
+    created_at: NaiveDateTime,
+    last_activity_at: NaiveDateTime,
+) -> Value {
+    json!({
+        "id": cid,
+        "display_id": did,
+        "contact_id": contact_id,
+        "contact_name": contact_name,
+        "inbox_id": inbox_id,
+        "inbox_name": inbox_name,
+        "assignee_id": assignee_id,
+        "assignee_name": assignee_name,
+        "status": conv_status_label(status),
+        "created_at": created_at.and_utc().timestamp(),
+        "last_activity_at": last_activity_at.and_utc().timestamp(),
+    })
+}
+
 async fn reports_drilldown(
     State(st): State<AppState>,
     user: CurrentUser,
@@ -1453,17 +1664,267 @@ async fn reports_drilldown(
     let _au = require_report_viewer(&st.db, &user, account_id).await?;
     let metric = params
         .metric
+        .clone()
         .unwrap_or_else(|| "conversations_count".into());
+    let (since, until) = drilldown_bounds(&params);
+    let dim_type = params.r#type.as_deref().unwrap_or("account");
+    let dim_id = parse_num_param(params.id.as_deref());
+    let page = parse_num_param(params.page.as_deref()).unwrap_or(1).max(1);
+    let per_page = parse_num_param(params.per_page.as_deref())
+        .unwrap_or(25)
+        .clamp(1, 100);
+    let offset = (page - 1) * per_page;
+    let dim_sql = dim_predicate_conv("$4", "$5");
+
+    let (record_type, total_count, conversation_count, payload): (&str, i64, i64, Vec<Value>) =
+        match metric.as_str() {
+            "conversations_count" => {
+                let total: i64 = sqlx::query_scalar(&format!(
+                    "SELECT COUNT(c.id)::bigint
+                     FROM conversations c
+                     WHERE c.account_id = $1
+                       AND ($2::timestamp IS NULL OR c.created_at >= $2)
+                       AND ($3::timestamp IS NULL OR c.created_at <= $3)
+                       AND ({dim_sql})"
+                ))
+                .bind(account_id)
+                .bind(since)
+                .bind(until)
+                .bind(dim_type)
+                .bind(dim_id)
+                .fetch_one(&st.db)
+                .await?;
+
+                let rows = sqlx::query(&format!(
+                    "SELECT c.id::bigint AS cid, c.display_id::bigint AS did,
+                            c.contact_id::bigint AS contact_id, ct.name AS contact_name,
+                            c.inbox_id::bigint AS inbox_id, i.name AS inbox_name,
+                            c.assignee_id::bigint AS assignee_id, u.name AS assignee_name,
+                            c.status, c.created_at, c.last_activity_at
+                     FROM conversations c
+                     LEFT JOIN contacts ct ON ct.id = c.contact_id
+                     LEFT JOIN inboxes i ON i.id = c.inbox_id
+                     LEFT JOIN users u ON u.id = c.assignee_id
+                     WHERE c.account_id = $1
+                       AND ($2::timestamp IS NULL OR c.created_at >= $2)
+                       AND ($3::timestamp IS NULL OR c.created_at <= $3)
+                       AND ({dim_sql})
+                     ORDER BY c.created_at DESC, c.id DESC
+                     LIMIT $6 OFFSET $7"
+                ))
+                .bind(account_id)
+                .bind(since)
+                .bind(until)
+                .bind(dim_type)
+                .bind(dim_id)
+                .bind(per_page)
+                .bind(offset)
+                .fetch_all(&st.db)
+                .await?;
+
+                let items = rows
+                    .into_iter()
+                    .map(|r| {
+                        let c_created: NaiveDateTime = r.get("created_at");
+                        let c_last: NaiveDateTime = r.get("last_activity_at");
+                        json!({
+                            "record_type": "conversation",
+                            "conversation": conv_drilldown_json(
+                                r.get("cid"), r.get("did"), r.get("contact_id"), r.get("contact_name"),
+                                r.get("inbox_id"), r.get("inbox_name"), r.get("assignee_id"),
+                                r.get("assignee_name"), r.get("status"), c_created, c_last,
+                            ),
+                            "message": Value::Null,
+                            "metric_value": Value::Null,
+                            "occurred_at": c_created.and_utc().timestamp(),
+                        })
+                    })
+                    .collect();
+                ("conversation", total, total, items)
+            }
+            "incoming_messages_count" | "outgoing_messages_count" => {
+                let mtype = if metric == "incoming_messages_count" { 0 } else { 1 };
+                let (total, conv_cnt): (i64, i64) = sqlx::query_as(&format!(
+                    "SELECT COUNT(m.id)::bigint, COUNT(DISTINCT m.conversation_id)::bigint
+                     FROM messages m
+                     JOIN conversations c ON c.id = m.conversation_id AND c.account_id = m.account_id
+                     WHERE m.account_id = $1
+                       AND m.message_type = $6
+                       AND ($2::timestamp IS NULL OR m.created_at >= $2)
+                       AND ($3::timestamp IS NULL OR m.created_at <= $3)
+                       AND ({dim_sql})"
+                ))
+                .bind(account_id)
+                .bind(since)
+                .bind(until)
+                .bind(dim_type)
+                .bind(dim_id)
+                .bind(mtype)
+                .fetch_one(&st.db)
+                .await?;
+
+                let rows = sqlx::query(&format!(
+                    "SELECT m.id::bigint AS mid, m.content, m.message_type, m.created_at AS m_created,
+                            COALESCE(su.name, sc.name) AS sender_name,
+                            c.id::bigint AS cid, c.display_id::bigint AS did,
+                            c.contact_id::bigint AS contact_id, ct.name AS contact_name,
+                            c.inbox_id::bigint AS inbox_id, i.name AS inbox_name,
+                            c.assignee_id::bigint AS assignee_id, au.name AS assignee_name,
+                            c.status, c.created_at AS c_created, c.last_activity_at AS c_last
+                     FROM messages m
+                     JOIN conversations c ON c.id = m.conversation_id AND c.account_id = m.account_id
+                     LEFT JOIN contacts ct ON ct.id = c.contact_id
+                     LEFT JOIN inboxes i ON i.id = c.inbox_id
+                     LEFT JOIN users au ON au.id = c.assignee_id
+                     LEFT JOIN users su ON m.sender_type = 'User' AND su.id = m.sender_id
+                     LEFT JOIN contacts sc ON m.sender_type = 'Contact' AND sc.id = m.sender_id
+                     WHERE m.account_id = $1
+                       AND m.message_type = $6
+                       AND ($2::timestamp IS NULL OR m.created_at >= $2)
+                       AND ($3::timestamp IS NULL OR m.created_at <= $3)
+                       AND ({dim_sql})
+                     ORDER BY m.created_at DESC, m.id DESC
+                     LIMIT $7 OFFSET $8"
+                ))
+                .bind(account_id)
+                .bind(since)
+                .bind(until)
+                .bind(dim_type)
+                .bind(dim_id)
+                .bind(mtype)
+                .bind(per_page)
+                .bind(offset)
+                .fetch_all(&st.db)
+                .await?;
+
+                let items = rows
+                    .into_iter()
+                    .map(|r| {
+                        let m_created: NaiveDateTime = r.get("m_created");
+                        let c_created: NaiveDateTime = r.get("c_created");
+                        let c_last: NaiveDateTime = r.get("c_last");
+                        json!({
+                            "record_type": "message",
+                            "conversation": conv_drilldown_json(
+                                r.get("cid"), r.get("did"), r.get("contact_id"), r.get("contact_name"),
+                                r.get("inbox_id"), r.get("inbox_name"), r.get("assignee_id"),
+                                r.get("assignee_name"), r.get("status"), c_created, c_last,
+                            ),
+                            "message": {
+                                "id": r.get::<i64, _>("mid"),
+                                "content": r.get::<Option<String>, _>("content"),
+                                "message_type": r.get::<i32, _>("message_type"),
+                                "sender_name": r.get::<Option<String>, _>("sender_name"),
+                                "created_at": m_created.and_utc().timestamp(),
+                            },
+                            "metric_value": Value::Null,
+                            "occurred_at": m_created.and_utc().timestamp(),
+                        })
+                    })
+                    .collect();
+                ("message", total, conv_cnt, items)
+            }
+            _ => {
+                let (ev_name, rec_type) = match metric.as_str() {
+                    "avg_first_response_time" => ("first_response", "message"),
+                    "reply_time" => ("reply_time", "message"),
+                    "bot_resolutions_count" => ("conversation_bot_resolved", "conversation"),
+                    "bot_handoffs_count" => ("conversation_bot_handoff", "conversation"),
+                    _ => ("conversation_resolved", "conversation"),
+                };
+                let (total, conv_cnt): (i64, i64) = sqlx::query_as(&format!(
+                    "SELECT COUNT(re.id)::bigint, COUNT(DISTINCT re.conversation_id)::bigint
+                     FROM reporting_events re
+                     JOIN conversations c ON c.id = re.conversation_id AND c.account_id = re.account_id
+                     WHERE re.account_id = $1
+                       AND re.name = $6
+                       AND ($2::timestamp IS NULL OR re.created_at >= $2)
+                       AND ($3::timestamp IS NULL OR re.created_at <= $3)
+                       AND ({dim_sql})"
+                ))
+                .bind(account_id)
+                .bind(since)
+                .bind(until)
+                .bind(dim_type)
+                .bind(dim_id)
+                .bind(ev_name)
+                .fetch_one(&st.db)
+                .await?;
+
+                let use_bh = params
+                    .business_hours
+                    .as_ref()
+                    .and_then(|v| v.as_bool().or_else(|| v.as_str().map(|s| s == "true")))
+                    .unwrap_or(false);
+
+                let rows = sqlx::query(&format!(
+                    "SELECT re.name AS ev_name, re.value::float8 AS ev_val,
+                            COALESCE(re.value_in_business_hours, re.value)::float8 AS ev_bh,
+                            COALESCE(re.event_end_time, re.created_at) AS ev_at,
+                            c.id::bigint AS cid, c.display_id::bigint AS did,
+                            c.contact_id::bigint AS contact_id, ct.name AS contact_name,
+                            c.inbox_id::bigint AS inbox_id, i.name AS inbox_name,
+                            c.assignee_id::bigint AS assignee_id, au.name AS assignee_name,
+                            c.status, c.created_at AS c_created, c.last_activity_at AS c_last
+                     FROM reporting_events re
+                     JOIN conversations c ON c.id = re.conversation_id AND c.account_id = re.account_id
+                     LEFT JOIN contacts ct ON ct.id = c.contact_id
+                     LEFT JOIN inboxes i ON i.id = c.inbox_id
+                     LEFT JOIN users au ON au.id = c.assignee_id
+                     WHERE re.account_id = $1
+                       AND re.name = $6
+                       AND ($2::timestamp IS NULL OR re.created_at >= $2)
+                       AND ($3::timestamp IS NULL OR re.created_at <= $3)
+                       AND ({dim_sql})
+                     ORDER BY re.created_at DESC, re.id DESC
+                     LIMIT $7 OFFSET $8"
+                ))
+                .bind(account_id)
+                .bind(since)
+                .bind(until)
+                .bind(dim_type)
+                .bind(dim_id)
+                .bind(ev_name)
+                .bind(per_page)
+                .bind(offset)
+                .fetch_all(&st.db)
+                .await?;
+
+                let items = rows
+                    .into_iter()
+                    .map(|r| {
+                        let ev_at: NaiveDateTime = r.get("ev_at");
+                        let c_created: NaiveDateTime = r.get("c_created");
+                        let c_last: NaiveDateTime = r.get("c_last");
+                        let val: f64 = if use_bh { r.get("ev_bh") } else { r.get("ev_val") };
+                        json!({
+                            "record_type": rec_type,
+                            "event_name": r.get::<String, _>("ev_name"),
+                            "conversation": conv_drilldown_json(
+                                r.get("cid"), r.get("did"), r.get("contact_id"), r.get("contact_name"),
+                                r.get("inbox_id"), r.get("inbox_name"), r.get("assignee_id"),
+                                r.get("assignee_name"), r.get("status"), c_created, c_last,
+                            ),
+                            "message": Value::Null,
+                            "metric_value": val,
+                            "occurred_at": ev_at.and_utc().timestamp(),
+                        })
+                    })
+                    .collect();
+                (rec_type, total, conv_cnt, items)
+            }
+        };
+
     Ok(Json(json!({
         "meta": {
             "metric": metric,
-            "record_type": "Conversation",
-            "current_page": 1,
-            "per_page": 25,
-            "total_count": 0,
-            "conversation_count": 0
+            "record_type": record_type,
+            "current_page": page,
+            "per_page": per_page,
+            "total_count": total_count,
+            "conversation_count": conversation_count,
         },
-        "payload": []
+        "payload": payload,
     })))
 }
 
@@ -1509,34 +1970,261 @@ async fn reports_bot_metrics(
     })))
 }
 
+fn query_param<'a>(params: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    params
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
+fn query_i64_list(params: &[(String, String)], key: &str) -> Vec<i64> {
+    let bracketed = format!("{key}[]");
+    let mut ids = Vec::new();
+    for (k, v) in params {
+        if k != key && *k != bracketed {
+            continue;
+        }
+        for part in v.split(',') {
+            if let Ok(id) = part.trim().parse::<i64>() {
+                ids.push(id);
+            }
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 async fn reports_inbox_label_matrix(
     State(st): State<AppState>,
     user: CurrentUser,
     Path(account_id): Path<i64>,
-    Query(_params): Query<ReportParams>,
+    Query(q): Query<Vec<(String, String)>>,
 ) -> ApiResult {
     let _au = require_report_viewer(&st.db, &user, account_id).await?;
-    Ok(Json(json!({})))
+    let since = parse_ts(query_param(&q, "since"));
+    let until = parse_ts(query_param(&q, "until"));
+    let inbox_filter = query_i64_list(&q, "inbox_ids");
+    let label_filter = query_i64_list(&q, "label_ids");
+
+    let inboxes: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id::bigint, name FROM inboxes
+         WHERE account_id = $1 AND ($2::bigint[] IS NULL OR id = ANY($2))
+         ORDER BY name ASC, id ASC",
+    )
+    .bind(account_id)
+    .bind((!inbox_filter.is_empty()).then_some(inbox_filter.as_slice()))
+    .fetch_all(&st.db)
+    .await?;
+
+    let labels: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id::bigint, title FROM labels
+         WHERE account_id = $1 AND ($2::bigint[] IS NULL OR id = ANY($2))
+         ORDER BY title ASC, id ASC",
+    )
+    .bind(account_id)
+    .bind((!label_filter.is_empty()).then_some(label_filter.as_slice()))
+    .fetch_all(&st.db)
+    .await?;
+
+    let label_titles: Vec<&str> = labels.iter().map(|(_, t)| t.as_str()).collect();
+    let inbox_ids: Vec<i64> = inboxes.iter().map(|(id, _)| *id).collect();
+    let mut counts: std::collections::HashMap<(i64, String), i64> = std::collections::HashMap::new();
+    if !inbox_ids.is_empty() && !label_titles.is_empty() {
+        let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+            "SELECT c.inbox_id::bigint, t.name, COUNT(*)::bigint
+             FROM taggings tg
+             JOIN conversations c ON c.id = tg.taggable_id
+             JOIN tags t ON t.id = tg.tag_id
+             WHERE tg.taggable_type = 'Conversation'
+               AND tg.context = 'labels'
+               AND c.account_id = $1
+               AND c.inbox_id = ANY($2)
+               AND t.name = ANY($3)
+               AND ($4::timestamp IS NULL OR c.created_at >= $4)
+               AND ($5::timestamp IS NULL OR c.created_at <= $5)
+             GROUP BY c.inbox_id, t.name",
+        )
+        .bind(account_id)
+        .bind(&inbox_ids)
+        .bind(&label_titles)
+        .bind(since)
+        .bind(until)
+        .fetch_all(&st.db)
+        .await?;
+        for (iid, title, cnt) in rows {
+            counts.insert((iid, title), cnt);
+        }
+    }
+
+    let matrix: Vec<Vec<i64>> = inboxes
+        .iter()
+        .map(|(iid, _)| {
+            labels
+                .iter()
+                .map(|(_, title)| *counts.get(&(*iid, title.clone())).unwrap_or(&0))
+                .collect()
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "inboxes": inboxes.into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
+        "labels": labels.into_iter().map(|(id, title)| json!({ "id": id, "title": title })).collect::<Vec<_>>(),
+        "matrix": matrix,
+    })))
 }
 
 async fn reports_first_response_time_distribution(
     State(st): State<AppState>,
     user: CurrentUser,
     Path(account_id): Path<i64>,
-    Query(_params): Query<ReportParams>,
+    Query(params): Query<ReportParams>,
 ) -> ApiResult {
     let _au = require_report_viewer(&st.db, &user, account_id).await?;
-    Ok(Json(json!({})))
+    let since = parse_ts(params.since.as_deref());
+    let until = parse_ts(params.r#until.as_deref());
+
+    let rows: Vec<(String, i64, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT COALESCE(i.channel_type, 'Channel::Api'),
+                COUNT(CASE WHEN re.value < 3600 THEN 1 END)::bigint,
+                COUNT(CASE WHEN re.value >= 3600 AND re.value < 14400 THEN 1 END)::bigint,
+                COUNT(CASE WHEN re.value >= 14400 AND re.value < 28800 THEN 1 END)::bigint,
+                COUNT(CASE WHEN re.value >= 28800 AND re.value < 86400 THEN 1 END)::bigint,
+                COUNT(CASE WHEN re.value >= 86400 THEN 1 END)::bigint
+         FROM reporting_events re
+         JOIN inboxes i ON i.id = re.inbox_id AND i.account_id = re.account_id
+         WHERE re.account_id = $1
+           AND re.name = 'first_response'
+           AND ($2::timestamp IS NULL OR re.created_at >= $2)
+           AND ($3::timestamp IS NULL OR re.created_at <= $3)
+         GROUP BY i.channel_type",
+    )
+    .bind(account_id)
+    .bind(since)
+    .bind(until)
+    .fetch_all(&st.db)
+    .await?;
+
+    let mut out = serde_json::Map::new();
+    for (channel_type, b0, b1, b2, b3, b4) in rows {
+        out.insert(
+            channel_type,
+            json!({
+                "0-1h": b0,
+                "1-4h": b1,
+                "4-8h": b2,
+                "8-24h": b3,
+                "24h+": b4,
+            }),
+        );
+    }
+    Ok(Json(Value::Object(out)))
 }
 
 async fn reports_outgoing_messages_count(
     State(st): State<AppState>,
     user: CurrentUser,
     Path(account_id): Path<i64>,
-    Query(_params): Query<ReportParams>,
+    Query(params): Query<ReportParams>,
 ) -> ApiResult {
     let _au = require_report_viewer(&st.db, &user, account_id).await?;
-    Ok(Json(json!([])))
+    let since = parse_ts(params.since.as_deref());
+    let until = parse_ts(params.r#until.as_deref());
+    let group_by = params.group_by.as_deref().unwrap_or("agent");
+
+    let list: Vec<Value> = match group_by {
+        "team" => {
+            let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+                "SELECT t.id::bigint, t.name, COUNT(m.id)::bigint AS cnt
+                 FROM messages m
+                 JOIN conversations c ON c.id = m.conversation_id AND c.account_id = m.account_id
+                 JOIN teams t ON t.id = c.team_id AND t.account_id = m.account_id
+                 WHERE m.account_id = $1
+                   AND m.message_type = 1
+                   AND ($2::timestamp IS NULL OR m.created_at >= $2)
+                   AND ($3::timestamp IS NULL OR m.created_at <= $3)
+                 GROUP BY t.id, t.name
+                 ORDER BY cnt DESC, t.id ASC",
+            )
+            .bind(account_id)
+            .bind(since)
+            .bind(until)
+            .fetch_all(&st.db)
+            .await?;
+            rows.into_iter()
+                .map(|(id, name, cnt)| json!({ "id": id, "name": name, "outgoing_messages_count": cnt }))
+                .collect()
+        }
+        "inbox" => {
+            let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+                "SELECT i.id::bigint, i.name, COUNT(m.id)::bigint AS cnt
+                 FROM messages m
+                 JOIN inboxes i ON i.id = m.inbox_id AND i.account_id = m.account_id
+                 WHERE m.account_id = $1
+                   AND m.message_type = 1
+                   AND ($2::timestamp IS NULL OR m.created_at >= $2)
+                   AND ($3::timestamp IS NULL OR m.created_at <= $3)
+                 GROUP BY i.id, i.name
+                 ORDER BY cnt DESC, i.id ASC",
+            )
+            .bind(account_id)
+            .bind(since)
+            .bind(until)
+            .fetch_all(&st.db)
+            .await?;
+            rows.into_iter()
+                .map(|(id, name, cnt)| json!({ "id": id, "name": name, "outgoing_messages_count": cnt }))
+                .collect()
+        }
+        "label" => {
+            let rows: Vec<(Option<i64>, String, i64)> = sqlx::query_as(
+                "SELECT MIN(l.id)::bigint, t.name, COUNT(m.id)::bigint AS cnt
+                 FROM messages m
+                 JOIN conversations c ON c.id = m.conversation_id AND c.account_id = m.account_id
+                 JOIN taggings tg ON tg.taggable_id = c.id AND tg.taggable_type = 'Conversation' AND tg.context = 'labels'
+                 JOIN tags t ON t.id = tg.tag_id
+                 LEFT JOIN labels l ON l.title = t.name AND l.account_id = m.account_id
+                 WHERE m.account_id = $1
+                   AND m.message_type = 1
+                   AND ($2::timestamp IS NULL OR m.created_at >= $2)
+                   AND ($3::timestamp IS NULL OR m.created_at <= $3)
+                 GROUP BY t.name
+                 ORDER BY cnt DESC, t.name ASC",
+            )
+            .bind(account_id)
+            .bind(since)
+            .bind(until)
+            .fetch_all(&st.db)
+            .await?;
+            rows.into_iter()
+                .map(|(id, name, cnt)| json!({ "id": id, "name": name, "outgoing_messages_count": cnt }))
+                .collect()
+        }
+        _ => {
+            let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+                "SELECT u.id::bigint, u.name, COUNT(m.id)::bigint AS cnt
+                 FROM messages m
+                 JOIN users u ON u.id = m.sender_id
+                 WHERE m.account_id = $1
+                   AND m.message_type = 1
+                   AND m.sender_type = 'User'
+                   AND m.sender_id IS NOT NULL
+                   AND ($2::timestamp IS NULL OR m.created_at >= $2)
+                   AND ($3::timestamp IS NULL OR m.created_at <= $3)
+                 GROUP BY u.id, u.name
+                 ORDER BY cnt DESC, u.id ASC",
+            )
+            .bind(account_id)
+            .bind(since)
+            .bind(until)
+            .fetch_all(&st.db)
+            .await?;
+            rows.into_iter()
+                .map(|(id, name, cnt)| json!({ "id": id, "name": name, "outgoing_messages_count": cnt }))
+                .collect()
+        }
+    };
+    Ok(Json(Value::Array(list)))
 }
 
 async fn year_in_review_show(

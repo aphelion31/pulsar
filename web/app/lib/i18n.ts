@@ -49,10 +49,15 @@ import whatsappTemplateMgmt from "../i18n/en/whatsappTemplateMgmt.json";
 import whatsappTemplates from "../i18n/en/whatsappTemplates.json";
 import yearInReview from "../i18n/en/yearInReview.json";
 
+import { useEffect, useState } from "react";
+import { SUPPORTED_LOCALES, type LocaleOption } from "./locales.generated";
 import { pickPlural, type Vars } from "./plural";
-export type { Vars };
+export type { LocaleOption, Vars };
+export { SUPPORTED_LOCALES };
 
-const messages: Record<string, unknown> = {
+const LOCALE_KEY = "pulsar.locale";
+
+const baseMessages: Record<string, unknown> = {
   ...advancedFilters,
   ...agentBots,
   ...agentMgmt,
@@ -101,8 +106,84 @@ const messages: Record<string, unknown> = {
   ...whatsappTemplates,
   ...yearInReview,
 };
-function lookup(key: string): string | undefined {
-  let node: unknown = messages;
+
+const localeCache = new Map<string, Record<string, unknown>>([["en", baseMessages]]);
+let currentLocale = "en";
+
+export function isRtlLocale(code: string): boolean {
+  return SUPPORTED_LOCALES.find((l) => l.code === code)?.dir === "rtl";
+}
+
+export function getLocale(): string {
+  if (typeof window !== "undefined") {
+    const saved = localStorage.getItem(LOCALE_KEY);
+    if (saved && SUPPORTED_LOCALES.some((l) => l.code === saved)) {
+      currentLocale = saved;
+    }
+  }
+  return currentLocale;
+}
+
+function applyDocumentLocale(code: string) {
+  if (typeof document === "undefined") return;
+  document.documentElement.lang = code.replace("_", "-");
+  document.documentElement.dir = isRtlLocale(code) ? "rtl" : "ltr";
+}
+
+export async function loadLocaleBundle(code: string): Promise<Record<string, unknown>> {
+  if (localeCache.has(code)) return localeCache.get(code)!;
+  if (typeof fetch === "undefined") return baseMessages;
+  try {
+    const res = await fetch(`/app/i18n/${encodeURIComponent(code)}.json`);
+    if (res.ok) {
+      const json = (await res.json()) as Record<string, unknown>;
+      localeCache.set(code, json);
+      return json;
+    }
+  } catch {
+    // Fallback to English bundle when offline or unavailable.
+  }
+  return baseMessages;
+}
+
+export async function setLocale(code: string): Promise<string> {
+  const next = SUPPORTED_LOCALES.some((l) => l.code === code) ? code : "en";
+  currentLocale = next;
+  if (typeof window !== "undefined") {
+    localStorage.setItem(LOCALE_KEY, next);
+  }
+  await loadLocaleBundle(next);
+  applyDocumentLocale(next);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("pulsar:locale-changed", { detail: next }));
+  }
+  return next;
+}
+
+export function initLocale() {
+  const active = getLocale();
+  applyDocumentLocale(active);
+  if (active !== "en") {
+    void loadLocaleBundle(active).then(() => {
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("pulsar:locale-changed", { detail: active }));
+      }
+    });
+  }
+}
+
+export function useLocale(): string {
+  const [loc, setLoc] = useState(getLocale);
+  useEffect(() => {
+    const onChange = () => setLoc(getLocale());
+    window.addEventListener("pulsar:locale-changed", onChange);
+    return () => window.removeEventListener("pulsar:locale-changed", onChange);
+  }, []);
+  return loc;
+}
+
+function lookupIn(dict: Record<string, unknown>, key: string): string | undefined {
+  let node: unknown = dict;
   for (const part of key.split(".")) {
     if (node && typeof node === "object" && part in node) {
       node = (node as Record<string, unknown>)[part];
@@ -110,11 +191,13 @@ function lookup(key: string): string | undefined {
       return undefined;
     }
   }
-  return typeof node === "string" ? node : undefined;
+  return typeof node === "string" && node.length > 0 ? node : undefined;
 }
 
 export function t(key: string, vars?: Vars): string {
-  const raw = pickPlural(lookup(key) ?? key, vars).replace(/\{'([^']+)'\}/g, "$1");
+  const activeDict = localeCache.get(currentLocale) ?? baseMessages;
+  const hit = lookupIn(activeDict, key) ?? lookupIn(baseMessages, key);
+  const raw = pickPlural(hit ?? key, vars).replace(/\{'([^']+)'\}/g, "$1");
   if (!vars) return raw;
   return raw.replace(/\{(\w+)\}/g, (match, name: string) =>
     Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match,

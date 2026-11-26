@@ -27,6 +27,23 @@ type NotificationSettingsResponse = {
   selected_push_flags: string[];
 };
 
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+function arrayBufferToBase64Url(buf: ArrayBuffer | null): string {
+  if (!buf) return "";
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < bytes.byteLength; i += 1) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 const NOTIFICATION_TYPES = [
   {
     label: "PROFILE_SETTINGS.FORM.NOTIFICATIONS.TYPES.CONVERSATION_CREATED",
@@ -132,6 +149,12 @@ export default function ProfileSettings() {
         if (notifRes) {
           setSelectedEmailFlags(notifRes.selected_email_flags || []);
           setSelectedPushFlags(notifRes.selected_push_flags || []);
+        }
+
+        if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+          const reg = await navigator.serviceWorker.getRegistration("/sw.js").catch(() => undefined);
+          const sub = await reg?.pushManager?.getSubscription().catch(() => null);
+          if (active && sub) setHasPush(true);
         }
       } catch (e) {
         if (active) {
@@ -335,11 +358,73 @@ export default function ProfileSettings() {
   }
 
   async function handleTogglePush(enabled: boolean) {
-    if (enabled && typeof Notification !== "undefined") {
+    setError("");
+    setStatusMsg("");
+    if (enabled) {
+      if (typeof Notification === "undefined") {
+        setError("Browser notifications are unavailable in this environment.");
+        return;
+      }
       const perm = await Notification.requestPermission();
-      setHasPush(perm === "granted");
+      if (perm !== "granted") {
+        setHasPush(false);
+        return;
+      }
+      if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+        setHasPush(true);
+        return;
+      }
+      try {
+        const info = await api<{ vapid_public_key?: string | null }>("/api");
+        const vapidKey = info?.vapid_public_key;
+        if (!vapidKey) {
+          setHasPush(false);
+          setStatusMsg("Configure VAPID_PRIVATE_KEY on the server to enable Web Push subscriptions.");
+          return;
+        }
+        const reg = await navigator.serviceWorker.register("/sw.js");
+        await navigator.serviceWorker.ready;
+        const appServerKey = urlBase64ToUint8Array(vapidKey);
+        const sub =
+          (await reg.pushManager.getSubscription()) ??
+          (await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: appServerKey.buffer as ArrayBuffer,
+          }));
+        const p256dh = arrayBufferToBase64Url(sub.getKey("p256dh"));
+        const auth = arrayBufferToBase64Url(sub.getKey("auth"));
+        await api("/api/v1/notification_subscriptions", {
+          method: "POST",
+          json: {
+            notification_subscription: {
+              subscription_type: "browser_push",
+              subscription_attributes: { endpoint: sub.endpoint, keys: { p256dh, auth } },
+            },
+          },
+        });
+        setHasPush(true);
+        setStatusMsg("Browser push notifications enabled.");
+      } catch (e) {
+        setHasPush(false);
+        setError(e instanceof Error ? e.message : "Failed to register browser push subscription");
+      }
     } else {
-      setHasPush(false);
+      try {
+        if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+          const reg = await navigator.serviceWorker.getRegistration("/sw.js").catch(() => undefined);
+          const sub = await reg?.pushManager?.getSubscription().catch(() => null);
+          if (sub) {
+            const ep = sub.endpoint;
+            await sub.unsubscribe().catch(() => {});
+            await api("/api/v1/notification_subscriptions", {
+              method: "DELETE",
+              json: { push_token: ep },
+            }).catch(() => {});
+          }
+        }
+      } finally {
+        setHasPush(false);
+      }
     }
   }
 
