@@ -83,6 +83,26 @@ function ConversationReport({ accountId }: { accountId: number }) {
   const [series, setSeries] = useState<Record<string, Point[]>>({});
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [drillPage, setDrillPage] = useState(1);
+  const [drillData, setDrillData] = useState<{
+    meta: { total_count: number; conversation_count: number; record_type: string; current_page: number; per_page: number };
+    payload: Array<{
+      record_type: string;
+      occurred_at: number | null;
+      metric_value: number | null;
+      conversation?: { id: number; display_id: number; contact_name?: string | null; inbox_name?: string | null; assignee_name?: string | null; status: string };
+      message?: { id: number; content?: string | null; sender_name?: string | null } | null;
+    }>;
+  } | null>(null);
+  const [breakdownTab, setBreakdownTab] = useState<"matrix" | "frt" | "outgoing">("matrix");
+  const [matrixData, setMatrixData] = useState<{
+    inboxes: Array<{ id: number; name: string }>;
+    labels: Array<{ id: number; title: string }>;
+    matrix: number[][];
+  } | null>(null);
+  const [frtData, setFrtData] = useState<Record<string, Record<string, number>>>({});
+  const [outgoingGroup, setOutgoingGroup] = useState<"agent" | "inbox" | "team" | "label">("agent");
+  const [outgoingRows, setOutgoingRows] = useState<Array<{ id: number | null; name: string; outgoing_messages_count: number }>>([]);
   const offset = RANGES[range].offset;
   const groups = RANGES[range].groups as readonly string[];
   const pickRange = (id: RangeId) => {
@@ -130,6 +150,55 @@ function ConversationReport({ accountId }: { accountId: number }) {
       active = false;
     };
   }, [accountId, from, to, group, offset, businessHours]);
+
+  useEffect(() => {
+    setDrillPage(1);
+  }, [selectedMetric, from, to, offset]);
+
+  useEffect(() => {
+    let active = true;
+    const today = dateInput(new Date());
+    const start = new Date(`${offset === null ? from : dateInput(new Date(Date.now() - offset * 86400000))}T00:00:00`).getTime();
+    const end = new Date(`${offset === null ? to : today}T23:59:59`).getTime();
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) return;
+    const since = String(Math.floor(start / 1000));
+    const until = String(Math.floor(end / 1000));
+    const base = `/api/v2/accounts/${accountId}`;
+
+    api<{
+      meta: { total_count: number; conversation_count: number; record_type: string; current_page: number; per_page: number };
+      payload: Array<{
+        record_type: string;
+        occurred_at: number | null;
+        metric_value: number | null;
+        conversation?: { id: number; display_id: number; contact_name?: string | null; inbox_name?: string | null; assignee_name?: string | null; status: string };
+        message?: { id: number; content?: string | null; sender_name?: string | null } | null;
+      }>;
+    }>(`${base}/reports/drilldown?metric=${encodeURIComponent(selectedMetric)}&since=${since}&until=${until}&type=account&business_hours=${businessHours}&page=${drillPage}&per_page=10`)
+      .then((res) => { if (active) setDrillData(res); })
+      .catch(() => { if (active) setDrillData(null); });
+
+    if (breakdownTab === "matrix") {
+      api<{ inboxes: Array<{ id: number; name: string }>; labels: Array<{ id: number; title: string }>; matrix: number[][] }>(
+        `${base}/reports/inbox_label_matrix?since=${since}&until=${until}`
+      )
+        .then((res) => { if (active) setMatrixData(res); })
+        .catch(() => { if (active) setMatrixData(null); });
+    } else if (breakdownTab === "frt") {
+      api<Record<string, Record<string, number>>>(
+        `${base}/reports/first_response_time_distribution?since=${since}&until=${until}`
+      )
+        .then((res) => { if (active) setFrtData(res || {}); })
+        .catch(() => { if (active) setFrtData({}); });
+    } else {
+      api<Array<{ id: number | null; name: string; outgoing_messages_count: number }>>(
+        `${base}/reports/outgoing_messages_count?since=${since}&until=${until}&group_by=${outgoingGroup}`
+      )
+        .then((res) => { if (active) setOutgoingRows(Array.isArray(res) ? res : []); })
+        .catch(() => { if (active) setOutgoingRows([]); });
+    }
+    return () => { active = false; };
+  }, [accountId, from, to, offset, businessHours, selectedMetric, drillPage, breakdownTab, outgoingGroup]);
 
   const field = "h-9 rounded-lg border border-n-weak bg-n-solid-1 px-3 text-sm text-n-slate-12 focus:border-n-brand focus:outline-none";
   const activeMeta = metrics.find(([k]) => k === selectedMetric) ?? metrics[0];
@@ -264,6 +333,211 @@ function ConversationReport({ accountId }: { accountId: number }) {
                   ],
                 }}
               />
+            </section>
+
+            {/* Drilldown Records Table */}
+            <section className="rounded-xl border border-n-weak bg-n-solid-1 p-5 shadow-xs space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-base font-medium text-n-slate-12">Metric Drilldown Records</h2>
+                  <p className="text-xs text-n-slate-11">
+                    {drillData
+                      ? `${drillData.meta.total_count} records across ${drillData.meta.conversation_count} conversations`
+                      : "Loading records..."}
+                  </p>
+                </div>
+                {drillData && drillData.meta.total_count > drillData.meta.per_page && (
+                  <div className="flex items-center gap-2 text-xs">
+                    <button
+                      type="button"
+                      disabled={drillPage <= 1}
+                      onClick={() => setDrillPage((p) => Math.max(1, p - 1))}
+                      className="rounded border border-n-weak px-2.5 py-1 disabled:opacity-40"
+                    >
+                      Previous
+                    </button>
+                    <span className="text-n-slate-11">Page {drillPage}</span>
+                    <button
+                      type="button"
+                      disabled={drillPage * drillData.meta.per_page >= drillData.meta.total_count}
+                      onClick={() => setDrillPage((p) => p + 1)}
+                      className="rounded border border-n-weak px-2.5 py-1 disabled:opacity-40"
+                    >
+                      Next
+                    </button>
+                  </div>
+                )}
+              </div>
+              {drillData?.payload.length ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs text-n-slate-12">
+                    <thead className="border-b border-n-weak text-n-slate-10 uppercase">
+                      <tr>
+                        <th className="py-2 pr-3">Conversation</th>
+                        <th className="py-2 pr-3">Contact</th>
+                        <th className="py-2 pr-3">Inbox</th>
+                        <th className="py-2 pr-3">Assignee</th>
+                        <th className="py-2 pr-3">Detail</th>
+                        <th className="py-2">Occurred</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-n-weak">
+                      {drillData.payload.map((row, idx) => (
+                        <tr key={`${row.conversation?.id ?? "c"}-${row.message?.id ?? idx}`}>
+                          <td className="py-2 pr-3 font-medium">
+                            {row.conversation ? (
+                              <Link
+                                to={`/accounts/${accountId}/conversations/${row.conversation.display_id}`}
+                                className="text-n-brand hover:underline"
+                              >
+                                #{row.conversation.display_id} ({row.conversation.status})
+                              </Link>
+                            ) : "—"}
+                          </td>
+                          <td className="py-2 pr-3">{row.conversation?.contact_name || "—"}</td>
+                          <td className="py-2 pr-3">{row.conversation?.inbox_name || "—"}</td>
+                          <td className="py-2 pr-3">{row.conversation?.assignee_name || "Unassigned"}</td>
+                          <td className="py-2 pr-3 max-w-xs truncate text-n-slate-11">
+                            {row.message?.content ?? (row.metric_value !== null ? formatTime(row.metric_value) : "—")}
+                          </td>
+                          <td className="py-2 text-n-slate-10">
+                            {row.occurred_at ? new Date(row.occurred_at * 1000).toLocaleString() : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="text-xs text-n-slate-10">No matching drilldown records in this date range.</p>
+              )}
+            </section>
+
+            {/* Tabbed Report Breakdowns: Inbox x Label Matrix, FRT Distribution, Outgoing Volume */}
+            <section className="rounded-xl border border-n-weak bg-n-solid-1 p-5 shadow-xs space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-n-weak pb-3">
+                <div className="flex flex-wrap gap-1">
+                  {([
+                    ["matrix", "Inbox × Label Matrix"],
+                    ["frt", "FRT Distribution"],
+                    ["outgoing", "Outgoing Messages"],
+                  ] as const).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setBreakdownTab(key)}
+                      aria-pressed={breakdownTab === key}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                        breakdownTab === key
+                          ? "bg-n-brand text-white"
+                          : "bg-n-solid-2 text-n-slate-11 hover:text-n-slate-12"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {breakdownTab === "outgoing" && (
+                  <select
+                    aria-label="Group outgoing messages by"
+                    className="h-8 rounded-lg border border-n-weak bg-n-solid-2 px-2.5 text-xs text-n-slate-12"
+                    value={outgoingGroup}
+                    onChange={(e) => setOutgoingGroup(e.target.value as "agent" | "inbox" | "team" | "label")}
+                  >
+                    <option value="agent">By Agent</option>
+                    <option value="inbox">By Inbox</option>
+                    <option value="team">By Team</option>
+                    <option value="label">By Label</option>
+                  </select>
+                )}
+              </div>
+
+              {breakdownTab === "matrix" && (
+                matrixData && matrixData.inboxes.length > 0 && matrixData.labels.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs text-n-slate-12">
+                      <thead className="border-b border-n-weak text-n-slate-10">
+                        <tr>
+                          <th className="py-2 pr-4">Inbox</th>
+                          {matrixData.labels.map((l) => (
+                            <th key={l.id} className="py-2 px-2 text-right font-medium">{l.title}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-n-weak">
+                        {matrixData.inboxes.map((inb, rIdx) => (
+                          <tr key={inb.id}>
+                            <td className="py-2 pr-4 font-medium">{inb.name}</td>
+                            {matrixData.labels.map((l, cIdx) => (
+                              <td key={l.id} className="py-2 px-2 text-right tabular-nums">
+                                {matrixData.matrix[rIdx]?.[cIdx] ?? 0}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="text-xs text-n-slate-10">Create inboxes and labels to view the matrix.</p>
+                )
+              )}
+
+              {breakdownTab === "frt" && (
+                Object.keys(frtData).length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs text-n-slate-12">
+                      <thead className="border-b border-n-weak text-n-slate-10">
+                        <tr>
+                          <th className="py-2 pr-4">Channel</th>
+                          <th className="py-2 px-2 text-right">0-1h</th>
+                          <th className="py-2 px-2 text-right">1-4h</th>
+                          <th className="py-2 px-2 text-right">4-8h</th>
+                          <th className="py-2 px-2 text-right">8-24h</th>
+                          <th className="py-2 px-2 text-right">24h+</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-n-weak">
+                        {Object.entries(frtData).map(([channel, buckets]) => (
+                          <tr key={channel}>
+                            <td className="py-2 pr-4 font-medium">{channel}</td>
+                            {(["0-1h", "1-4h", "4-8h", "8-24h", "24h+"] as const).map((b) => (
+                              <td key={b} className="py-2 px-2 text-right tabular-nums">{buckets[b] ?? 0}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="text-xs text-n-slate-10">No first-response distribution events in this range.</p>
+                )
+              )}
+
+              {breakdownTab === "outgoing" && (
+                outgoingRows.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs text-n-slate-12">
+                      <thead className="border-b border-n-weak text-n-slate-10">
+                        <tr>
+                          <th className="py-2 pr-4">Name</th>
+                          <th className="py-2 text-right">Outgoing Messages</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-n-weak">
+                        {outgoingRows.map((r, i) => (
+                          <tr key={`${r.id ?? r.name}-${i}`}>
+                            <td className="py-2 pr-4 font-medium">{r.name}</td>
+                            <td className="py-2 text-right tabular-nums">{r.outgoing_messages_count}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="text-xs text-n-slate-10">No outgoing messages recorded for this grouping.</p>
+                )
+              )}
             </section>
           </div>
         )}

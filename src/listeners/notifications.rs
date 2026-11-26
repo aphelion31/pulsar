@@ -3,9 +3,6 @@
 //! Notification::EmailNotificationService.
 //!
 //! events::start runs every listener for every event, so `handle` dispatches on `ev.name`.
-//! ponytail: access check is admin or inbox member only (no custom-role or team rules).
-//! ponytail: a re-assignment is skipped while an unread conversation_assignment for the same agent exists,
-//! because the event carries no previous assignee to detect a real change.
 
 use chrono::NaiveDateTime;
 use serde_json::{Value, json};
@@ -46,6 +43,7 @@ pub async fn handle(st: AppState, ev: Event) {
 struct ConvRef {
     id: i64,
     inbox_id: i64,
+    team_id: Option<i64>,
     status: i32,
     assignee_id: Option<i64>,
     contact_id: Option<i64>,
@@ -63,8 +61,8 @@ struct NotifRow {
 
 async fn conv_ref(db: &PgPool, account_id: i64, display_id: i64) -> sqlx::Result<Option<ConvRef>> {
     sqlx::query_as(
-        "SELECT id::bigint AS id, inbox_id::bigint AS inbox_id, status, assignee_id::bigint AS assignee_id,
-                contact_id::bigint AS contact_id
+        "SELECT id::bigint AS id, inbox_id::bigint AS inbox_id, team_id::bigint AS team_id,
+                status, assignee_id::bigint AS assignee_id, contact_id::bigint AS contact_id
          FROM conversations WHERE account_id = $1::bigint AND display_id = $2::bigint",
     )
     .bind(account_id)
@@ -111,17 +109,27 @@ async fn assignee_changed(st: &AppState, ev: &Event) -> sqlx::Result<()> {
     if conv.status == PENDING {
         return Ok(());
     }
-    let unread_dup: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM notifications WHERE user_id = $1::bigint AND primary_actor_type = 'Conversation'
-           AND primary_actor_id = $2::bigint AND notification_type = $3::bigint AND read_at IS NULL)",
-    )
-    .bind(assignee)
-    .bind(conv.id)
-    .bind(CONVERSATION_ASSIGNMENT)
-    .fetch_one(&st.db)
-    .await?;
-    if unread_dup {
-        return Ok(());
+    let prev_assignee = ev
+        .changed
+        .as_ref()
+        .and_then(|c| c.get("previous_assignee_id"));
+    if let Some(prev) = prev_assignee {
+        if prev.as_i64() == Some(assignee) {
+            return Ok(());
+        }
+    } else {
+        let unread_dup: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM notifications WHERE user_id = $1::bigint AND primary_actor_type = 'Conversation'
+               AND primary_actor_id = $2::bigint AND notification_type = $3::bigint AND read_at IS NULL)",
+        )
+        .bind(assignee)
+        .bind(conv.id)
+        .bind(CONVERSATION_ASSIGNMENT)
+        .fetch_one(&st.db)
+        .await?;
+        if unread_dup {
+            return Ok(());
+        }
     }
     build(
         st,
@@ -172,10 +180,14 @@ async fn message_created(st: &AppState, ev: &Event) -> sqlx::Result<()> {
         }
         let valid: Vec<i64> = sqlx::query_scalar(
             "SELECT user_id::bigint FROM account_users WHERE account_id = $1::bigint AND role = 1
-             UNION SELECT user_id::bigint FROM inbox_members WHERE inbox_id = $2::bigint",
+             UNION SELECT user_id::bigint FROM inbox_members WHERE inbox_id = $2::bigint
+             UNION SELECT tm.user_id::bigint FROM team_members tm
+                   JOIN account_users au ON au.user_id = tm.user_id AND au.account_id = $1::bigint
+                   WHERE $3::bigint IS NOT NULL AND tm.team_id = $3::bigint",
         )
         .bind(ev.account_id)
         .bind(conv.inbox_id)
+        .bind(conv.team_id)
         .fetch_all(db)
         .await?;
         ids.retain(|i| valid.contains(i));

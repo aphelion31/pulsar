@@ -1492,8 +1492,7 @@ async fn conv_destroy_custom_attributes(
     Ok(Json(json!({ "custom_attributes": attrs })))
 }
 
-/// POST /api/v1/widget/conversations/transcript {email} (conversations_controller#transcript). Gated like
-/// Chatwoot: plan gate is always true in Pulsar, rate limit per account not implemented (ponytail).
+/// POST /api/v1/widget/conversations/transcript {email} (conversations_controller#transcript).
 async fn conv_transcript(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -1504,6 +1503,18 @@ async fn conv_transcript(
     let Some(c) = latest_conv(&st.db, &w, s.c.ci_id).await? else {
         return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, String::new()));
     };
+    let limit: usize = std::env::var("PULSAR_WIDGET_TRANSCRIPT_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    if crate::auth::check_rate_limit(&st.db, &format!("widget_transcript:{}", c.account_id), true).await
+        > limit
+    {
+        return Err(ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Rate limit exceeded".into(),
+        ));
+    }
     // Chatwoot sends to the contact's stored email, not a client-supplied address.
     let Some(email) = s.c.email.clone().filter(|e| !e.trim().is_empty()) else {
         return Ok(Json(json!({})));

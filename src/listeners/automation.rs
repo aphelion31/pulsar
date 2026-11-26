@@ -1251,6 +1251,41 @@ async fn execute_rule(
                 }
             }
 
+            "add_sla" => {
+                if let Some(sla_id) = first_param
+                    .as_i64()
+                    .or_else(|| first_param.as_str().and_then(|s| s.trim().parse().ok()))
+                {
+                    let exists: Option<i64> = sqlx::query_scalar(
+                        "SELECT id::bigint FROM sla_policies WHERE id = $1 AND account_id = $2",
+                    )
+                    .bind(sla_id)
+                    .bind(conv.account_id)
+                    .fetch_optional(&st.db)
+                    .await?;
+                    if exists.is_some() && conv.sla_policy_id.is_none() {
+                        sqlx::query(
+                            "UPDATE conversations SET sla_policy_id = $1, updated_at = now() WHERE id = $2",
+                        )
+                        .bind(sla_id)
+                        .bind(conv.id)
+                        .execute(&st.db)
+                        .await?;
+                        sqlx::query(
+                            "INSERT INTO applied_slas (account_id, sla_policy_id, conversation_id, sla_status, created_at, updated_at)
+                             VALUES ($1, $2, $3, 0, now(), now())
+                             ON CONFLICT (account_id, sla_policy_id, conversation_id) DO NOTHING",
+                        )
+                        .bind(conv.account_id)
+                        .bind(sla_id)
+                        .bind(conv.id)
+                        .execute(&st.db)
+                        .await?;
+                        conv.sla_policy_id = Some(sla_id);
+                    }
+                }
+            }
+
             _ => {
                 tracing::warn!(
                     action_name = name,
@@ -1301,6 +1336,7 @@ mod tests {
             priority: Some(1),
             waiting_since: None,
             cached_label_list: Some("support, billing".into()),
+            sla_policy_id: None,
         }
     }
 

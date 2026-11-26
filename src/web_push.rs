@@ -57,6 +57,18 @@ pub(crate) fn vapid_configured() -> bool {
     env_nonempty(&["VAPID_PRIVATE_KEY", "WEB_PUSH_VAPID_PRIVATE_KEY"]).is_some()
 }
 
+/// Returns the URL-safe base64 VAPID public key (from explicit env or derived from the P-256 private key).
+pub(crate) fn vapid_public_key() -> Option<String> {
+    if let Some(raw_pub) = env_nonempty(&["VAPID_PUBLIC_KEY", "WEB_PUSH_VAPID_PUBLIC_KEY"])
+        && let Ok(bytes) = decode_b64_any(&raw_pub)
+    {
+        return Some(URL_SAFE_NO_PAD.encode(bytes));
+    }
+    let raw_priv = env_nonempty(&["VAPID_PRIVATE_KEY", "WEB_PUSH_VAPID_PRIVATE_KEY"])?;
+    let sk = parse_vapid_signing_key(&raw_priv).ok()?;
+    Some(URL_SAFE_NO_PAD.encode(sk.verifying_key().to_encoded_point(false).as_bytes()))
+}
+
 /// Encrypts `plaintext` for a subscription using RFC 8291 (`aes128gcm` single record).
 pub(crate) fn encrypt_aes128gcm(
     ua_public_b64: &str,
@@ -329,5 +341,8 @@ mod tests {
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
         assert_eq!(claims["aud"], "https://push.example.com:8443");
         assert_eq!(claims["sub"], "mailto:ops@example.com");
+        let sk = parse_vapid_signing_key(&vapid_priv_b64).unwrap();
+        let derived = URL_SAFE_NO_PAD.encode(sk.verifying_key().to_encoded_point(false).as_bytes());
+        assert_eq!(derived, k_b64);
     }
 }

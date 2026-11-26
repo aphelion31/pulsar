@@ -1,16 +1,5 @@
-//! OWNED BY A WORKER. See WORKERS.md for the contract.
-//! File storage + attachments + avatars. `routes()` is merged at the ROOT router (full paths, e.g. /rails/active_storage/...).
-//!
-//! Wiring for the coordinator:
-//! - Message with files: on `POST /api/v1/accounts/{account_id}/conversations/{display_id}/messages`
-//!   (multipart), call `storage::create_with_attachments(&st, &user, account_id, display_id, multipart).await`.
-//!   Put `DefaultBodyLimit::max(storage::MAX_BYTES + 1024 * 1024)` on that route only.
-//! - Message listing: add `"attachments": storage::attachments_json(&st.db, msg_id).await` per message.
-//! - Profile avatar: `storage::set_avatar(&st.db, "User", user.id, field).await?` returns URL.
-//!   Read URL with `storage::avatar_url(&st.db, "User", user.id).await`.
-//!   Delete with `storage::remove_avatar(&st.db, "User", user.id).await?`.
-// ponytail: dead_code allowed until coordinator wires the pub(crate) helpers into conversations/profile routes.
-#![allow(dead_code)]
+//! File storage, ActiveStorage-compatible blobs, attachments, and avatars.
+//! `routes()` is merged at the root router (`/rails/active_storage/...`).
 
 use std::path::{Path as FsPath, PathBuf};
 

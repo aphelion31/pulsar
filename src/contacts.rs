@@ -1301,12 +1301,21 @@ async fn destroy_custom_attributes(
 
 // DELETE /contacts/{id}/avatar
 async fn destroy_avatar(
-    Path((account_id, _id)): Path<(i64, i64)>,
+    Path((account_id, id)): Path<(i64, i64)>,
     user: CurrentUser,
     State(st): State<AppState>,
 ) -> ApiResult {
     let _au = require_account(&st.db, &user, account_id).await?;
-    // ponytail: avatar purge is a no-op when avatars stored as url/empty
+    let exists: Option<i64> =
+        sqlx::query_scalar("SELECT id::bigint FROM contacts WHERE id = $1 AND account_id = $2")
+            .bind(id)
+            .bind(account_id)
+            .fetch_optional(&st.db)
+            .await?;
+    if exists.is_none() {
+        return Err(ApiError::not_found());
+    }
+    crate::storage::remove_avatar(&st.db, "Contact", id).await?;
     Ok(Json(json!({ "message": "Avatar deleted" })))
 }
 

@@ -22,11 +22,17 @@ pub async fn notification_subscription_destroy(
     user: CurrentUser,
     req: Request,
 ) -> ApiResult<StatusCode> {
-    let query_token = req.uri().query().and_then(|q| {
-        url::form_urlencoded::parse(q.as_bytes())
-            .find(|(k, _)| k == "push_token")
-            .map(|(_, v)| v.into_owned())
-    });
+    let mut query_token: Option<String> = None;
+    for k in ["push_token", "endpoint", "identifier"] {
+        if let Some(v) = req.uri().query().and_then(|q| {
+            url::form_urlencoded::parse(q.as_bytes())
+                .find(|(qk, _)| qk == k)
+                .map(|(_, qv)| qv.into_owned())
+        }) {
+            query_token = Some(v);
+            break;
+        }
+    }
     let content_type = req
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
@@ -41,18 +47,33 @@ pub async fn notification_subscription_destroy(
             serde_json::from_slice(&body).map_err(|_| ApiError::bad("Invalid JSON"))?;
         value
             .get("push_token")
+            .or_else(|| value.get("endpoint"))
+            .or_else(|| value.get("identifier"))
             .and_then(Value::as_str)
             .map(str::to_owned)
     } else if content_type.starts_with("application/x-www-form-urlencoded") {
         url::form_urlencoded::parse(&body)
-            .find(|(k, _)| k == "push_token")
+            .find(|(k, _)| matches!(k.as_ref(), "push_token" | "endpoint" | "identifier"))
             .map(|(_, v)| v.into_owned())
     } else {
         None
     };
-    if let Some(token) = body_token.or(query_token) {
-        sqlx::query("DELETE FROM notification_subscriptions WHERE id = (SELECT id FROM notification_subscriptions WHERE user_id = $1 AND subscription_attributes->>'push_token' = $2 ORDER BY id LIMIT 1)")
-            .bind(user.id).bind(token).execute(&db).await?;
+    if let Some(token) = body_token.or(query_token).filter(|t| !t.trim().is_empty()) {
+        sqlx::query(
+            "DELETE FROM notification_subscriptions
+             WHERE id IN (
+                 SELECT id FROM notification_subscriptions
+                 WHERE user_id = $1
+                   AND (identifier = $2
+                        OR subscription_attributes->>'push_token' = $2
+                        OR subscription_attributes->>'endpoint' = $2)
+                 ORDER BY id LIMIT 1
+             )",
+        )
+        .bind(user.id)
+        .bind(token)
+        .execute(&db)
+        .await?;
     }
     Ok(StatusCode::OK)
 }
@@ -259,12 +280,15 @@ pub fn token_valid(tokens: Option<&Value>, client: &str, token: &str) -> bool {
 /// bcrypt cost 10 is ~50 ms, and every dashboard request carries a devise token: without this, each
 /// request paid it on the async runtime. Cache successful checks keyed by sha256(token, stored hash), so a
 /// rotated or revoked token (new stored hash) is re-verified and a wrong token never hits the cache.
-/// Same idea as devise_token_auth's `token_validation_response` cache.
-/// ponytail: unbounded set cleared at 10k entries; use an LRU if tokens churn faster than that.
+/// Same idea as devise_token_auth's `token_validation_response` bounded FIFO cache.
 fn bcrypt_cached(token: &str, hash: &str) -> bool {
     use sha2::{Digest, Sha256};
-    use std::{collections::HashSet, sync::Mutex};
-    static OK: std::sync::LazyLock<Mutex<HashSet<[u8; 32]>>> =
+    use std::{
+        collections::{HashSet, VecDeque},
+        sync::Mutex,
+    };
+    const CAP: usize = 10_000;
+    static OK: std::sync::LazyLock<Mutex<(HashSet<[u8; 32]>, VecDeque<[u8; 32]>)>> =
         std::sync::LazyLock::new(Default::default);
     let key: [u8; 32] = Sha256::new()
         .chain_update(token)
@@ -272,16 +296,21 @@ fn bcrypt_cached(token: &str, hash: &str) -> bool {
         .chain_update(hash)
         .finalize()
         .into();
-    if OK.lock().map(|s| s.contains(&key)).unwrap_or(false) {
+    if OK.lock().map(|g| g.0.contains(&key)).unwrap_or(false) {
         return true;
     }
     let ok = bcrypt::verify(token, hash).unwrap_or(false);
     if ok {
-        if let Ok(mut s) = OK.lock() {
-            if s.len() >= 10_000 {
-                s.clear();
+        if let Ok(mut g) = OK.lock() {
+            if !g.0.contains(&key) {
+                if g.1.len() >= CAP
+                    && let Some(oldest) = g.1.pop_front()
+                {
+                    g.0.remove(&oldest);
+                }
+                g.0.insert(key);
+                g.1.push_back(key);
             }
-            s.insert(key);
         }
     }
     ok
@@ -463,9 +492,10 @@ pub(crate) fn auth_headers(uid: &str, client: &str, token: &str, expiry: i64) ->
 /// Failed-login throttle per normalized email: 10 failures per 15 minutes lock further attempts.
 /// Uses in-memory tracking on single-node deployments, and PostgreSQL (`pulsar_rate_limits`)
 /// when `PULSAR_MULTI_NODE=1`.
-async fn check_login_failures(db: &PgPool, key: &str, record_failure: bool) -> usize {
+/// Generic 15-minute sliding/bucket rate limit check backed by in-memory map or `pulsar_rate_limits`.
+pub(crate) async fn check_rate_limit(db: &PgPool, key: &str, record_hit: bool) -> usize {
     if std::env::var("PULSAR_MULTI_NODE").as_deref() == Ok("1") {
-        if record_failure {
+        if record_hit {
             let hits: i32 = sqlx::query_scalar(
                 "INSERT INTO pulsar_rate_limits (bucket, hits, window_start)
                  VALUES ($1, 1, now())
@@ -489,7 +519,11 @@ async fn check_login_failures(db: &PgPool, key: &str, record_failure: bool) -> u
         .unwrap_or(None);
         return hits.unwrap_or(0).max(0) as usize;
     }
-    mem_login_failures(key, record_failure)
+    mem_login_failures(key, record_hit)
+}
+
+async fn check_login_failures(db: &PgPool, key: &str, record_failure: bool) -> usize {
+    check_rate_limit(db, key, record_failure).await
 }
 
 fn mem_login_failures(email: &str, record_failure: bool) -> usize {
