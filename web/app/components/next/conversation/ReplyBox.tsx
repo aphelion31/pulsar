@@ -1,12 +1,6 @@
 // Chatwoot-style ReplyBox: Reply / Private Note tabs, Markdown toolbar, "/" Canned, "@" Mentions, Emoji Picker, KB Article insert, Voice Recorder, Attachments, Captain AI.
 import {
-  Bold,
   BookOpen,
-  Code,
-  Eye,
-  Italic,
-  Link as LinkIcon,
-  List,
   Maximize2,
   Mic,
   Minimize2,
@@ -20,9 +14,9 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Avatar from "~/components/next/Avatar";
+import { RichTextEditor } from "~/components/next/RichTextEditor";
 import { acct, api, type Agent, type Canned, type Message } from "~/lib/api";
 import { bytes } from "~/lib/format";
-import { renderSafeMarkdown } from "~/lib/markdown";
 
 const EMOJI_GROUPS: Array<{ name: string; emojis: string[] }> = [
   { name: "Smileys", emojis: ["😀", "😄", "😊", "😉", "😍", "🥳", "🤔", "😅", "🙏", "👍", "👏", "❤️", "🎉", "🔥", "✨", "✅"] },
@@ -54,7 +48,6 @@ export function ReplyBox({
   const [text, setText] = useState("");
   const [note, setNote] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [previewMode, setPreviewMode] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -148,28 +141,18 @@ export function ReplyBox({
     }
   }
 
-  function wrapSelection(before: string, after = "") {
-    const el = textareaRef.current;
-    if (!el) return;
-    const start = el.selectionStart ?? text.length;
-    const end = el.selectionEnd ?? text.length;
-    const sel = text.slice(start, end) || "text";
-    const next = text.slice(0, start) + before + sel + after + text.slice(end);
-    setText(next);
-    setTimeout(() => {
-      el.focus();
-      el.setSelectionRange(start + before.length, start + before.length + sel.length);
-    }, 0);
-  }
-
   function insertText(snippet: string) {
     const el = textareaRef.current;
-    const pos = el?.selectionStart ?? text.length;
+    if (!el) {
+      setText((prev) => prev + snippet);
+      return;
+    }
+    const pos = el.selectionStart ?? text.length;
     const next = text.slice(0, pos) + snippet + text.slice(pos);
     setText(next);
     setTimeout(() => {
-      el?.focus();
-      el?.setSelectionRange(pos + snippet.length, pos + snippet.length);
+      el.focus();
+      el.setSelectionRange(pos + snippet.length, pos + snippet.length);
     }, 0);
   }
 
@@ -538,70 +521,34 @@ export function ReplyBox({
           </div>
         )}
 
-        {/* Formatting Strip + Editor */}
+        {/* Dual-mode Rich WYSIWYG + Markdown Editor */}
         <div className="px-3 pt-2">
-          <div className="mb-1 flex items-center justify-between text-n-slate-10">
-            <div className="flex items-center gap-0.5">
-              <button type="button" onClick={() => wrapSelection("**", "**")} title="Bold" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-                <Bold className="size-3.5" />
-              </button>
-              <button type="button" onClick={() => wrapSelection("_", "_")} title="Italic" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-                <Italic className="size-3.5" />
-              </button>
-              <button type="button" onClick={() => wrapSelection("`", "`")} title="Code" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-                <Code className="size-3.5" />
-              </button>
-              <button type="button" onClick={() => wrapSelection("[", "](https://)")} title="Link" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-                <LinkIcon className="size-3.5" />
-              </button>
-              <button type="button" onClick={() => wrapSelection("- ")} title="List" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-                <List className="size-3.5" />
-              </button>
-            </div>
-            <button
-              type="button"
-              onClick={() => setPreviewMode((v) => !v)}
-              aria-pressed={previewMode}
-              className="inline-flex h-6 items-center gap-1 rounded px-2 text-[11px] font-medium hover:bg-n-alpha-2 hover:text-n-slate-12"
-            >
-              <Eye className="size-3" />
-              <span>{previewMode ? "Write" : "Preview"}</span>
-            </button>
-          </div>
-
-          {previewMode ? (
-            <div
-              className="min-h-[76px] max-h-60 overflow-y-auto py-1 text-sm leading-relaxed text-n-slate-12"
-              dangerouslySetInnerHTML={{
-                __html: renderSafeMarkdown(text) || '<span class="text-n-slate-10">Nothing to preview</span>',
-              }}
-            />
-          ) : (
-            <textarea
-              ref={textareaRef}
-              aria-label={note ? "Private note" : "Reply"}
-              value={text}
-              onChange={(e) => handleTextChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  void send();
-                } else if (e.key === "Escape") {
-                  setCannedOpen(false);
-                  setMentionOpen(false);
-                  setShowEmoji(false);
-                  setArticleOpen(false);
-                }
-              }}
-              rows={expanded ? 9 : 3}
-              placeholder={
-                note
-                  ? "Write a private note... Type @ to mention teammates or / for canned responses"
-                  : "Shift + Enter for new line. Start with '/' to select a Canned Response."
+          <RichTextEditor
+            value={text}
+            onChange={handleTextChange}
+            compact
+            allowSplit
+            ariaLabel={note ? "Private note" : "Reply"}
+            rows={expanded ? 9 : 3}
+            minHeightClass={expanded ? "min-h-[168px]" : "min-h-[76px]"}
+            textareaRef={textareaRef}
+            placeholder={
+              note
+                ? "Write a private note... Type @ to mention teammates or / for canned responses"
+                : "Shift + Enter for new line. Start with '/' to select a Canned Response."
+            }
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                void send();
+              } else if (e.key === "Escape") {
+                setCannedOpen(false);
+                setMentionOpen(false);
+                setShowEmoji(false);
+                setArticleOpen(false);
               }
-              className="w-full resize-none bg-transparent py-1 text-sm leading-relaxed text-n-slate-12 outline-none placeholder:text-n-slate-10"
-            />
-          )}
+            }}
+          />
 
           {files.length > 0 && (
             <ul className="mb-2 flex flex-wrap gap-2">

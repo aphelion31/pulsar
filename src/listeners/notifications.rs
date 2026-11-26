@@ -688,7 +688,7 @@ async fn deliver_push(
     let Some(client) = client else { return };
 
     for (sub_id, sub_type, attrs) in subs {
-        let resp = match sub_type {
+        let status: Option<u16> = match sub_type {
             // FCM push token
             2 => {
                 let Some(token) = attrs["push_token"].as_str().filter(|s| !s.is_empty()) else {
@@ -712,37 +712,69 @@ async fn deliver_push(
                 if let Some(ref key) = fcm_key {
                     req = req.header("authorization", format!("key={key}"));
                 }
-                req.send().await
+                req.send().await.ok().map(|r| r.status().as_u16())
             }
-            // Web Push subscription
+            // Web Push subscription (RFC 8291/8292 encrypted delivery when VAPID + keys present, else relay/post fallback)
             1 => {
-                let target = web_push_relay.as_deref().or_else(|| {
-                    if allow_direct_web_push {
-                        attrs["endpoint"].as_str().filter(|s| !s.is_empty())
-                    } else {
-                        None
-                    }
-                });
-                let Some(target) = target else { continue };
-                let payload = json!({
-                    "title": title,
-                    "body": body,
-                    "url": url,
-                    "account_id": account_id,
-                    "conversation_id": display_id,
-                    "subscription": attrs,
-                });
-                client
-                    .post(target)
-                    .header("content-type", "application/json")
-                    .body(payload.to_string())
-                    .send()
+                let endpoint = attrs["endpoint"].as_str().filter(|s| !s.is_empty());
+                let p256dh = attrs["keys"]["p256dh"].as_str().filter(|s| !s.is_empty());
+                let auth = attrs["keys"]["auth"].as_str().filter(|s| !s.is_empty());
+                if let (Some(ep), Some(k), Some(a)) = (endpoint, p256dh, auth)
+                    && crate::web_push::vapid_configured()
+                {
+                    let encrypted_payload = json!({
+                        "title": title,
+                        "body": body,
+                        "url": url,
+                        "account_id": account_id,
+                        "conversation_id": display_id,
+                        "notification_type": "conversation_creation",
+                    });
+                    match crate::web_push::send_encrypted(
+                        ep,
+                        k,
+                        a,
+                        encrypted_payload.to_string().as_bytes(),
+                    )
                     .await
+                    {
+                        Ok(r) => Some(r.status().as_u16()),
+                        Err(e) => {
+                            tracing::warn!(error = %e, sub_id, "encrypted web push failed");
+                            None
+                        }
+                    }
+                } else {
+                    let target = web_push_relay.as_deref().or_else(|| {
+                        if allow_direct_web_push {
+                            endpoint
+                        } else {
+                            None
+                        }
+                    });
+                    let Some(target) = target else { continue };
+                    let payload = json!({
+                        "title": title,
+                        "body": body,
+                        "url": url,
+                        "account_id": account_id,
+                        "conversation_id": display_id,
+                        "subscription": attrs,
+                    });
+                    client
+                        .post(target)
+                        .header("content-type", "application/json")
+                        .body(payload.to_string())
+                        .send()
+                        .await
+                        .ok()
+                        .map(|r| r.status().as_u16())
+                }
             }
             _ => continue,
         };
-        if let Ok(r) = resp
-            && matches!(r.status().as_u16(), 404 | 410)
+        if let Some(code) = status
+            && matches!(code, 404 | 410)
         {
             let _ = sqlx::query("DELETE FROM notification_subscriptions WHERE id = $1::bigint")
                 .bind(sub_id)

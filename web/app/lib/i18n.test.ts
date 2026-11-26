@@ -9,20 +9,18 @@ describe("i18n", () => {
     expect(t("NONEXISTENT.KEY")).toBe("NONEXISTENT.KEY");
   });
 
-  test("includes all 9 supported locales with Arabic RTL flag", () => {
-    expect(SUPPORTED_LOCALES.map((l) => l.code)).toEqual([
-      "en",
-      "id",
-      "es",
-      "fr",
-      "de",
-      "pt_BR",
-      "ja",
-      "zh_CN",
-      "ar",
-    ]);
-    expect(isRtlLocale("ar")).toBe(true);
+  test("includes all 57 Chatwoot locales with 5 RTL languages", () => {
+    const codes = SUPPORTED_LOCALES.map((l) => l.code);
+    expect(codes.length).toBe(57);
+    expect(codes[0]).toBe("en");
+    for (const expected of ["id", "es", "fr", "de", "pt_BR", "ja", "zh_CN", "zh_TW", "ar", "fa", "he", "ur", "ur_IN"]) {
+      expect(codes).toContain(expected);
+    }
+    for (const rtl of ["ar", "fa", "he", "ur", "ur_IN"]) {
+      expect(isRtlLocale(rtl)).toBe(true);
+    }
     expect(isRtlLocale("id")).toBe(false);
+    expect(isRtlLocale("en")).toBe(false);
     expect(getLocale()).toBe("en");
   });
 });

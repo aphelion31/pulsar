@@ -226,7 +226,12 @@ fn validate_password(pw: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-async fn send_confirmation_email(email: &str, name: &str, token: &str, redirect_url: Option<&str>) {
+pub(crate) async fn send_confirmation_email(
+    email: &str,
+    name: &str,
+    token: &str,
+    redirect_url: Option<&str>,
+) {
     let base = std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:3000".into());
     let mut link = format!(
         "{}/app/auth/confirmation?confirmation_token={token}",
