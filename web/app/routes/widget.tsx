@@ -1,18 +1,21 @@
 // Public website chat widget (customer side). Loaded in an iframe at /app/widget?website_token=...
-// Multi-view Chatwoot parity: Home (TeamAvailability + Start/Continue CTA), PreChat form, and Messages + Emoji picker + CSAT + Cable.
+// Multi-view Chatwoot parity: Home, Unread Drawer, PreChat, Messages (CSAT + Dyte + Cable), Campaigns, and Inline Help Center.
 import {
   ArrowLeft,
+  BookOpen,
   ChevronRight,
   Home,
   Mail,
   MessageSquare,
+  Search,
   Send,
   Smile,
+  Video,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
-import { clock } from "~/lib/format";
-import { initials } from "~/lib/format";
+import { clock, initials } from "~/lib/format";
+import { renderSafeMarkdown } from "~/lib/markdown";
 
 type WidgetMessage = {
   id: number;
@@ -22,7 +25,12 @@ type WidgetMessage = {
   echo_id?: string;
   sender?: { name?: string };
   content_type?: string;
-  content_attributes?: { submitted_values?: { csat_survey_response?: { rating?: number } } };
+  content_attributes?: {
+    submitted_values?: { csat_survey_response?: { rating?: number } };
+    type?: string;
+    data?: { meeting_id?: string };
+    external_error?: string;
+  };
 };
 
 type AgentMember = {
@@ -41,6 +49,10 @@ type PreChatField = {
   enabled?: boolean;
 };
 
+type PortalSummary = { slug: string; name: string; default_locale?: string };
+type PortalArticle = { id: number; title: string; slug: string; description?: string | null; content?: string | null };
+type CampaignSummary = { id: number; title?: string; message?: string; trigger_rules?: { url?: string; time_on_page?: number } };
+
 type Config = {
   website_channel_config: {
     auth_token: string;
@@ -55,6 +67,7 @@ type Config = {
       pre_chat_message?: string;
       pre_chat_fields?: PreChatField[];
     };
+    portal?: PortalSummary | null;
   };
   contact: { pubsub_token: string; name?: string; email?: string };
 };
@@ -129,7 +142,21 @@ export default function Widget() {
   const [cfg, setCfg] = useState<Config | null>(null);
   const [members, setMembers] = useState<AgentMember[]>([]);
   const [messages, setMessages] = useState<WidgetMessage[]>([]);
-  const [view, setView] = useState<"home" | "prechat" | "messages">("home");
+  const initialQueryView = params.get("view");
+  const [view, setView] = useState<"home" | "prechat" | "messages" | "unread" | "article">(() =>
+    initialQueryView === "unread-messages" ? "unread" : "home",
+  );
+  const [proactiveCampaign, setProactiveCampaign] = useState<CampaignSummary | null>(null);
+  const [articles, setArticles] = useState<PortalArticle[]>([]);
+  const [articleQuery, setArticleQuery] = useState("");
+  const [activeArticle, setActiveArticle] = useState<PortalArticle | null>(null);
+  const [dyteSession, setDyteSession] = useState<{
+    messageId: number;
+    authToken?: string;
+    roomUrl?: string;
+    error?: string;
+  } | null>(null);
+  const [dyteBusy, setDyteBusy] = useState(false);
   const [text, setText] = useState("");
   const [showEmoji, setShowEmoji] = useState(false);
   const [error, setError] = useState("");
@@ -176,13 +203,29 @@ export default function Widget() {
       setCfg(c);
       setMessages(msgs);
       setMembers(Array.isArray(mem?.payload) ? mem.payload : []);
-      if (msgs.length > 0) setView("messages");
+      if (initialQueryView === "unread-messages") {
+        setView("unread");
+      } else if (msgs.length > 0) {
+        setView("messages");
+      }
+      const portal = c.website_channel_config.portal;
+      if (portal?.slug) {
+        const loc = portal.default_locale || "en";
+        fetch(`/hc/${encodeURIComponent(portal.slug)}/${encodeURIComponent(loc)}/articles.json`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((body) => {
+            if (live && Array.isArray(body?.payload)) {
+              setArticles(body.payload as PortalArticle[]);
+            }
+          })
+          .catch(() => {});
+      }
     };
     start().catch((e) => live && setError(e instanceof Error ? e.message : "Failed to initialize widget"));
     return () => {
       live = false;
     };
-  }, [websiteToken]);
+  }, [websiteToken, initialQueryView]);
 
   useEffect(() => {
     if (!cfg) return;
@@ -228,18 +271,13 @@ export default function Widget() {
     const timers: ReturnType<typeof setTimeout>[] = [];
     let live = true;
     call("campaigns", token)
-      .then((list: { id: number; trigger_rules?: { url?: string; time_on_page?: number } }[]) => {
+      .then((list: CampaignSummary[]) => {
         for (const c of list) {
           if (!live || !c.trigger_rules?.url || !urlMatches(c.trigger_rules.url, page)) continue;
+          setProactiveCampaign((prev) => prev ?? c);
           timers.push(
             setTimeout(async () => {
-              await call("events", token, {
-                method: "POST",
-                body: JSON.stringify({
-                  name: "campaign.triggered",
-                  event_info: { campaign_id: c.id, referer: page, initiated_at: { timestamp: new Date().toString() } },
-                }),
-              });
+              await triggerCampaign(c.id, token, page);
               const m = await call("messages", token);
               if (live) {
                 setMessages(m.payload ?? []);
@@ -314,6 +352,40 @@ export default function Widget() {
     }
   }
 
+  async function triggerCampaign(campaignId: number, tok: string, pageUrl: string) {
+    await call("events", tok, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "campaign.triggered",
+        event_info: { campaign_id: campaignId, referer: pageUrl, initiated_at: { timestamp: new Date().toString() } },
+      }),
+    });
+  }
+
+  async function joinDyteMeeting(messageId: number) {
+    if (!cfg || dyteBusy) return;
+    setDyteBusy(true);
+    try {
+      const res = await call("integrations/dyte/add_participant_to_meeting", cfg.website_channel_config.auth_token, {
+        method: "POST",
+        body: JSON.stringify({ message_id: messageId }),
+      });
+      if (res?.error) {
+        setDyteSession({ messageId, error: String(res.error) });
+        return;
+      }
+      const authToken = res?.authResponse?.authToken ?? res?.data?.token ?? res?.token ?? res?.auth_token;
+      const roomUrl =
+        res?.room_url ?? (authToken ? `https://app.dyte.io/v2/meeting?authToken=${encodeURIComponent(authToken)}` : undefined);
+      setDyteSession({ messageId, authToken, roomUrl });
+      if (roomUrl) window.open(roomUrl, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setDyteSession({ messageId, error: err instanceof Error ? err.message : "Failed to join call" });
+    } finally {
+      setDyteBusy(false);
+    }
+  }
+
   async function requestTranscript() {
     if (!cfg) return;
     setNotice("");
@@ -370,7 +442,10 @@ export default function Widget() {
           <div className="flex min-w-0 items-center gap-2.5">
             <button
               type="button"
-              onClick={() => setView("home")}
+              onClick={() => {
+                if (view === "article") setActiveArticle(null);
+                setView("home");
+              }}
               aria-label="Back to home"
               className="grid size-8 shrink-0 place-items-center rounded-lg hover:bg-white/15"
             >
@@ -378,11 +453,11 @@ export default function Widget() {
             </button>
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold leading-tight">
-                {ch?.website_name || "Chat with us"}
+                {view === "article" && activeArticle ? activeArticle.title : ch?.website_name || "Chat with us"}
               </p>
               <p className="flex items-center gap-1.5 text-[11px] text-white/85">
                 <span className="size-1.5 rounded-full bg-emerald-300" />
-                {replySubtext}
+                {view === "unread" ? "Unread messages" : view === "article" ? ch?.portal?.name || "Help Center" : replySubtext}
               </p>
             </div>
           </div>
@@ -439,6 +514,25 @@ export default function Widget() {
             </button>
           </div>
 
+          {proactiveCampaign && messages.length === 0 && (
+            <button
+              type="button"
+              onClick={async () => {
+                if (!cfg) return;
+                await triggerCampaign(proactiveCampaign.id, cfg.website_channel_config.auth_token, document.referrer || location.href).catch(() => {});
+                const m = await call("messages", cfg.website_channel_config.auth_token);
+                setMessages(m.payload ?? []);
+                setView("messages");
+              }}
+              className="rounded-xl border border-n-weak bg-white p-4 text-left shadow-xs transition hover:bg-n-solid-2 dark:bg-n-solid-2"
+            >
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-n-slate-10">
+                {proactiveCampaign.title || "Proactive message"}
+              </div>
+              <p className="text-sm text-n-slate-12">{proactiveCampaign.message || "Chat with our team"}</p>
+            </button>
+          )}
+
           {messages.length > 0 && (
             <button
               type="button"
@@ -453,7 +547,108 @@ export default function Widget() {
               </p>
             </button>
           )}
+
+          {ch?.portal && articles.length > 0 && (
+            <div className="rounded-xl border border-n-weak bg-white p-4 shadow-xs dark:bg-n-solid-2">
+              <div className="mb-2.5 flex items-center gap-1.5 text-xs font-semibold text-n-slate-12">
+                <BookOpen className="size-3.5 text-n-brand" />
+                <span>{ch.portal.name}</span>
+              </div>
+              <div className="relative mb-2.5">
+                <Search className="pointer-events-none absolute left-2.5 top-2.5 size-3.5 text-n-slate-10" />
+                <input
+                  type="search"
+                  value={articleQuery}
+                  onChange={(e) => setArticleQuery(e.target.value)}
+                  placeholder="Search Help Center articles..."
+                  className="h-8 w-full rounded-lg border border-n-weak bg-n-background pl-8 pr-2.5 text-xs focus:border-n-brand focus:outline-none"
+                />
+              </div>
+              <ul className="divide-y divide-n-weak">
+                {articles
+                  .filter((a) => !articleQuery.trim() || a.title.toLowerCase().includes(articleQuery.toLowerCase()))
+                  .slice(0, 5)
+                  .map((a) => (
+                    <li key={a.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveArticle(a);
+                          setView("article");
+                        }}
+                        className="flex w-full items-center justify-between gap-2 py-2 text-left text-xs text-n-slate-12 hover:text-n-brand"
+                      >
+                        <span className="truncate">{a.title}</span>
+                        <ChevronRight className="size-3.5 shrink-0 text-n-slate-10" />
+                      </button>
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
         </div>
+      )}
+
+      {view === "unread" && (
+        <div className="flex flex-1 flex-col justify-between overflow-y-auto p-4">
+          <div className="space-y-2.5">
+            {messages
+              .filter((m) => m.message_type !== 0)
+              .slice(-5)
+              .map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setView("messages")}
+                  className="w-full rounded-xl border border-n-weak bg-n-solid-1 p-3.5 text-left shadow-xs transition hover:border-n-brand"
+                >
+                  <div className="mb-1 flex items-center justify-between text-[11px] text-n-slate-10">
+                    <span>{m.sender?.name || ch?.website_name || "Support"}</span>
+                    <span>{clock(m.created_at)}</span>
+                  </div>
+                  <p className="line-clamp-2 text-sm text-n-slate-12">{m.content || "Attachment"}</p>
+                </button>
+              ))}
+            {messages.filter((m) => m.message_type !== 0).length === 0 && (
+              <p className="py-6 text-center text-xs text-n-slate-10">No unread messages.</p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setView("messages")}
+            className="mt-4 flex h-10 w-full items-center justify-center rounded-lg text-sm font-medium text-white"
+            style={{ background: color }}
+          >
+            Open messages
+          </button>
+        </div>
+      )}
+
+      {view === "article" && activeArticle && (
+        <article className="flex-1 overflow-y-auto bg-n-background p-5">
+          <h2 className="font-inter-display text-lg font-semibold text-n-slate-12">{activeArticle.title}</h2>
+          {activeArticle.description && (
+            <p className="mt-1 text-xs text-n-slate-11">{activeArticle.description}</p>
+          )}
+          <div
+            className="mt-4 text-sm leading-relaxed text-n-slate-12"
+            dangerouslySetInnerHTML={{
+              __html: renderSafeMarkdown(activeArticle.content || activeArticle.description || ""),
+            }}
+          />
+          {ch?.portal?.slug && (
+            <div className="mt-6 border-t border-n-weak pt-3">
+              <a
+                href={`/hc/${encodeURIComponent(ch.portal.slug)}/articles/${encodeURIComponent(activeArticle.slug)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs font-medium text-n-brand hover:underline"
+              >
+                Read in Help Center →
+              </a>
+            </div>
+          )}
+        </article>
       )}
 
       {view === "prechat" && (
@@ -532,6 +727,32 @@ export default function Widget() {
                   >
                     <p className="whitespace-pre-wrap break-words">{m.content}</p>
                     {m.content_type === "input_csat" && <Csat message={m} rate={rate} />}
+                    {m.content_type === "integrations" && m.content_attributes?.type === "dyte" && (
+                      <div className="mt-2 space-y-1.5">
+                        <button
+                          type="button"
+                          disabled={dyteBusy}
+                          onClick={() => void joinDyteMeeting(m.id)}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-n-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-n-blue-10 disabled:opacity-50"
+                        >
+                          <Video className="size-3.5" />
+                          <span>{dyteBusy ? "Connecting..." : "Join video call"}</span>
+                        </button>
+                        {dyteSession?.messageId === m.id && dyteSession.error && (
+                          <p className="text-xs text-n-ruby-11">{dyteSession.error}</p>
+                        )}
+                        {dyteSession?.messageId === m.id && dyteSession.roomUrl && (
+                          <a
+                            href={dyteSession.roomUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block text-xs underline text-n-brand"
+                          >
+                            Open meeting room
+                          </a>
+                        )}
+                      </div>
+                    )}
                     <p
                       className={`mt-1 font-mono text-[10px] ${
                         mine ? "text-white/75" : "text-n-slate-10"

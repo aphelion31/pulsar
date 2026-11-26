@@ -443,7 +443,40 @@ pub(crate) async fn attach_to_message(
     .bind(extension_of(fname))
     .fetch_one(db)
     .await?;
-    attach(db, "Attachment", att_id, "file", blob_id).await
+    attach(db, "Attachment", att_id, "file", blob_id).await?;
+    Ok(())
+}
+
+/// Read the first audio attachment bytes of a message for Whisper transcription.
+pub(crate) async fn read_first_audio_blob(
+    db: &PgPool,
+    message_id: i64,
+) -> Result<(String, String, Vec<u8>), ApiError> {
+    let row: Option<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT b.key, b.filename, b.content_type
+         FROM attachments at
+         JOIN active_storage_attachments asa
+           ON asa.record_type = 'Attachment' AND asa.record_id = at.id AND asa.name = 'file'
+         JOIN active_storage_blobs b ON b.id = asa.blob_id
+         WHERE at.message_id = $1::bigint
+           AND (at.file_type = 1 OR b.content_type LIKE 'audio/%' OR b.content_type = 'video/webm')
+         ORDER BY at.id LIMIT 1",
+    )
+    .bind(message_id)
+    .fetch_optional(db)
+    .await?;
+    let (key, filename, ct) =
+        row.ok_or_else(|| ApiError::bad("Message has no audio attachment"))?;
+    if !valid_key(&key) {
+        return Err(ApiError::not_found());
+    }
+    let bytes = tokio::fs::read(blob_path(&key))
+        .await
+        .map_err(|_| ApiError::not_found())?;
+    let ct = ct
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| "audio/ogg".into());
+    Ok((filename, ct, bytes))
 }
 
 /// Attachment JSON in the shape of `_attachment.json.jbuilder`. Empty when the message has none.

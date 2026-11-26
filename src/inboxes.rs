@@ -1480,12 +1480,15 @@ async fn agent_create(
     };
 
     let mut tx = st.db.begin().await?;
-    let uid = find_or_create_user(&mut tx, &email, &name).await?;
+    let (uid, invite_tok) = find_or_create_user(&mut tx, &email, &name).await?;
     if account_user_exists(&mut tx, account_id, uid).await? {
         return Err(ApiError::bad("Agent already exists in this account"));
     }
     insert_account_user(&mut tx, account_id, uid, role).await?;
     tx.commit().await?;
+    if let Some(tok) = invite_tok {
+        spawn_agent_invite(&st.frontend_url, email, tok);
+    }
 
     let agent = agents_for(&st.db, account_id, Some(vec![uid]))
         .await?
@@ -1529,11 +1532,15 @@ async fn agents_bulk_create(
             AGENT_LIMIT_MESSAGE.into(),
         ));
     }
+    let mut invites = Vec::new();
     for email in emails.iter().filter(|e| e.contains('@')) {
         let name = email.split('@').next().unwrap_or("agent");
-        let uid = find_or_create_user(&mut tx, email, name).await?;
+        let (uid, invite_tok) = find_or_create_user(&mut tx, email, name).await?;
         if !account_user_exists(&mut tx, account_id, uid).await? {
             insert_account_user(&mut tx, account_id, uid, 0).await?;
+        }
+        if let Some(tok) = invite_tok {
+            invites.push((email.clone(), tok));
         }
     }
     sqlx::query("UPDATE accounts SET custom_attributes = custom_attributes - 'onboarding_step', updated_at = now() WHERE id::bigint = $1")
@@ -1541,6 +1548,9 @@ async fn agents_bulk_create(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    for (email, tok) in invites {
+        spawn_agent_invite(&st.frontend_url, email, tok);
+    }
     Ok(Json(json!({})))
 }
 
@@ -1548,11 +1558,23 @@ async fn agents_bulk_create(
 const AGENT_LIMIT: i64 = 100_000;
 const AGENT_LIMIT_MESSAGE: &str = "Account limit exceeded. Please purchase more licenses";
 
+fn spawn_agent_invite(frontend_url: &str, email: String, token: String) {
+    let link = format!(
+        "{}/app/auth/password/edit?reset_password_token={token}",
+        frontend_url.trim_end_matches('/')
+    );
+    tokio::spawn(async move {
+        if let Err(e) = crate::mailer::invite(&email, &link).await {
+            tracing::warn!(to = email, error = %e, "agent invite email failed");
+        }
+    });
+}
+
 async fn find_or_create_user(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     email: &str,
     name: &str,
-) -> Result<i64, ApiError> {
+) -> Result<(i64, Option<String>), ApiError> {
     let existing: Option<i64> = sqlx::query_scalar(
         "SELECT id::bigint FROM users WHERE lower(email) = $1 AND provider = 'email'",
     )
@@ -1560,21 +1582,24 @@ async fn find_or_create_user(
     .fetch_optional(&mut **tx)
     .await?;
     if let Some(u) = existing {
-        return Ok(u);
+        return Ok((u, None));
     }
-    // ponytail: no invite email; account is confirmed with a random password the agent must reset.
     let hash = hash_pw(token()).await?;
-    Ok(sqlx::query_scalar(
+    let reset_raw = crate::auth::random_token(24);
+    let reset_hash = crate::auth::reset_digest(&reset_raw);
+    let id: i64 = sqlx::query_scalar(
         "INSERT INTO users (provider, uid, encrypted_password, name, email, confirmed_at, pubsub_token,
-            created_at, updated_at, tokens)
-         VALUES ('email', $1, $2, $3, $1, now(), $4, now(), now(), '{}') RETURNING id::bigint",
+            reset_password_token, reset_password_sent_at, created_at, updated_at, tokens)
+         VALUES ('email', $1, $2, $3, $1, now(), $4, $5, now(), now(), now(), '{}') RETURNING id::bigint",
     )
     .bind(email)
     .bind(hash)
     .bind(name)
     .bind(token())
+    .bind(reset_hash)
     .fetch_one(&mut **tx)
-    .await?)
+    .await?;
+    Ok((id, Some(reset_raw)))
 }
 
 async fn account_user_exists(

@@ -868,6 +868,21 @@ async fn channel_json(db: &PgPool, w: &Wd, token: &str) -> Value {
         .await
         .unwrap_or((0, 0));
     let account_features = crate::auth::enabled_features(acc_flags, acc_flags_ext);
+    let portal_row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT p.slug, p.name, COALESCE(p.config->>'default_locale', 'en')
+         FROM inboxes i
+         JOIN portals p ON p.id = i.portal_id
+            OR (i.channel_type = 'Channel::WebWidget' AND p.channel_web_widget_id = i.channel_id)
+         WHERE i.id = $1::bigint AND NOT COALESCE(p.archived, false)
+         LIMIT 1",
+    )
+    .bind(w.inbox_id)
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None);
+    let portal = portal_row.map(|(slug, name, default_locale)| {
+        json!({ "slug": slug, "name": name, "default_locale": default_locale })
+    });
     json!({
         "allow_messages_after_resolved": w.allow_messages_after_resolved.unwrap_or(true),
         "api_host": std::env::var("FRONTEND_URL").ok(),
@@ -880,7 +895,7 @@ async fn channel_json(db: &PgPool, w: &Wd, token: &str) -> Value {
         "has_a_connected_agent_bot": "",
         "locale": locale_code(w.locale),
         "out_of_office_message": w.out_of_office_message,
-        "portal": null,
+        "portal": portal,
         "pre_chat_form_enabled": w.pre_chat_form_enabled.unwrap_or(false),
         "pre_chat_form_options": pre_chat_options(w.pre_chat_form_options.clone()),
         "reply_time": REPLY_TIMES.get(w.reply_time.unwrap_or(0) as usize).copied().unwrap_or("in_a_few_minutes"),
@@ -1282,28 +1297,7 @@ async fn contact_update(
     let s = read_session(&st.db, &w, token(&headers).as_deref())
         .await?
         .ok_or_else(ApiError::not_found)?;
-    // ponytail: identifier_hash (HMAC) not verified. Identity binding by identifier is ignored, and
-    // refused outright on hmac_mandatory inboxes.
-    if w.hmac_mandatory == Some(true) && !b["identifier"].is_null() {
-        return Err(ApiError(
-            StatusCode::UNAUTHORIZED,
-            "HMAC failed: Invalid Identifier Hash Provided".into(),
-        ));
-    }
-    apply_contact(&st.db, &w, s.c.contact_id, &b).await?;
-    let fresh = find_contact(&st.db, &w, &s.c.source_id)
-        .await?
-        .unwrap_or(s.c);
-    let new_tok = rotate_token(&st.db, &w, fresh.ci_id, &fresh.source_id, s.iat).await?;
-    let mut val = presence(&fresh);
-    val["widget_auth_token"] = json!(new_tok);
-    val["pubsub_token"] = json!(fresh.pubsub_token);
-    let mut resp = Json(val).into_response();
-    if let Ok(hv) = HeaderValue::from_str(&new_tok) {
-        resp.headers_mut()
-            .insert(HeaderName::from_static("x-auth-token"), hv);
-    }
-    Ok(resp)
+    apply_contact_with_identity(&st, &w, &s, &b, false).await
 }
 
 /// PATCH /api/v1/widget/contact/set_user (contacts_controller#set_user). `identifier` binds the visitor to an
@@ -1319,11 +1313,21 @@ async fn contact_set_user(
     let s = read_session(&st.db, &w, token(&headers).as_deref())
         .await?
         .ok_or_else(ApiError::not_found)?;
+    apply_contact_with_identity(&st, &w, &s, &b, true).await
+}
+
+async fn apply_contact_with_identity(
+    st: &AppState,
+    w: &Wd,
+    s: &Sess,
+    b: &Value,
+    always_verify_when_mandatory: bool,
+) -> ApiResult<Response> {
     let identifier = b["identifier"].as_str().filter(|v| !v.is_empty());
     let hash_given = b["identifier_hash"].as_str().filter(|v| !v.is_empty());
-    // should_verify_hmac?: verify when a hash is sent or the inbox is hmac_mandatory
-    let must_verify = hash_given.is_some() || w.hmac_mandatory == Some(true);
-    if must_verify && !valid_hmac(&st.db, &w, identifier, hash_given).await? {
+    let should_check = always_verify_when_mandatory || identifier.is_some() || hash_given.is_some();
+    let must_verify = hash_given.is_some() || (should_check && w.hmac_mandatory == Some(true));
+    if must_verify && !valid_hmac(&st.db, w, identifier, hash_given).await? {
         return Err(ApiError(
             StatusCode::UNAUTHORIZED,
             "HMAC failed: Invalid Identifier Hash Provided".into(),
@@ -1335,7 +1339,7 @@ async fn contact_set_user(
             .execute(&st.db)
             .await?;
     }
-    apply_contact(&st.db, &w, s.c.contact_id, &b).await?;
+    apply_contact(&st.db, w, s.c.contact_id, b).await?;
     if let Some(id) = identifier {
         // Identifier is unique per account. Only set it when no other contact already owns it.
         sqlx::query("UPDATE contacts SET identifier = $2 WHERE id = $1::bigint AND account_id = $3::bigint
@@ -1346,7 +1350,7 @@ async fn contact_set_user(
             .execute(&st.db)
             .await?;
     }
-    contact_response(&st, &w, &s.c.source_id, s.c.ci_id, s.iat, s.c.contact_id).await
+    contact_response(st, w, &s.c.source_id, s.c.ci_id, s.iat, s.c.contact_id).await
 }
 
 /// HMAC check for set_user. The hash must be present and match, otherwise the call is refused.

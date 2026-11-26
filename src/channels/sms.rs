@@ -71,18 +71,39 @@ fn valid_config(cfg: &Map<String, Value>) -> bool {
             .all(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))
 }
 
-/// OAuth2 client credentials. Not cached: one token request per send (ponytail: add a cache when volume needs it).
+/// OAuth2 client credentials with per-(endpoint, credential-digest) cache (50m TTL).
 async fn fetch_token(cfg: &Map<String, Value>) -> Result<String, ApiError> {
+    use sha2::{Digest, Sha256};
+    use std::{
+        collections::HashMap,
+        sync::{LazyLock, Mutex},
+        time::Instant,
+    };
+    const TTL: Duration = Duration::from_secs(50 * 60);
+    static TOKEN_CACHE: LazyLock<Mutex<HashMap<(String, [u8; 32]), (String, Instant)>>> =
+        LazyLock::new(Default::default);
+
+    let endpoint = format!("{}/api/v1/oauth2/token", base("https://api.bandwidth.com"));
+    let client_id = cfg_str(cfg, "client_id");
+    let client_secret = cfg_str(cfg, "client_secret");
+    let cred_hash: [u8; 32] = Sha256::new()
+        .chain_update(client_id)
+        .chain_update([0])
+        .chain_update(client_secret)
+        .finalize()
+        .into();
+    let cache_key = (endpoint.clone(), cred_hash);
+    if let Ok(m) = TOKEN_CACHE.lock()
+        && let Some((tok, at)) = m.get(&cache_key)
+        && at.elapsed() < TTL
+    {
+        return Ok(tok.clone());
+    }
+
     let resp = reqwest::Client::new()
-        .post(format!(
-            "{}/api/v1/oauth2/token",
-            base("https://api.bandwidth.com")
-        ))
+        .post(&endpoint)
         .timeout(Duration::from_secs(15))
-        .basic_auth(
-            cfg_str(cfg, "client_id"),
-            Some(cfg_str(cfg, "client_secret")),
-        )
+        .basic_auth(client_id, Some(client_secret))
         .header("content-type", "application/x-www-form-urlencoded")
         .body("grant_type=client_credentials")
         .send()
@@ -101,10 +122,17 @@ async fn fetch_token(cfg: &Map<String, Value>) -> Result<String, ApiError> {
     }
     let body: Value =
         serde_json::from_slice(&resp.bytes().await.unwrap_or_default()).unwrap_or(Value::Null);
-    body["access_token"]
+    let tok = body["access_token"]
         .as_str()
         .map(str::to_string)
-        .ok_or_else(|| ApiError(StatusCode::SERVICE_UNAVAILABLE, TOKEN_FAILED.into()))
+        .ok_or_else(|| ApiError(StatusCode::SERVICE_UNAVAILABLE, TOKEN_FAILED.into()))?;
+    if let Ok(mut m) = TOKEN_CACHE.lock() {
+        if m.len() >= 1_000 {
+            m.retain(|_, (_, at)| at.elapsed() < TTL);
+        }
+        m.insert(cache_key, (tok.clone(), Instant::now()));
+    }
+    Ok(tok)
 }
 
 /// Sends one text. Ok(provider id, empty when absent) or Err(provider description), like Sms::SendOnSmsService.
@@ -252,7 +280,7 @@ async fn find_channel(db: &PgPool, phone: &str) -> Result<Option<SmsChannel>, Ap
     }))
 }
 
-/// Sms::IncomingMessageService. Media attachments are not downloaded yet (ponytail: SafeFetch port pending).
+/// Sms::IncomingMessageService with SafeFetch MMS media download.
 async fn incoming(st: &AppState, ch: &SmsChannel, msg: &Value) -> Result<(), ApiError> {
     let from = msg["from"]
         .as_str()
@@ -280,7 +308,7 @@ async fn incoming(st: &AppState, ch: &SmsChannel, msg: &Value) -> Result<(), Api
     } else {
         json!({ "__pulsar_source_id": source_id })
     };
-    insert_message(
+    let inserted = insert_message(
         st,
         &conv,
         Some(("Contact", contact_id)),
@@ -292,6 +320,45 @@ async fn incoming(st: &AppState, ch: &SmsChannel, msg: &Value) -> Result<(), Api
         None,
     )
     .await?;
+    if let (Some(msg_id), Some(media)) = (
+        inserted["id"].as_i64(),
+        msg.get("media").and_then(Value::as_array),
+    ) {
+        for raw_url in media.iter().filter_map(Value::as_str).take(10) {
+            let trimmed = raw_url.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match crate::listeners::webhooks::safe_fetch_bytes(trimmed, 15 * 1024 * 1024).await {
+                Ok((bytes, ct)) => {
+                    let fname = url::Url::parse(trimmed)
+                        .ok()
+                        .and_then(|u| {
+                            u.path_segments()
+                                .and_then(|mut segs| segs.next_back().map(str::to_string))
+                        })
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "attachment".into());
+                    if let Err(e) = crate::storage::attach_to_message(
+                        &st.db,
+                        ch.account_id,
+                        msg_id,
+                        &fname,
+                        &ct,
+                        &bytes,
+                        None,
+                    )
+                    .await
+                    {
+                        tracing::warn!(url = trimmed, error = ?e, "sms media attach failed");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(url = trimmed, error = %e, "sms media fetch failed");
+                }
+            }
+        }
+    }
     Ok(())
 }
 

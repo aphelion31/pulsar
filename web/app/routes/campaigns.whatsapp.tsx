@@ -2,6 +2,7 @@ import { ArrowLeft, BarChart3, Megaphone, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useOutletContext, useParams } from "react-router";
 import Button from "~/components/next/Button";
+import { CampaignsTabs } from "~/components/next/CampaignsTabs";
 import { acct, api, type Inbox, type Label } from "~/lib/api";
 import type { ShellCtx } from "./shell";
 
@@ -203,6 +204,7 @@ export default function WhatsAppCampaignsPage() {
 
   return (
     <div className="flex h-full flex-1 flex-col overflow-y-auto bg-n-surface-1 p-6 sm:p-8 text-n-slate-12">
+      <CampaignsTabs accountId={accountId} />
       <header className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-n-weak pb-4">
         <div className="flex items-center gap-3">
           {(isNew || isEdit || isAnalytics) && (

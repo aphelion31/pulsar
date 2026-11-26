@@ -381,6 +381,11 @@ export default function Sidebar({
             label: "Monitors",
             to: `${acctPrefix}/reports/monitors`,
           },
+          {
+            name: "Reports Year In Review",
+            label: "Year in Review",
+            to: `${acctPrefix}/reports/year-in-review`,
+          },
         ],
       },
 
