@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
 import type { Route } from "./+types/root";
+import { initLocale, useLocale } from "./lib/i18n";
 import { initThemeListener } from "./lib/theme";
 import "./app.css";
 
@@ -28,8 +29,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  useEffect(() => initThemeListener(), []);
-  return <Outlet />;
+  const locale = useLocale();
+  useEffect(() => {
+    initLocale();
+    return initThemeListener();
+  }, []);
+  return <Outlet key={locale} />;
 }
 
 export function HydrateFallback() {

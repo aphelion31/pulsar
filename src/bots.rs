@@ -527,7 +527,6 @@ async fn bot_reset_token(
 }
 
 /// POST /agent_bots/{id}/reset_secret (WebhookSecretable#reset_secret!)
-/// ponytail: stored plaintext like existing rows; encrypt with ar_encryption together with webhook secrets.
 async fn bot_reset_secret(
     State(st): State<AppState>,
     user: CurrentUser,

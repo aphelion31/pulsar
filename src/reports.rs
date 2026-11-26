@@ -181,9 +181,31 @@ async fn reports_index(
             query_reply_time_timeseries(&st.db, account_id, dim_type, dim_id, since, until, trunc)
                 .await?
         }
-        "bot_resolutions_count" | "bot_handoffs_count" => {
-            // ponytail: bot resolutions not tracked; return empty buckets
-            Vec::new()
+        "bot_resolutions_count" => {
+            query_reporting_events_timeseries(
+                &st.db,
+                account_id,
+                "conversation_bot_resolved",
+                dim_type,
+                dim_id,
+                since,
+                until,
+                trunc,
+            )
+            .await?
+        }
+        "bot_handoffs_count" => {
+            query_reporting_events_timeseries(
+                &st.db,
+                account_id,
+                "conversation_bot_handoff",
+                dim_type,
+                dim_id,
+                since,
+                until,
+                trunc,
+            )
+            .await?
         }
         _ => Vec::new(),
     };
@@ -1331,15 +1353,111 @@ async fn summary_reports_label(
     reports_labels(State(st), user, Path(account_id), Query(params)).await
 }
 
+async fn query_reporting_events_timeseries(
+    db: &PgPool,
+    account_id: i64,
+    event_name: &str,
+    dim_type: &str,
+    dim_id: Option<i64>,
+    since: Option<NaiveDateTime>,
+    until: Option<NaiveDateTime>,
+    trunc: &str,
+) -> Result<Vec<Value>, ApiError> {
+    let sql = format!(
+        r#"
+        SELECT
+            EXTRACT(EPOCH FROM date_trunc('{trunc}', r.created_at))::bigint AS ts,
+            COUNT(DISTINCT r.conversation_id)::bigint AS count
+        FROM reporting_events r
+        LEFT JOIN conversations c ON c.id = r.conversation_id AND c.account_id = r.account_id
+        WHERE r.account_id = $1
+          AND r.name = $2
+          AND ($3::timestamp IS NULL OR r.created_at >= $3)
+          AND ($4::timestamp IS NULL OR r.created_at <= $4)
+          AND (
+            CASE $5
+                WHEN 'agent' THEN COALESCE(r.user_id, c.assignee_id) = $6
+                WHEN 'inbox' THEN COALESCE(r.inbox_id, c.inbox_id) = $6
+                WHEN 'team'  THEN c.team_id = $6
+                WHEN 'label' THEN EXISTS (
+                    SELECT 1 FROM taggings tg
+                    JOIN tags t ON t.id = tg.tag_id
+                    JOIN labels l ON l.title = t.name AND l.account_id = r.account_id
+                    WHERE tg.taggable_type = 'Conversation'
+                      AND tg.taggable_id = r.conversation_id
+                      AND tg.context = 'labels'
+                      AND l.id = $6
+                )
+                ELSE TRUE
+            END
+          )
+        GROUP BY 1
+        ORDER BY 1 ASC
+        "#
+    );
+    let rows = sqlx::query(&sql)
+        .bind(account_id)
+        .bind(event_name)
+        .bind(since)
+        .bind(until)
+        .bind(dim_type)
+        .bind(dim_id)
+        .fetch_all(db)
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let ts: i64 = r.get("ts");
+            let count: i64 = r.get("count");
+            json!({ "value": count, "timestamp": ts })
+        })
+        .collect())
+}
+
 async fn summary_reports_channel(
     State(st): State<AppState>,
     user: CurrentUser,
     Path(account_id): Path<i64>,
-    Query(_params): Query<ReportParams>,
+    Query(params): Query<ReportParams>,
 ) -> ApiResult {
     let _au = require_report_viewer(&st.db, &user, account_id).await?;
-    // ponytail: channel summary unused in core dashboard, return empty array
-    Ok(Json(json!([])))
+    let since = parse_ts(params.since.as_deref());
+    let until = parse_ts(params.r#until.as_deref());
+    let rows = sqlx::query(
+        "SELECT i.channel_type,
+                COUNT(c.id)::bigint AS conversations_count,
+                COUNT(c.id) FILTER (WHERE c.status = 0)::bigint AS open_count,
+                COUNT(c.id) FILTER (WHERE c.status = 1)::bigint AS resolved_count,
+                COUNT(c.id) FILTER (WHERE c.status = 2)::bigint AS pending_count,
+                COUNT(c.id) FILTER (WHERE c.status = 3)::bigint AS snoozed_count
+         FROM conversations c
+         JOIN inboxes i ON i.id = c.inbox_id AND i.account_id = c.account_id
+         WHERE c.account_id = $1
+           AND ($2::timestamp IS NULL OR c.created_at >= $2)
+           AND ($3::timestamp IS NULL OR c.created_at <= $3)
+         GROUP BY i.channel_type
+         ORDER BY conversations_count DESC, i.channel_type ASC",
+    )
+    .bind(account_id)
+    .bind(since)
+    .bind(until)
+    .fetch_all(&st.db)
+    .await?;
+    Ok(Json(Value::Array(
+        rows.into_iter()
+            .map(|r| {
+                json!({
+                    "channel_type": r.get::<String, _>("channel_type"),
+                    "conversations_count": r.get::<i64, _>("conversations_count"),
+                    "open": r.get::<i64, _>("open_count"),
+                    "resolved": r.get::<i64, _>("resolved_count"),
+                    "pending": r.get::<i64, _>("pending_count"),
+                    "snoozed": r.get::<i64, _>("snoozed_count"),
+                })
+            })
+            .collect(),
+    )))
 }
 
 // ---------------------------------------------------------------------------

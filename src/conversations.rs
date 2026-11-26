@@ -124,6 +124,10 @@ pub fn routes() -> Router<AppState> {
             post(messages_translate),
         )
         .route(
+            "/conversations/{id}/messages/{message_id}/transcribe",
+            post(crate::voice::transcribe_message),
+        )
+        .route(
             "/conversations/{id}/messages/auto_translate",
             post(messages_auto_translate),
         )
@@ -420,6 +424,15 @@ pub(crate) async fn msg_json(db: &PgPool, m: &Msg, c: &Conv) -> Value {
     if !atts.is_empty() {
         v["attachments"] = json!(atts);
     }
+    if let Ok(Some(err)) = sqlx::query_scalar::<_, String>(
+        "SELECT external_error FROM pulsar_message_errors WHERE message_id = $1",
+    )
+    .bind(m.id)
+    .fetch_optional(db)
+    .await
+    {
+        v["external_error"] = json!(err);
+    }
     v
 }
 
@@ -485,8 +498,14 @@ pub(crate) async fn conv_json(db: &PgPool, c: &Conv) -> Value {
     })
 }
 
-pub(crate) async fn emit(st: &AppState, c: &Conv, event: &str, data: Value) {
-    crate::events::publish(event, c.account_id, data.clone(), None);
+pub(crate) async fn emit_changed(
+    st: &AppState,
+    c: &Conv,
+    event: &str,
+    data: Value,
+    changed: Option<Value>,
+) {
+    crate::events::publish(event, c.account_id, data.clone(), changed);
     st.hub
         .to_inbox(
             &st.db,
@@ -499,11 +518,70 @@ pub(crate) async fn emit(st: &AppState, c: &Conv, event: &str, data: Value) {
         .await;
 }
 
-pub(crate) async fn emit_conv(st: &AppState, id: i64, event: &str) -> Result<Conv, ApiError> {
+pub(crate) async fn emit(st: &AppState, c: &Conv, event: &str, data: Value) {
+    emit_changed(st, c, event, data, None).await;
+}
+
+pub(crate) async fn emit_conv_changed(
+    st: &AppState,
+    id: i64,
+    event: &str,
+    changed: Option<Value>,
+) -> Result<Conv, ApiError> {
     let c = reload(&st.db, id).await?;
     let data = conv_json(&st.db, &c).await;
-    emit(st, &c, event, data).await;
+    emit_changed(st, &c, event, data, changed).await;
     Ok(c)
+}
+
+pub(crate) async fn emit_conv(st: &AppState, id: i64, event: &str) -> Result<Conv, ApiError> {
+    emit_conv_changed(st, id, event, None).await
+}
+
+/// 24-hour customer messaging window check for WhatsApp/Meta channels (Chatwoot `can_reply?`).
+pub(crate) async fn within_messaging_window(db: &PgPool, conv_id: i64) -> bool {
+    let row: Option<(String, Option<i32>)> = sqlx::query_as(
+        "SELECT i.channel_type, tw.medium
+         FROM conversations c
+         JOIN inboxes i ON i.id = c.inbox_id
+         LEFT JOIN channel_twilio_sms tw ON i.channel_type = 'Channel::TwilioSms' AND tw.id = i.channel_id
+         WHERE c.id = $1",
+    )
+    .bind(conv_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    let Some((ch, tw_medium)) = row else {
+        return true;
+    };
+    let is_windowed = matches!(
+        ch.as_str(),
+        "Channel::Whatsapp" | "Channel::FacebookPage" | "Channel::Instagram"
+    ) || (ch == "Channel::TwilioSms" && tw_medium == Some(1));
+    if !is_windowed {
+        return true;
+    }
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id = $1 AND message_type = 0 AND created_at > now() - interval '24 hours')",
+    )
+    .bind(conv_id as i32)
+    .fetch_one(db)
+    .await
+    .unwrap_or(true)
+}
+
+pub(crate) async fn attach_label_by_name(
+    db: &PgPool,
+    account_id: i64,
+    conv_id: i64,
+    label: &str,
+) -> Result<(), ApiError> {
+    let valid = known_labels(db, account_id, vec![label.to_string()]).await?;
+    if !valid.is_empty() {
+        let _ = patch_labels(db, conv_id, &valid, &[]).await?;
+    }
+    Ok(())
 }
 
 /// Internal carrier for messages.source_id through insert_message; never stored in content_attributes.
@@ -1390,7 +1468,10 @@ async fn toggle_status(
         };
         activity(&st, &c, text).await?;
     }
-    emit_conv(&st, c.id, "conversation.status_changed").await?;
+    let changed = (new != c.status).then(|| {
+        json!({ "status": { "previous_value": c.status, "current_value": new } })
+    });
+    emit_conv_changed(&st, c.id, "conversation.status_changed", changed).await?;
     Ok(Json(json!({ "meta": {}, "payload": {
         "success": true, "conversation_id": c.display_id, "current_status": name_of(&STATUSES, new), "snoozed_until": snooze,
     } })))
@@ -1496,7 +1577,13 @@ async fn assign(
             };
             activity(&st, &c, text).await?;
         }
-        emit_conv(&st, c.id, "assignee.changed").await?;
+        emit_conv_changed(
+            &st,
+            c.id,
+            "assignee.changed",
+            Some(json!({ "actor_id": user.id })),
+        )
+        .await?;
         return Ok(Json(agent));
     }
     if let Some(v) = b.get("team_id") {
@@ -1962,7 +2049,6 @@ async fn messages_create_any(
 }
 
 /// POST /conversations/{id}/messages {content, private, message_type?, content_type?, content_attributes?, echo_id?}
-/// ponytail: JSON only, no multipart attachments; API-channel webhook delivery not ported.
 async fn messages_create(
     State(st): State<AppState>,
     user: CurrentUser,
@@ -2094,8 +2180,25 @@ async fn messages_update(
     }
     let m = load_msg(&st.db, &c, message_id).await?;
     let status = b["status"].as_str().unwrap_or_default();
-    // Chatwoot stores external_error on the message. The messages table here has no such column, so
-    // the error text is accepted and dropped. ponytail: add pulsar_message_errors when a channel needs it.
+    if let Some(ext_err) = b.get("external_error").and_then(Value::as_str) {
+        let trimmed = ext_err.trim();
+        if trimmed.is_empty() {
+            sqlx::query("DELETE FROM pulsar_message_errors WHERE message_id = $1")
+                .bind(m.id)
+                .execute(&st.db)
+                .await?;
+        } else {
+            sqlx::query(
+                "INSERT INTO pulsar_message_errors (message_id, external_error, updated_at)
+                 VALUES ($1, $2, now())
+                 ON CONFLICT (message_id) DO UPDATE SET external_error = EXCLUDED.external_error, updated_at = now()",
+            )
+            .bind(m.id)
+            .bind(trimmed)
+            .execute(&st.db)
+            .await?;
+        }
+    }
     let Some(next) = status_transition(m.status.unwrap_or(0), status) else {
         // StatusUpdateService returns false for a backward transition; the record is returned unchanged.
         return Ok(Json(msg_json(&st.db, &m, &c).await));
@@ -2722,7 +2825,13 @@ async fn bulk_actions_create(
                     };
                     activity(&st, &c, text).await?;
                 }
-                emit_conv(&st, c.id, "assignee.changed").await?;
+                emit_conv_changed(
+                    &st,
+                    c.id,
+                    "assignee.changed",
+                    Some(json!({ "actor_id": user.id })),
+                )
+                .await?;
             }
 
             if let Some(new_team) = team_opt {
@@ -2776,7 +2885,10 @@ async fn bulk_actions_create(
                     };
                     activity(&st, &c, text).await?;
                 }
-                emit_conv(&st, c.id, "conversation.status_changed").await?;
+                let changed = (new_status != c.status).then(|| {
+                    json!({ "status": { "previous_value": c.status, "current_value": new_status } })
+                });
+                emit_conv_changed(&st, c.id, "conversation.status_changed", changed).await?;
             }
         }
 

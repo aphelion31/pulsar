@@ -1,9 +1,9 @@
 // Live chat campaigns list, create/edit dialog and delete. Mirrors Chatwoot's campaigns live chat page
 // (routes/dashboard/campaigns/pages/LiveChatCampaignsPage.vue, components-next/Campaigns/*).
-// SMS and WhatsApp tabs are shown but disabled until those channels exist in Pulsar.
 import { useEffect, useState, type FormEvent } from "react";
 import { useOutletContext } from "react-router";
 import Button from "~/components/next/Button";
+import { CampaignsTabs } from "~/components/next/CampaignsTabs";
 import Switch from "~/components/next/Switch";
 import { acct, api } from "~/lib/api";
 import { t } from "~/lib/i18n";
@@ -159,6 +159,7 @@ export default function CampaignsPage() {
   const fieldMsg = (key: keyof typeof errors) => (touched && errors[key] ? <p role="alert" className="text-sm text-n-ruby-11">{errors[key]}</p> : null);
 
   return <section className="flex-1 overflow-auto p-8 text-n-slate-12">
+    <CampaignsTabs accountId={accountId} />
     <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
       <h1 className="text-xl font-medium">{t("CAMPAIGN.LIVE_CHAT.HEADER_TITLE")}</h1>
       {isAdmin && <Button sm label={t("CAMPAIGN.LIVE_CHAT.NEW_CAMPAIGN")} icon="plus" onClick={() => open()} />}

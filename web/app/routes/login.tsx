@@ -1,6 +1,6 @@
 import { LockKeyhole, ShieldCheck } from "lucide-react";
-import { useState } from "react";
-import { Link, useNavigate } from "react-router";
+import { useEffect, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { AuthShell } from "~/components/next/AuthShell";
 import { authResponse } from "~/lib/api";
 import { t } from "~/lib/i18n";
@@ -10,12 +10,59 @@ const inputCls =
 
 export default function Login() {
   const nav = useNavigate();
+  const [searchParams] = useSearchParams();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [wiggle, setWiggle] = useState(false);
   const [mfaToken, setMfaToken] = useState<string | null>(null);
   const [otpCode, setOtpCode] = useState("");
   const [useBackup, setUseBackup] = useState(false);
+  const [googleEnabled, setGoogleEnabled] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((info) => {
+        if (active && info?.google_oauth_enabled) setGoogleEnabled(true);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const ssoToken = searchParams.get("sso_auth_token");
+    const oauthErr = searchParams.get("error");
+    if (oauthErr) {
+      setError(oauthErr.replaceAll("_", " "));
+    }
+    if (!ssoToken) return;
+    let active = true;
+    setBusy(true);
+    fetch("/auth/sso_exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sso_auth_token: ssoToken,
+        email: searchParams.get("email") ?? undefined,
+      }),
+    })
+      .then((res) => authResponse(res))
+      .then((me) => {
+        if (active) nav(`/accounts/${me.account_id}/conversations`, { replace: true });
+      })
+      .catch((err) => {
+        if (active) setError(err instanceof Error ? err.message : "SSO login failed");
+      })
+      .finally(() => {
+        if (active) setBusy(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [searchParams, nav]);
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -151,6 +198,14 @@ export default function Login() {
         </form>
       ) : (
         <div className="space-y-5">
+          {googleEnabled && (
+            <a
+              href="/omniauth/google_oauth2"
+              className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-n-background px-4 text-sm font-medium text-n-slate-12 shadow-xs ring-1 ring-inset ring-n-weak transition hover:bg-n-alpha-2 dark:bg-n-solid-3"
+            >
+              <span>{t("LOGIN.OAUTH.GOOGLE_LOGIN") || "Sign in with Google"}</span>
+            </a>
+          )}
           <Link
             to="/login/sso"
             className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-n-background px-4 text-sm font-medium text-n-slate-12 shadow-xs ring-1 ring-inset ring-n-weak transition hover:bg-n-alpha-2 dark:bg-n-solid-3"

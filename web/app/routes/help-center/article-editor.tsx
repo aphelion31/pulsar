@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useOutletContext, useParams } from "react-router";
 import Button from "~/components/next/Button";
 import { acct, api } from "~/lib/api";
+import { renderSafeMarkdown } from "~/lib/markdown";
 import type { ShellCtx } from "../shell";
 
 type Category = { id: number; name: string; slug: string; locale: string };
@@ -219,9 +220,12 @@ export default function HelpCenterArticleEditor() {
               className="w-full rounded-xl border border-n-weak bg-n-solid-1 px-4 py-3 text-xl font-medium outline-none focus:border-n-brand"
             />
             {preview ? (
-              <div className="min-h-[420px] whitespace-pre-wrap rounded-xl border border-n-weak bg-n-solid-1 p-6 text-sm leading-relaxed">
-                {content || "Nothing to preview yet."}
-              </div>
+              <div
+                className="min-h-[420px] rounded-xl border border-n-weak bg-n-solid-1 p-6 text-sm leading-relaxed"
+                dangerouslySetInnerHTML={{
+                  __html: renderSafeMarkdown(content) || '<span class="text-n-slate-10">Nothing to preview yet.</span>',
+                }}
+              />
             ) : (
               <div className="overflow-hidden rounded-xl border border-n-weak bg-n-solid-1">
                 <div className="flex items-center gap-1 border-b border-n-weak bg-n-solid-2 px-3 py-1.5 text-n-slate-11">

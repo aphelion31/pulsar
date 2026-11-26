@@ -43,9 +43,14 @@ async fn reopen_snoozed_conversations(st: &AppState) -> anyhow::Result<()> {
     .fetch_all(&st.db)
     .await?;
     for id in ids {
-        conversations::emit_conv(st, id, "conversation.status_changed")
-            .await
-            .ok();
+        conversations::emit_conv_changed(
+            st,
+            id,
+            "conversation.status_changed",
+            Some(json!({ "status": { "previous_value": 3, "current_value": 0 } })),
+        )
+        .await
+        .ok();
     }
     Ok(())
 }
@@ -74,14 +79,16 @@ pub fn auto_resolved_text(minutes: i64) -> String {
 }
 
 async fn auto_resolve(st: &AppState) -> anyhow::Result<()> {
-    let accounts: Vec<(i64, i64, Option<String>, bool)> = sqlx::query_as(
-        "SELECT id::bigint, (settings->>'auto_resolve_after')::bigint, NULLIF(settings->>'auto_resolve_message', ''),
+    let accounts: Vec<(i64, i64, Option<String>, Option<String>, bool)> = sqlx::query_as(
+        "SELECT id::bigint, (settings->>'auto_resolve_after')::bigint,
+                NULLIF(settings->>'auto_resolve_message', ''),
+                NULLIF(settings->>'auto_resolve_label', ''),
                 COALESCE((settings->>'auto_resolve_ignore_waiting')::boolean, false)
          FROM accounts WHERE (settings->>'auto_resolve_after')::int > 0 AND status = 0",
     )
     .fetch_all(&st.db)
     .await?;
-    for (account_id, minutes, message, ignore_waiting) in accounts {
+    for (account_id, minutes, message, label, ignore_waiting) in accounts {
         // resolvable_all / resolvable_not_waiting, minus orphan conversations without a contact
         let ids: Vec<i64> = sqlx::query_scalar(
             "SELECT id::bigint FROM conversations
@@ -101,8 +108,14 @@ async fn auto_resolve(st: &AppState) -> anyhow::Result<()> {
                 .await
                 .map_err(|e| anyhow::anyhow!("{e:?}"))?;
             if let Some(m) = &message {
-                // ponytail: messaging-window check (can_reply?) skipped; only matters for WhatsApp/Facebook-style 24h windows.
-                conversations::insert_message(st, &c, None, m, 3, false, 0, json!({}), None)
+                if conversations::within_messaging_window(&st.db, id).await {
+                    conversations::insert_message(st, &c, None, m, 3, false, 0, json!({}), None)
+                        .await
+                        .ok();
+                }
+            }
+            if let Some(lbl) = &label {
+                conversations::attach_label_by_name(&st.db, account_id, id, lbl)
                     .await
                     .ok();
             }
@@ -124,11 +137,15 @@ async fn auto_resolve(st: &AppState) -> anyhow::Result<()> {
             )
             .await
             .ok();
-            conversations::emit_conv(st, id, "conversation.status_changed")
-                .await
-                .ok();
+            conversations::emit_conv_changed(
+                st,
+                id,
+                "conversation.status_changed",
+                Some(json!({ "status": { "previous_value": 0, "current_value": 1 } })),
+            )
+            .await
+            .ok();
         }
-        // ponytail: auto_resolve_label not applied; add when the label setting is exposed in account settings UI.
     }
     Ok(())
 }

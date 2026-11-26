@@ -149,6 +149,7 @@ Read these numbers fairly:
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): how the backend, realtime and frontend fit together.
 - [`docs/architectures/`](docs/architectures/): structure, Chatwoot compatibility notes and deployment.
+- [`docs/PARITY-AUDIT-AND-TODO.md`](docs/PARITY-AUDIT-AND-TODO.md): full feature conversion audit (Rust backend + React Router frontend) and prioritized TODO backlog.
 - [`AGENTS.md`](AGENTS.md): working rules for contributors and coding agents.
 
 ## Branching model

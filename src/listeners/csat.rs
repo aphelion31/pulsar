@@ -68,8 +68,9 @@ async fn send_survey(st: &AppState, ev: &Event) -> anyhow::Result<()> {
     if !rules_allow(&config, &c.labels()) {
         return Ok(());
     }
-    // ponytail: WhatsApp/Twilio template surveys and the 24h messaging-window check are skipped; the
-    // channels that need them are not ported yet.
+    if !conversations::within_messaging_window(&st.db, conv_id).await {
+        return Ok(());
+    }
     let content = config["message"]
         .as_str()
         .filter(|s| !s.is_empty())

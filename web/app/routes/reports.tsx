@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useLocation, useOutletContext, useParams } from "react-router";
+import { Link, useLocation, useOutletContext, useParams } from "react-router";
 import { BarChart } from "~/components/next/charts/BarChart";
 import Bot from "~/components/next/reports/Bot";
 import Csat from "~/components/next/reports/Csat";
@@ -142,6 +142,12 @@ function ConversationReport({ accountId }: { accountId: number }) {
           <h1 className="font-inter-display text-xl font-semibold text-n-slate-12">
             {t("REPORT.HEADER")}
           </h1>
+          <Link
+            to={`/accounts/${accountId}/reports/year-in-review`}
+            className="inline-flex h-9 items-center rounded-lg border border-n-weak bg-n-solid-1 px-3 text-xs font-medium text-n-slate-12 transition hover:bg-n-alpha-1"
+          >
+            {t("YEAR_IN_REVIEW.TITLE")}
+          </Link>
         </header>
 
         <div className="flex flex-wrap items-end gap-4 rounded-xl border border-n-weak bg-n-solid-2 p-4">

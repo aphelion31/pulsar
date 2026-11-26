@@ -1,10 +1,9 @@
-//! In-app notifications. Port of Chatwoot's NotificationListener, NotificationBuilder, ParticipationListener,
-//! Messages::MentionService and Messages::NewMessageNotificationService. Email and push delivery are not ported
-//! yet: this writes `notifications` rows and sends `notification.created` to the user's pubsub token.
+//! In-app, email, and push notifications. Port of Chatwoot's NotificationListener, NotificationBuilder,
+//! ParticipationListener, Messages::MentionService, Notification::PushNotificationService, and
+//! Notification::EmailNotificationService.
 //!
 //! events::start runs every listener for every event, so `handle` dispatches on `ev.name`.
-//! ponytail: no self-assignment skip (the assignee.changed event carries no actor), and the access check is
-//! admin or inbox member only (no custom-role or team rules). Add when the event carries performed_by.
+//! ponytail: access check is admin or inbox member only (no custom-role or team rules).
 //! ponytail: a re-assignment is skipped while an unread conversation_assignment for the same agent exists,
 //! because the event carries no previous assignee to detect a real change.
 
@@ -106,6 +105,9 @@ async fn assignee_changed(st: &AppState, ev: &Event) -> sqlx::Result<()> {
         return Ok(());
     };
     add_participant(&st.db, ev.account_id, assignee, conv.id).await?;
+    if ev.changed.as_ref().and_then(|c| c["actor_id"].as_i64()) == Some(assignee) {
+        return Ok(());
+    }
     if conv.status == PENDING {
         return Ok(());
     }
@@ -357,13 +359,12 @@ async fn build(
 }
 
 /// Notification::EmailNotificationService + AgentNotifications::ConversationNotificationsMailer.
-/// ponytail: bodies are the templates' fixed text plus the action link; the "recent messages" list and
-/// liquid customisation are not rendered. Account email rate limit is not enforced.
 async fn email(st: &AppState, id: i64) -> anyhow::Result<()> {
     if !crate::mailer::configured() {
         return Ok(());
     }
     type Row = (
+        i64,
         i64,
         i64,
         i64,
@@ -377,7 +378,8 @@ async fn email(st: &AppState, id: i64) -> anyhow::Result<()> {
         Option<i64>,
     );
     let r: Option<Row> = sqlx::query_as(
-        "SELECT n.account_id::bigint, n.user_id::bigint, n.notification_type::bigint, c.display_id::bigint,
+        "SELECT n.account_id::bigint, n.user_id::bigint, n.notification_type::bigint,
+                c.id::bigint, c.display_id::bigint,
                 u.email, COALESCE(NULLIF(u.display_name, ''), u.name), u.confirmed_at, n.read_at,
                 COALESCE(ns.email_flags, 0)::bigint, i.name, n.secondary_actor_id::bigint
          FROM notifications n JOIN users u ON u.id = n.user_id JOIN conversations c ON c.id = n.primary_actor_id
@@ -392,6 +394,7 @@ async fn email(st: &AppState, id: i64) -> anyhow::Result<()> {
         account_id,
         user_id,
         kind,
+        conv_id,
         display_id,
         to,
         name,
@@ -413,6 +416,34 @@ async fn email(st: &AppState, id: i64) -> anyhow::Result<()> {
     {
         return Ok(());
     }
+    let snippet: Option<String> = match message_id {
+        Some(m) => sqlx::query_scalar("SELECT content FROM messages WHERE id = $1")
+            .bind(m)
+            .fetch_optional(&st.db)
+            .await?
+            .flatten(),
+        None => sqlx::query_scalar(
+            "SELECT content FROM messages
+             WHERE conversation_id = $1::bigint AND message_type IN (0, 1)
+               AND content IS NOT NULL AND content <> ''
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(conv_id)
+        .fetch_optional(&st.db)
+        .await?
+        .flatten(),
+    };
+    let quote = snippet
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            format!(
+                "<blockquote style=\"padding:8px 16px;border-left:5px solid #eeeeee\">{}</blockquote>",
+                html_escape(s)
+            )
+        })
+        .unwrap_or_default();
     let url = format!(
         "{}/app/accounts/{account_id}/conversations/{display_id}",
         st.frontend_url.trim_end_matches('/')
@@ -427,7 +458,7 @@ async fn email(st: &AppState, id: i64) -> anyhow::Result<()> {
                 inbox.clone().unwrap_or_default()
             ),
             format!(
-                "<p>Hi {name}</p><p>A new conversation ({link}#{display_id}</a>) has been created in {}.</p>",
+                "<p>Hi {name}</p><p>A new conversation ({link}#{display_id}</a>) has been created in {}.</p>{quote}",
                 html_escape(&inbox.unwrap_or_default())
             ),
         ),
@@ -436,7 +467,7 @@ async fn email(st: &AppState, id: i64) -> anyhow::Result<()> {
                 "{subject_name}, A new conversation [ID - {display_id}] has been assigned to you."
             ),
             format!(
-                "<p>Hi {name},</p><p>Time to save the world. A new conversation has been assigned to you</p><p>Click {link}here</a> to get cracking.</p>"
+                "<p>Hi {name},</p><p>Time to save the world. A new conversation has been assigned to you</p>{quote}<p>Click {link}here</a> to get cracking.</p>"
             ),
         ),
         3 => (
@@ -444,34 +475,23 @@ async fn email(st: &AppState, id: i64) -> anyhow::Result<()> {
                 "{subject_name}, New message in your assigned conversation [ID - {display_id}]."
             ),
             format!(
-                "<p>Hi {name},</p><p>You have received a new message in your assigned conversation.</p><p>Click {link}here</a> to get cracking.</p>"
+                "<p>Hi {name},</p><p>You have received a new message in your assigned conversation.</p>{quote}<p>Click {link}here</a> to get cracking.</p>"
             ),
         ),
-        4 => {
-            let text: Option<String> = match message_id {
-                Some(m) => sqlx::query_scalar("SELECT content FROM messages WHERE id = $1")
-                    .bind(m)
-                    .fetch_optional(&st.db)
-                    .await?
-                    .flatten(),
-                None => None,
-            };
-            (
-                format!(
-                    "{subject_name}, You have been mentioned in conversation [ID - {display_id}]"
-                ),
-                format!(
-                    "<p>Hi {name}, </p><p>You've been mentioned in a conversation.</p><blockquote style=\"padding:8px 16px;border-left:5px solid #eeeeee\">{}</blockquote><p>{link}View Message</a></p>",
-                    html_escape(&text.unwrap_or_default())
-                ),
-            )
-        }
+        4 => (
+            format!(
+                "{subject_name}, You have been mentioned in conversation [ID - {display_id}]"
+            ),
+            format!(
+                "<p>Hi {name}, </p><p>You've been mentioned in a conversation.</p>{quote}<p>{link}View Message</a></p>"
+            ),
+        ),
         5 => (
             format!(
                 "{subject_name}, New message in your participating conversation [ID - {display_id}]."
             ),
             format!(
-                "<p>Hi {name},</p><p>You have received a new message in a conversation you are participating.</p><p>Click {link}here</a> to view.</p>"
+                "<p>Hi {name},</p><p>You have received a new message in a conversation you are participating.</p>{quote}<p>Click {link}here</a> to view.</p>"
             ),
         ),
         _ => return Ok(()),
@@ -486,7 +506,50 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// ActionCableListener#notification_created: `notification.created` to the user's pubsub token.
+fn push_summary(
+    kind: i32,
+    display_id: i64,
+    inbox: Option<&str>,
+    contact: Option<&str>,
+    snippet: Option<&str>,
+) -> (String, String) {
+    let inbox = inbox.unwrap_or("Inbox");
+    let contact = contact.unwrap_or("Customer");
+    let text = snippet.map(str::trim).filter(|s| !s.is_empty());
+    match kind {
+        1 => (
+            format!("New conversation [ID - {display_id}] in {inbox}"),
+            text.map(|s| format!("{contact}: {s}"))
+                .unwrap_or_else(|| format!("New conversation started by {contact}")),
+        ),
+        2 => (
+            format!("Conversation [ID - {display_id}] assigned to you"),
+            text.unwrap_or("A conversation has been assigned to you.")
+                .to_string(),
+        ),
+        3 => (
+            format!("New message in assigned conversation [ID - {display_id}]"),
+            text.map(|s| format!("{contact}: {s}"))
+                .unwrap_or_else(|| "New message received.".into()),
+        ),
+        4 => (
+            format!("Mentioned in conversation [ID - {display_id}]"),
+            text.unwrap_or("You were mentioned in a conversation.")
+                .to_string(),
+        ),
+        5 => (
+            format!("New message in conversation [ID - {display_id}]"),
+            text.map(|s| format!("{contact}: {s}"))
+                .unwrap_or_else(|| "New message in participating conversation.".into()),
+        ),
+        _ => (
+            format!("Notification [ID - {display_id}]"),
+            text.unwrap_or("").to_string(),
+        ),
+    }
+}
+
+/// ActionCableListener#notification_created + Web Push / FCM push delivery.
 async fn broadcast(st: &AppState, account_id: i64, user_id: i64, id: i64) -> sqlx::Result<()> {
     let db = &st.db;
     let row: NotifRow = sqlx::query_as(
@@ -496,6 +559,41 @@ async fn broadcast(st: &AppState, account_id: i64, user_id: i64, id: i64) -> sql
     .bind(id)
     .fetch_one(db)
     .await?;
+    let ctx: Option<(i64, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT c.display_id::bigint, i.name, co.name,
+                COALESCE(m.content, (
+                    SELECT m2.content FROM messages m2
+                    WHERE m2.conversation_id = c.id AND m2.message_type IN (0, 1)
+                      AND m2.content IS NOT NULL AND m2.content <> ''
+                    ORDER BY m2.id DESC LIMIT 1
+                ))
+         FROM notifications n
+         JOIN conversations c ON c.id = n.primary_actor_id
+         LEFT JOIN inboxes i ON i.id = c.inbox_id
+         LEFT JOIN contacts co ON co.id = c.contact_id
+         LEFT JOIN messages m ON m.id = n.secondary_actor_id
+         WHERE n.id = $1::bigint",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+    let (display_id, inbox_name, contact_name, snippet) = ctx.unwrap_or((row.primary_actor_id, None, None, None));
+    let (push_title, push_body) = push_summary(
+        row.notification_type,
+        display_id,
+        inbox_name.as_deref(),
+        contact_name.as_deref(),
+        snippet.as_deref(),
+    );
+
+    let st_push = st.clone();
+    let kind = row.notification_type;
+    let pt = push_title.clone();
+    let pb = push_body.clone();
+    tokio::spawn(async move {
+        deliver_push(&st_push, account_id, user_id, kind, display_id, &pt, &pb).await;
+    });
+
     let (unread, count): (i64, i64) = sqlx::query_as(
         "SELECT COUNT(*) FILTER (WHERE read_at IS NULL), COUNT(*) FROM notifications
          WHERE account_id = $1::bigint AND user_id = $2::bigint",
@@ -512,7 +610,8 @@ async fn broadcast(st: &AppState, account_id: i64, user_id: i64, id: i64) -> sql
         .copied()
         .unwrap_or(TYPE_NAMES[0]);
     let notification: Value = json!({
-        "id": id, "notification_type": type_name, "push_message_title": "", "push_message_body": "",
+        "id": id, "notification_type": type_name,
+        "push_message_title": push_title, "push_message_body": push_body,
         "primary_actor_type": "Conversation", "primary_actor_id": row.primary_actor_id,
         "primary_actor": { "id": row.primary_actor_id }, "read_at": null, "secondary_actor": null,
         "user": { "id": user_id, "name": row.name, "type": "user" },
@@ -526,6 +625,131 @@ async fn broadcast(st: &AppState, account_id: i64, user_id: i64, id: i64) -> sql
         json!({ "notification": notification, "unread_count": unread, "count": count }),
     );
     Ok(())
+}
+
+async fn deliver_push(
+    st: &AppState,
+    account_id: i64,
+    user_id: i64,
+    kind: i32,
+    display_id: i64,
+    title: &str,
+    body: &str,
+) {
+    let ns_flags: Option<i32> = sqlx::query_scalar(
+        "SELECT push_flags FROM notification_settings WHERE account_id = $1::bigint AND user_id = $2::bigint",
+    )
+    .bind(account_id)
+    .bind(user_id)
+    .fetch_optional(&st.db)
+    .await
+    .unwrap_or(None);
+    if let Some(flags) = ns_flags {
+        let bit = 1_i32.checked_shl((kind - 1).max(0) as u32).unwrap_or(0);
+        if (flags & bit) == 0 {
+            return;
+        }
+    }
+    let subs: Vec<(i64, i32, Value)> = match sqlx::query_as(
+        "SELECT id::bigint, subscription_type, subscription_attributes
+         FROM notification_subscriptions WHERE user_id = $1::bigint",
+    )
+    .bind(user_id)
+    .fetch_all(&st.db)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, user_id, "load push subscriptions failed");
+            return;
+        }
+    };
+    if subs.is_empty() {
+        return;
+    }
+    let url = format!(
+        "{}/app/accounts/{account_id}/conversations/{display_id}",
+        st.frontend_url.trim_end_matches('/')
+    );
+    let fcm_key = std::env::var("FCM_SERVER_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let fcm_url = std::env::var("FCM_API_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let web_push_relay = std::env::var("WEB_PUSH_RELAY_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let allow_direct_web_push = std::env::var("WEB_PUSH_ALLOW_ENDPOINT_POST").as_deref() == Ok("1");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok();
+    let Some(client) = client else { return };
+
+    for (sub_id, sub_type, attrs) in subs {
+        let resp = match sub_type {
+            // FCM push token
+            2 => {
+                let Some(token) = attrs["push_token"].as_str().filter(|s| !s.is_empty()) else {
+                    continue;
+                };
+                let Some(endpoint) = fcm_url
+                    .as_deref()
+                    .or_else(|| fcm_key.as_ref().map(|_| "https://fcm.googleapis.com/fcm/send"))
+                else {
+                    continue;
+                };
+                let payload = json!({
+                    "to": token,
+                    "notification": { "title": title, "body": body, "click_action": url },
+                    "data": { "account_id": account_id, "conversation_id": display_id, "url": url },
+                });
+                let mut req = client
+                    .post(endpoint)
+                    .header("content-type", "application/json")
+                    .body(payload.to_string());
+                if let Some(ref key) = fcm_key {
+                    req = req.header("authorization", format!("key={key}"));
+                }
+                req.send().await
+            }
+            // Web Push subscription
+            1 => {
+                let target = web_push_relay.as_deref().or_else(|| {
+                    if allow_direct_web_push {
+                        attrs["endpoint"].as_str().filter(|s| !s.is_empty())
+                    } else {
+                        None
+                    }
+                });
+                let Some(target) = target else { continue };
+                let payload = json!({
+                    "title": title,
+                    "body": body,
+                    "url": url,
+                    "account_id": account_id,
+                    "conversation_id": display_id,
+                    "subscription": attrs,
+                });
+                client
+                    .post(target)
+                    .header("content-type", "application/json")
+                    .body(payload.to_string())
+                    .send()
+                    .await
+            }
+            _ => continue,
+        };
+        if let Ok(r) = resp
+            && matches!(r.status().as_u16(), 404 | 410)
+        {
+            let _ = sqlx::query("DELETE FROM notification_subscriptions WHERE id = $1::bigint")
+                .bind(sub_id)
+                .execute(&st.db)
+                .await;
+        }
+    }
 }
 
 #[cfg(test)]

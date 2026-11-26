@@ -3,6 +3,7 @@ import {
   Bold,
   BookOpen,
   Code,
+  Eye,
   Italic,
   Link as LinkIcon,
   List,
@@ -21,6 +22,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Avatar from "~/components/next/Avatar";
 import { acct, api, type Agent, type Canned, type Message } from "~/lib/api";
 import { bytes } from "~/lib/format";
+import { renderSafeMarkdown } from "~/lib/markdown";
 
 const EMOJI_GROUPS: Array<{ name: string; emojis: string[] }> = [
   { name: "Smileys", emojis: ["😀", "😄", "😊", "😉", "😍", "🥳", "🤔", "😅", "🙏", "👍", "👏", "❤️", "🎉", "🔥", "✨", "✅"] },
@@ -52,6 +54,7 @@ export function ReplyBox({
   const [text, setText] = useState("");
   const [note, setNote] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [previewMode, setPreviewMode] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -537,48 +540,68 @@ export function ReplyBox({
 
         {/* Formatting Strip + Editor */}
         <div className="px-3 pt-2">
-          <div className="mb-1 flex items-center gap-0.5 text-n-slate-10">
-            <button type="button" onClick={() => wrapSelection("**", "**")} title="Bold" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-              <Bold className="size-3.5" />
-            </button>
-            <button type="button" onClick={() => wrapSelection("_", "_")} title="Italic" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-              <Italic className="size-3.5" />
-            </button>
-            <button type="button" onClick={() => wrapSelection("`", "`")} title="Code" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-              <Code className="size-3.5" />
-            </button>
-            <button type="button" onClick={() => wrapSelection("[", "](https://)")} title="Link" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-              <LinkIcon className="size-3.5" />
-            </button>
-            <button type="button" onClick={() => wrapSelection("- ")} title="List" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
-              <List className="size-3.5" />
+          <div className="mb-1 flex items-center justify-between text-n-slate-10">
+            <div className="flex items-center gap-0.5">
+              <button type="button" onClick={() => wrapSelection("**", "**")} title="Bold" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
+                <Bold className="size-3.5" />
+              </button>
+              <button type="button" onClick={() => wrapSelection("_", "_")} title="Italic" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
+                <Italic className="size-3.5" />
+              </button>
+              <button type="button" onClick={() => wrapSelection("`", "`")} title="Code" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
+                <Code className="size-3.5" />
+              </button>
+              <button type="button" onClick={() => wrapSelection("[", "](https://)")} title="Link" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
+                <LinkIcon className="size-3.5" />
+              </button>
+              <button type="button" onClick={() => wrapSelection("- ")} title="List" className="grid size-6 place-items-center rounded hover:bg-n-alpha-2 hover:text-n-slate-12">
+                <List className="size-3.5" />
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPreviewMode((v) => !v)}
+              aria-pressed={previewMode}
+              className="inline-flex h-6 items-center gap-1 rounded px-2 text-[11px] font-medium hover:bg-n-alpha-2 hover:text-n-slate-12"
+            >
+              <Eye className="size-3" />
+              <span>{previewMode ? "Write" : "Preview"}</span>
             </button>
           </div>
 
-          <textarea
-            ref={textareaRef}
-            aria-label={note ? "Private note" : "Reply"}
-            value={text}
-            onChange={(e) => handleTextChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                void send();
-              } else if (e.key === "Escape") {
-                setCannedOpen(false);
-                setMentionOpen(false);
-                setShowEmoji(false);
-                setArticleOpen(false);
+          {previewMode ? (
+            <div
+              className="min-h-[76px] max-h-60 overflow-y-auto py-1 text-sm leading-relaxed text-n-slate-12"
+              dangerouslySetInnerHTML={{
+                __html: renderSafeMarkdown(text) || '<span class="text-n-slate-10">Nothing to preview</span>',
+              }}
+            />
+          ) : (
+            <textarea
+              ref={textareaRef}
+              aria-label={note ? "Private note" : "Reply"}
+              value={text}
+              onChange={(e) => handleTextChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  void send();
+                } else if (e.key === "Escape") {
+                  setCannedOpen(false);
+                  setMentionOpen(false);
+                  setShowEmoji(false);
+                  setArticleOpen(false);
+                }
+              }}
+              rows={expanded ? 9 : 3}
+              placeholder={
+                note
+                  ? "Write a private note... Type @ to mention teammates or / for canned responses"
+                  : "Shift + Enter for new line. Start with '/' to select a Canned Response."
               }
-            }}
-            rows={expanded ? 9 : 3}
-            placeholder={
-              note
-                ? "Write a private note... Type @ to mention teammates or / for canned responses"
-                : "Shift + Enter for new line. Start with '/' to select a Canned Response."
-            }
-            className="w-full resize-none bg-transparent py-1 text-sm leading-relaxed text-n-slate-12 outline-none placeholder:text-n-slate-10"
-          />
+              className="w-full resize-none bg-transparent py-1 text-sm leading-relaxed text-n-slate-12 outline-none placeholder:text-n-slate-10"
+            />
+          )}
 
           {files.length > 0 && (
             <ul className="mb-2 flex flex-wrap gap-2">
