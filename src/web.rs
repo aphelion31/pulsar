@@ -128,6 +128,7 @@ pub async fn api_info() -> Json<Value> {
         "app": "pulsar",
         "is_enterprise": true,
         "edition": "open-source-enterprise",
+        "vapid_public_key": crate::web_push::vapid_public_key(),
         "google_oauth_enabled": google_enabled,
         "allowed_login_methods": login_methods,
     }))

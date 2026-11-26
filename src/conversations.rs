@@ -187,13 +187,14 @@ pub(crate) struct Conv {
     pub(crate) priority: Option<i32>,
     pub(crate) waiting_since: Option<NaiveDateTime>,
     pub(crate) cached_label_list: Option<String>,
+    pub(crate) sla_policy_id: Option<i64>,
 }
 
 pub(crate) const CONV_COLS: &str = "c.id::bigint AS id, c.account_id::bigint AS account_id, c.inbox_id::bigint AS inbox_id, c.status,
   c.assignee_id::bigint AS assignee_id, c.created_at, c.updated_at, c.contact_id, c.display_id::bigint AS display_id,
   c.contact_last_seen_at, c.agent_last_seen_at, c.additional_attributes, c.contact_inbox_id, c.uuid::text AS uuid,
   c.last_activity_at, c.team_id, c.snoozed_until, c.custom_attributes, c.assignee_last_seen_at, c.first_reply_created_at,
-  c.priority, c.waiting_since, c.cached_label_list";
+  c.priority, c.waiting_since, c.cached_label_list, c.sla_policy_id::bigint AS sla_policy_id";
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct Msg {
@@ -398,6 +399,10 @@ fn build_conv_value(
     {
         meta["team"] = t;
     }
+    let muted = sender
+        .get("blocked")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let ts = |t: Option<NaiveDateTime>| t.map(|t| t.and_utc().timestamp()).unwrap_or(0);
     json!({
         "meta": meta, "id": c.display_id, "messages": if last_any.is_null() { json!([]) } else { json!([last_any]) },
@@ -407,14 +412,14 @@ fn build_conv_value(
         "agent_last_seen_at": ts(c.agent_last_seen_at), "assignee_last_seen_at": ts(c.assignee_last_seen_at),
         "contact_last_seen_at": ts(c.contact_last_seen_at), "can_reply": true, "anonymous_caller": false,
         "contact_inbox": { "source_id": sid },
-        "labels": c.labels(), "muted": false, "snoozed_until": c.snoozed_until,
+        "labels": c.labels(), "muted": muted, "snoozed_until": c.snoozed_until,
         "status": name_of(&STATUSES, c.status), "created_at": c.created_at.and_utc().timestamp(),
         "updated_at": c.updated_at.and_utc().timestamp_millis() as f64 / 1000.0,
         "timestamp": c.last_activity_at.and_utc().timestamp(), "last_activity_at": c.last_activity_at.and_utc().timestamp(),
         "first_reply_created_at": ts(c.first_reply_created_at), "unread_count": unread,
         "last_non_activity_message": last_non_activity,
         "priority": c.priority.map(|p| name_of(&PRIORITIES, p)), "waiting_since": ts(c.waiting_since),
-        "sla_policy_id": null,
+        "sla_policy_id": c.sla_policy_id,
     })
 }
 
@@ -1473,6 +1478,41 @@ async fn update_conversation(
             .execute(&st.db)
             .await?;
     }
+    if let Some(sla_val) = b.get("sla_policy_id") {
+        let sla_id = if sla_val.is_null() {
+            None
+        } else {
+            let sid = num(sla_val).ok_or_else(|| ApiError::bad("Invalid sla_policy_id"))?;
+            let ok: Option<i64> = sqlx::query_scalar(
+                "SELECT id::bigint FROM sla_policies WHERE id = $1 AND account_id = $2",
+            )
+            .bind(sid)
+            .bind(account_id)
+            .fetch_optional(&st.db)
+            .await?;
+            if ok.is_none() {
+                return Err(ApiError::not_found());
+            }
+            Some(sid)
+        };
+        sqlx::query("UPDATE conversations SET sla_policy_id = $1, updated_at = now() WHERE id = $2")
+            .bind(sla_id)
+            .bind(c.id)
+            .execute(&st.db)
+            .await?;
+        if let Some(sid) = sla_id {
+            sqlx::query(
+                "INSERT INTO applied_slas (account_id, sla_policy_id, conversation_id, sla_status, created_at, updated_at)
+                 VALUES ($1, $2, $3, 0, now(), now())
+                 ON CONFLICT (account_id, sla_policy_id, conversation_id) DO NOTHING",
+            )
+            .bind(account_id)
+            .bind(sid)
+            .bind(c.id)
+            .execute(&st.db)
+            .await?;
+        }
+    }
     let c = emit_conv(&st, c.id, "conversation.updated").await?;
     Ok(Json(conv_json(&st.db, &c).await))
 }
@@ -1495,6 +1535,8 @@ async fn destroy_conversation(
         "DELETE FROM conversation_participants WHERE conversation_id = $1",
         "DELETE FROM csat_survey_responses WHERE conversation_id = $1",
         "DELETE FROM reporting_events WHERE conversation_id = $1",
+        "DELETE FROM sla_events WHERE conversation_id = $1",
+        "DELETE FROM applied_slas WHERE conversation_id = $1",
         "DELETE FROM automation_rule_pending_executions WHERE conversation_id = $1",
         "DELETE FROM notifications WHERE primary_actor_type = 'Conversation' AND primary_actor_id = $1",
         "DELETE FROM taggings WHERE taggable_type = 'Conversation' AND taggable_id = $1",
@@ -1897,7 +1939,7 @@ async fn assign(
             &st,
             c.id,
             "assignee.changed",
-            Some(json!({ "actor_id": user.id })),
+            Some(json!({ "actor_id": user.id, "previous_assignee_id": c.assignee_id })),
         )
         .await?;
         return Ok(Json(agent));
@@ -3145,7 +3187,7 @@ async fn bulk_actions_create(
                     &st,
                     c.id,
                     "assignee.changed",
-                    Some(json!({ "actor_id": user.id })),
+                    Some(json!({ "actor_id": user.id, "previous_assignee_id": c.assignee_id })),
                 )
                 .await?;
             }

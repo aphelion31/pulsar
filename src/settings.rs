@@ -1,5 +1,5 @@
 //! Labels, canned responses, custom attributes, custom filters, notifications, notification settings,
-//! cache keys, search, and empty stubs for unported settings pages.
+//! cache keys, search, working hours, branded email layout, and reporting events.
 use std::collections::HashMap;
 
 use axum::{
