@@ -259,6 +259,56 @@ pub(crate) fn random_token(bytes: usize) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
 }
 
+fn argon2id() -> argon2::Argon2<'static> {
+    // OWASP interactive baseline: Argon2id v19, 19 MiB RAM, 2 iterations, 1 lane.
+    let params = argon2::Params::new(19_456, 2, 1, None).expect("valid static Argon2id params");
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+}
+
+pub(crate) fn hash_password(password: &str) -> Result<String, ApiError> {
+    use argon2::password_hash::{PasswordHasher, SaltString};
+    let mut raw_salt = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut raw_salt);
+    let salt = SaltString::encode_b64(&raw_salt).map_err(|_| ApiError::bad("hash"))?;
+    argon2id()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .map_err(|_| ApiError::bad("hash"))
+}
+
+pub(crate) async fn hash_password_async(password: String) -> Result<String, ApiError> {
+    tokio::task::spawn_blocking(move || hash_password(&password))
+        .await
+        .map_err(|_| ApiError::bad("hash"))?
+}
+
+/// Verify passwords and session tokens against Argon2id or legacy bcrypt (`$2a$`/`$2b$`/`$2y$`) hashes.
+pub(crate) fn verify_password(password: &str, stored_hash: &str) -> bool {
+    if stored_hash.starts_with("$argon2") {
+        use argon2::password_hash::{PasswordHash, PasswordVerifier};
+        let Ok(parsed) = PasswordHash::new(stored_hash) else {
+            return false;
+        };
+        argon2::Argon2::default()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_ok()
+    } else if stored_hash.starts_with("$2") {
+        bcrypt::verify(password, stored_hash).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+pub(crate) async fn verify_password_async(password: String, stored_hash: String) -> bool {
+    tokio::task::spawn_blocking(move || verify_password(&password, &stored_hash))
+        .await
+        .unwrap_or(false)
+}
+
+pub(crate) fn needs_rehash(stored_hash: &str) -> bool {
+    !stored_hash.starts_with("$argon2id$")
+}
+
 /// Same check as devise_token_auth `token_is_current?` / `token_can_be_reused?` minus the reuse window.
 pub fn token_valid(tokens: Option<&Value>, client: &str, token: &str) -> bool {
     let Some(entry) = tokens.and_then(|t| t.get(client)) else {
@@ -272,16 +322,17 @@ pub fn token_valid(tokens: Option<&Value>, client: &str, token: &str) -> bool {
         entry
             .get(k)
             .and_then(Value::as_str)
-            .is_some_and(|h| bcrypt_cached(token, h))
+            .is_some_and(|h| token_hash_cached(token, h))
     };
     check("token") || check("last_token")
 }
 
-/// bcrypt cost 10 is ~50 ms, and every dashboard request carries a devise token: without this, each
-/// request paid it on the async runtime. Cache successful checks keyed by sha256(token, stored hash), so a
-/// rotated or revoked token (new stored hash) is re-verified and a wrong token never hits the cache.
+/// Password/token hashing (Argon2id, or legacy bcrypt `$2*$` during migration) is intentionally slow,
+/// and every dashboard request carries a devise token: without this, each request would pay it repeatedly.
+/// Cache successful checks keyed by sha256(token, stored hash), so a rotated or revoked token
+/// (new stored hash) is re-verified and a wrong token never hits the cache.
 /// Same idea as devise_token_auth's `token_validation_response` bounded FIFO cache.
-fn bcrypt_cached(token: &str, hash: &str) -> bool {
+fn token_hash_cached(token: &str, hash: &str) -> bool {
     use sha2::{Digest, Sha256};
     use std::{
         collections::{HashSet, VecDeque},
@@ -299,7 +350,7 @@ fn bcrypt_cached(token: &str, hash: &str) -> bool {
     if OK.lock().map(|g| g.0.contains(&key)).unwrap_or(false) {
         return true;
     }
-    let ok = bcrypt::verify(token, hash).unwrap_or(false);
+    let ok = verify_password(token, hash);
     if ok {
         if let Ok(mut g) = OK.lock() {
             if !g.0.contains(&key) {
@@ -618,11 +669,7 @@ pub async fn reset_password(
     else {
         return Ok(invalid());
     };
-    let password = password.to_owned();
-    let hash = tokio::task::spawn_blocking(move || bcrypt::hash(password, 10))
-        .await
-        .map_err(|_| ApiError::bad("hash"))?
-        .map_err(|_| ApiError::bad("hash"))?;
+    let hash = hash_password_async(password.to_owned()).await?;
     // Atomic update prevents two concurrent requests from consuming the same token.
     let row: Option<(i64, String, Option<Value>)> = sqlx::query_as("UPDATE users SET encrypted_password=$1, reset_password_token=NULL, reset_password_sent_at=NULL, confirmation_token=NULL, confirmed_at=COALESCE(confirmed_at,now()), updated_at=now() WHERE reset_password_token=$2 AND reset_password_sent_at >= now() - CASE WHEN confirmed_at IS NULL AND EXISTS (SELECT 1 FROM account_users WHERE user_id=users.id AND inviter_id IS NOT NULL) THEN interval '7 days' ELSE interval '6 hours' END RETURNING id::bigint, uid, tokens::jsonb")
         .bind(hash).bind(reset_digest(token)).fetch_optional(&db).await?;
@@ -693,10 +740,8 @@ pub async fn sign_in(
         check_login_failures(&db, &key, true).await;
         return Err(bad());
     };
-    let pw_ok =
-        tokio::task::spawn_blocking(move || bcrypt::verify(&password, &enc).unwrap_or(false))
-            .await
-            .unwrap_or(false);
+    let rehash_pw = needs_rehash(&enc).then(|| password.clone());
+    let pw_ok = verify_password_async(password, enc).await;
     if !pw_ok {
         check_login_failures(&db, &key, true).await;
         return Err(bad());
@@ -708,6 +753,17 @@ pub async fn sign_in(
                 "A confirmation email was sent to your account at '{email}'. You must follow the instructions in the email before your account can be activated"
             ),
         ));
+    }
+    if let Some(raw_pw) = rehash_pw
+        && let Ok(upgraded) = hash_password_async(raw_pw).await
+    {
+        let _ = sqlx::query(
+            "UPDATE users SET encrypted_password = $1, updated_at = now() WHERE id = $2",
+        )
+        .bind(upgraded)
+        .bind(id)
+        .execute(&db)
+        .await;
     }
     // CE handle_mfa_required: password ok but OTP enrolled -> 206 + short-lived mfa_token, no session yet.
     let otp_on: Option<bool> =
@@ -789,11 +845,7 @@ pub(crate) async fn issue_token(
     let client = random_token(16);
     let token = random_token(16);
     let expiry = chrono::Utc::now().timestamp() + TOKEN_LIFESPAN_SECS;
-    let t2 = token.clone();
-    let hash = tokio::task::spawn_blocking(move || bcrypt::hash(t2, 10))
-        .await
-        .map_err(|_| ApiError::bad("hash"))?
-        .map_err(|_| ApiError::bad("hash"))?;
+    let hash = hash_password_async(token.clone()).await?;
     let mut tokens = tokens
         .and_then(|t| t.as_object().cloned())
         .unwrap_or_default();
@@ -918,7 +970,7 @@ pub async fn profile_update(
             .bind(user.id)
             .fetch_one(&db)
             .await?;
-        if !bcrypt::verify(&current, &enc).unwrap_or(false) {
+        if !verify_password_async(current, enc).await {
             return Err(ApiError::bad("Current password is incorrect"));
         }
         if pw.len() < 6 || Some(pw) != p["password_confirmation"].as_str() {
@@ -926,7 +978,7 @@ pub async fn profile_update(
                 "Password is invalid or confirmation does not match",
             ));
         }
-        let hash = bcrypt::hash(pw, 11).map_err(|_| ApiError::bad("hash"))?;
+        let hash = hash_password_async(pw.to_owned()).await?;
         sqlx::query("UPDATE users SET encrypted_password=$1, updated_at=now() WHERE id=$2")
             .bind(hash)
             .bind(user.id)
@@ -1540,12 +1592,41 @@ mod tests {
     use super::*;
     #[test]
     fn token_roundtrip() {
-        let h = bcrypt::hash("tok", 4).unwrap();
+        let argon_h = hash_password("tok").unwrap();
+        let legacy_h = bcrypt::hash("tok", 4).unwrap();
         let exp = chrono::Utc::now().timestamp() + 100;
-        let t = json!({ "c1": { "token": h, "expiry": exp } });
+        let t = json!({
+            "c1": { "token": argon_h, "expiry": exp },
+            "c_legacy": { "token": legacy_h, "expiry": exp }
+        });
         assert!(token_valid(Some(&t), "c1", "tok"));
         assert!(!token_valid(Some(&t), "c1", "bad"));
+        assert!(token_valid(Some(&t), "c_legacy", "tok"));
+        assert!(!token_valid(Some(&t), "c_legacy", "bad"));
         assert!(!token_valid(Some(&t), "c2", "tok"));
+    }
+
+    #[test]
+    fn password_hash_argon2id_and_legacy_bcrypt() {
+        let h1 = hash_password("Secret123!").unwrap();
+        let h2 = hash_password("Secret123!").unwrap();
+        assert!(h1.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"));
+        assert_ne!(h1, h2);
+        assert!(verify_password("Secret123!", &h1));
+        assert!(!verify_password("Wrong123!", &h1));
+        assert!(!needs_rehash(&h1));
+
+        let legacy_2b = bcrypt::hash("Legacy123!", 4).unwrap();
+        let legacy_2y = legacy_2b.replacen("$2b$", "$2y$", 1);
+        for legacy in [&legacy_2b, &legacy_2y] {
+            assert!(verify_password("Legacy123!", legacy));
+            assert!(!verify_password("Wrong123!", legacy));
+            assert!(needs_rehash(legacy));
+        }
+
+        assert!(!verify_password("anything", ""));
+        assert!(!verify_password("anything", "$argon2id$invalid"));
+        assert!(needs_rehash(""));
     }
     #[test]
     fn features_bits() {
