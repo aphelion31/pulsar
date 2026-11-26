@@ -64,11 +64,7 @@ async fn issue_token(
     let client = random_token(16);
     let token = random_token(16);
     let expiry = chrono::Utc::now().timestamp() + TOKEN_LIFESPAN_SECS;
-    let t2 = token.clone();
-    let hash = tokio::task::spawn_blocking(move || bcrypt::hash(t2, 10))
-        .await
-        .map_err(|_| ApiError::bad("hash"))?
-        .map_err(|_| ApiError::bad("hash"))?;
+    let hash = crate::auth::hash_password_async(token.clone()).await?;
     let mut tokens = tokens
         .and_then(|t| t.as_object().cloned())
         .unwrap_or_default();
@@ -360,11 +356,7 @@ async fn create_account_inner(
     let user_id: i64 = if let Some(ref u) = current_user {
         u.id
     } else {
-        let pw = password.to_string();
-        let hash = tokio::task::spawn_blocking(move || bcrypt::hash(pw, 10))
-            .await
-            .map_err(|_| ApiError::bad("hash"))?
-            .map_err(|_| ApiError::bad("hash"))?;
+        let hash = crate::auth::hash_password_async(password.to_string()).await?;
         let ctok = random_token(20);
         let pubsub = uuid::Uuid::new_v4().simple().to_string();
         let uid: i64 = sqlx::query_scalar(

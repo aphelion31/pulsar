@@ -338,10 +338,7 @@ pub async fn destroy(
         return Err(unprocessable("MFA is not enabled"));
     }
     let pw = field(&b, "password").unwrap_or_default();
-    let hash = m.pw.clone();
-    let pw_ok = tokio::task::spawn_blocking(move || bcrypt::verify(&pw, &hash).unwrap_or(false))
-        .await
-        .unwrap_or(false);
+    let pw_ok = crate::auth::verify_password_async(pw, m.pw.clone()).await;
     if !pw_ok {
         return Err(unprocessable("Invalid credentials or verification code"));
     }

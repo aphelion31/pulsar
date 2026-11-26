@@ -71,10 +71,7 @@ fn token() -> String {
 }
 
 async fn hash_pw(pw: String) -> Result<String, ApiError> {
-    tokio::task::spawn_blocking(move || bcrypt::hash(pw, 10))
-        .await
-        .map_err(|_| ApiError::bad("hash"))?
-        .map_err(|_| ApiError::bad("hash"))
+    crate::auth::hash_password_async(pw).await
 }
 
 /// Accept `{key: {...}}` (Rails nested params) or a flat body.
