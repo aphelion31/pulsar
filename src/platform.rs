@@ -400,10 +400,7 @@ async fn user_create(
     if password.len() < 6 {
         return Err(ApiError::bad("password is too short"));
     }
-    let hash = tokio::task::spawn_blocking(move || bcrypt::hash(password, 11))
-        .await
-        .map_err(|_| ApiError::bad("password hashing failed"))?
-        .map_err(|_| ApiError::bad("password hashing failed"))?;
+    let hash = crate::auth::hash_password_async(password).await?;
     let mut tx = db.begin().await?;
     let id:i64=sqlx::query_scalar("INSERT INTO users(uid,email,name,display_name,encrypted_password,confirmed_at,pubsub_token,tokens,custom_attributes,created_at,updated_at) VALUES($1,$1,$2,$3,$4,now(),$5,'{}',$6,now(),now()) RETURNING id::bigint").bind(&email).bind(name).bind(v["display_name"].as_str()).bind(hash).bind(token()).bind(v.get("custom_attributes").filter(|x| x.is_object()).cloned().unwrap_or(json!({}))).fetch_one(&mut *tx).await?;
     sqlx::query("INSERT INTO access_tokens(owner_type,owner_id,token,created_at,updated_at) VALUES('User',$1,$2,now(),now())").bind(id).bind(token()).execute(&mut *tx).await?;
@@ -437,13 +434,7 @@ async fn user_update(
         if p.len() < 6 {
             return Err(ApiError::bad("password is too short"));
         }
-        let p = p.to_owned();
-        Some(
-            tokio::task::spawn_blocking(move || bcrypt::hash(p, 11))
-                .await
-                .map_err(|_| ApiError::bad("password hashing failed"))?
-                .map_err(|_| ApiError::bad("password hashing failed"))?,
-        )
+        Some(crate::auth::hash_password_async(p.to_owned()).await?)
     } else {
         None
     };

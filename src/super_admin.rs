@@ -262,14 +262,24 @@ async fn super_admin_sign_in(
     .await?;
     let (id, uid, enc, tokens, user_type) = row.ok_or_else(ApiError::unauthorized)?;
 
-    let ok = tokio::task::spawn_blocking(move || bcrypt::verify(&password, &enc).unwrap_or(false))
-        .await
-        .unwrap_or(false);
+    let rehash_pw = auth::needs_rehash(&enc).then(|| password.clone());
+    let ok = auth::verify_password_async(password, enc).await;
     if !ok {
         return Err(ApiError::unauthorized());
     }
     if user_type.as_deref() != Some("SuperAdmin") {
         return Err(ApiError::forbidden());
+    }
+    if let Some(raw_pw) = rehash_pw
+        && let Ok(upgraded) = auth::hash_password_async(raw_pw).await
+    {
+        let _ = sqlx::query(
+            "UPDATE users SET encrypted_password = $1, updated_at = now() WHERE id = $2",
+        )
+        .bind(upgraded)
+        .bind(id)
+        .execute(&db)
+        .await;
     }
 
     let (client, token, expiry) = auth::issue_token(&db, id, tokens).await?;
@@ -371,10 +381,7 @@ async fn onboarding_create(
         .ok_or_else(|| ApiError::bad("Password must be at least 6 characters"))?
         .to_string();
 
-    let hash = tokio::task::spawn_blocking(move || bcrypt::hash(password, 10))
-        .await
-        .map_err(|_| ApiError::bad("hash"))?
-        .map_err(|_| ApiError::bad("hash"))?;
+    let hash = auth::hash_password_async(password).await?;
     let (ff, ff1) = auth::default_feature_flags();
 
     let mut tx = db.begin().await?;
@@ -906,10 +913,7 @@ async fn users_create(
         .as_str()
         .filter(|s| *s == "SuperAdmin")
         .map(str::to_string);
-    let hash = tokio::task::spawn_blocking(move || bcrypt::hash(pw, 10))
-        .await
-        .map_err(|_| ApiError::bad("hash"))?
-        .map_err(|_| ApiError::bad("hash"))?;
+    let hash = auth::hash_password_async(pw).await?;
 
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO users (provider, uid, encrypted_password, name, display_name, email, confirmed_at, pubsub_token, \"type\", created_at, updated_at, tokens)
@@ -965,11 +969,7 @@ async fn users_update(
     .await?;
 
     if let Some(pw) = b["password"].as_str().filter(|s| s.len() >= 6) {
-        let p = pw.to_string();
-        let hash = tokio::task::spawn_blocking(move || bcrypt::hash(p, 10))
-            .await
-            .map_err(|_| ApiError::bad("hash"))?
-            .map_err(|_| ApiError::bad("hash"))?;
+        let hash = auth::hash_password_async(pw.to_string()).await?;
         sqlx::query("UPDATE users SET encrypted_password = $1 WHERE id = $2::bigint")
             .bind(hash)
             .bind(id)
