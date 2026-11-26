@@ -26,7 +26,7 @@
 | **Backend non-test, non-migration** | `2,282` files · `119,006` LOC (excl. `1,212` `spec/` files = `176,176` LOC & `228` `db/` files = `5,979` LOC) | `65` files · `48,298` LOC (`src/` includes unit tests + SQL + handlers + serializers) | **2.46x** production LOC |
 | **Frontend total** | `2,541` files · `334,067` LOC (`.vue`/`.js`/`.ts`/`.scss`/`.css` in `app/javascript`) | `155` files · `25,797` LOC (`.ts`/`.tsx`/`.css` in `web/app`) | **12.9x** raw LOC |
 | **Frontend non-test, non-storybook** | `1,813` files · `230,814` LOC (excl. `631` tests/specs = `96,092` LOC & `97` Storybook = `7,161` LOC; includes `183` legacy components + `226` Vuex/API clients) | `155` files · `25,797` LOC (`92` routes = `17,266` LOC, `53` components = `7,243` LOC, `6` lib = `435` LOC, `4` root = `853` LOC; `167` `route()` entries) | **8.9x** non-test LOC (single unified React UI vs Vue dual legacy + Next + Vuex SFCs) |
-| **Locale JSON files** | `2,648` files (40+ languages) | `47` `en/` modules + `8` synced runtime locale bundles (`id`, `es`, `fr`, `de`, `pt_BR`, `ja`, `zh_CN`, `ar` incl. RTL) | Synced via `tools/sync-locales.mjs` |
+| **Locale JSON files** | `2,648` files (`57` languages) | `47` `en/` modules + `56` synced non-English runtime bundles (`57` total incl. `5` RTL: `ar`, `fa`, `he`, `ur`, `ur_IN`) | Synced via `tools/sync-locales.mjs` -> `web/public/i18n/` + `web/app/lib/locales.generated.ts` |
 
 ---
 
@@ -52,7 +52,7 @@
   - `src/events.rs` (`158` LOC): durable async dispatcher (`migrations/0005_pulsar_events.sql`).
 - **React Router (`web/app/`)**:
   - `routes/inbox.tsx`, `routes/inbox-view.tsx`, `routes/r2/custom-view.tsx`, `routes/r2/search.tsx`.
-  - `components/next/conversation/ReplyBox.tsx` (Markdown toolbar, `/` canned responses, `@` mentions, emoji picker, Help Center article insert, browser `MediaRecorder` audio note, Reply/Private Note tabs, AI Copilot), `components/next/conversation/ConversationSidebar.tsx` (Accordion panels, macro execute, integration cards), `components/next/CommandBar.tsx` (`⌘K`), `components/next/KeyboardShortcutsModal.tsx` (`?`), `components/next/sidebar/*` (`Sidebar.tsx`, `SidebarAccountSwitcher.tsx`, `SidebarProfileMenu.tsx`).
+  - `components/next/RichTextEditor.tsx` (dual-mode zero-dependency WYSIWYG `contentEditable` + Markdown + Split editor with `htmlToMarkdown` <-> `renderSafeMarkdown` sync), `components/next/conversation/ReplyBox.tsx` (`/` canned responses, `@` mentions, emoji picker, Help Center article insert, browser `MediaRecorder` audio note, Reply/Private Note tabs, AI Copilot), `components/next/conversation/ConversationSidebar.tsx` (Accordion panels, macro execute, integration cards), `components/next/CommandBar.tsx` (`⌘K`), `components/next/KeyboardShortcutsModal.tsx` (`?`), `components/next/sidebar/*` (`Sidebar.tsx`, `SidebarAccountSwitcher.tsx`, `SidebarProfileMenu.tsx`).
 
 ### 2.3 Contacts, Companies, Custom Attributes & Filters
 
@@ -131,7 +131,8 @@
 ### P1 — Channel, Delivery & Auth Parity
 
 - [x] **Inbound Email HTTP webhooks (`app/mailboxes/*`)**: Implemented ActionMailbox webhook routes for Mailgun, SendGrid, Postmark, Mandrill, generic relay, and Amazon SES/SNS in `src/email_inbound.rs`.
-- [x] **Web Push + FCM push delivery**: Populated `push_message_title` / `push_message_body` and wired FCM + Web Push relay delivery with 404/410 stale subscription pruning in `src/listeners/notifications.rs`.
+- [x] **Web Push + FCM push delivery**: Implemented native RFC 8291 (`aes128gcm` ECDH + HKDF-SHA256 + AES-128-GCM) & RFC 8292 (VAPID ES256) Web Push encryption (`src/web_push.rs` using `p256`), wired into `src/listeners/notifications.rs` alongside relay fallback, FCM delivery, and 404/410 stale subscription pruning.
+- [x] **Agent confirmation resend (`POST /api/v1/profile/resend_confirmation`)**: Generates fresh `confirmation_token`, stamps `confirmation_sent_at`, and dispatches confirmation email for unconfirmed accounts (`src/auth.rs` + `src/registration.rs`).
 - [x] **Agent Google / OmniAuth login (`devise_overrides/omniauth_callbacks`)**: Implemented `/omniauth/google_oauth2` and `/omniauth/google_oauth2/callback` (`src/auth.rs`), `ALLOWED_LOGIN_METHODS`/`google_oauth_enabled` (`src/web.rs`), and Google sign-in button (`web/app/routes/login.tsx`).
 - [x] **Bandwidth SMS inbound media download**: Wired `webhooks::safe_fetch_bytes` into `src/channels/sms.rs` downloading MMS `media` URLs via `storage::attach_to_message`.
 - [x] **24-hour messaging window (`can_reply?`) enforcement**: Implemented `conversations::within_messaging_window` gating automated CSAT survey (`src/listeners/csat.rs`) and auto-resolve messages (`src/scheduler.rs`).
@@ -145,15 +146,15 @@
 - [x] **Remaining Web Widget sub-views (`web/app/routes/widget.tsx`)**: Implemented `?view=unread-messages` drawer, proactive campaign banner preview/trigger, inline Help Center portal article search & Markdown reader, and Dyte video call join action.
 - [x] **Year in Review UI**: Implemented `web/app/routes/reports.year-in-review.tsx` consuming `GET /api/v2/accounts/{id}/year_in_review` and wired into `routes.ts`, `reports.tsx`, and `Sidebar.tsx`.
 - [x] **Dedicated Data Export detail route**: Implemented `web/app/routes/r3/data-export-detail.tsx` (`/settings/data/exports/:dataExportId`) and linked export rows in `web/app/routes/r3/data-imports.tsx`.
-- [x] **Multi-language i18n translations & locale switcher**: Synced 8 runtime locales (`id`, `es`, `fr`, `de`, `pt_BR`, `ja`, `zh_CN`, `ar`) via `tools/sync-locales.mjs`, added on-demand loader, English fallback, Arabic RTL (`dir="rtl"`), `useLocale()`, and profile menu switcher in `SidebarProfileMenu.tsx`.
-- [x] **Rich Markdown composer preview**: Implemented zero-dependency XSS-safe `renderSafeMarkdown` (`web/app/lib/markdown.ts`) with Write/Preview toggles in `ReplyBox.tsx` and formatted Markdown rendering in `article-editor.tsx` (kept lightweight without TipTap/ProseMirror npm bloat).
+- [x] **Multi-language i18n translations & locale switcher**: Synced all 57 Chatwoot MIT locales (`56` non-English runtime bundles + `en`) via `tools/sync-locales.mjs`, generated `web/app/lib/locales.generated.ts`, added on-demand loader, English fallback, 5 RTL locales (`ar`, `fa`, `he`, `ur`, `ur_IN` setting `dir="rtl"`), `useLocale()`, and profile menu switcher in `SidebarProfileMenu.tsx`.
+- [x] **Dual Rich WYSIWYG + Markdown + Split Editor**: Built zero-dependency `RichTextEditor.tsx` (`contentEditable` visual WYSIWYG <-> `htmlToMarkdown` <-> `renderSafeMarkdown` in `web/app/lib/markdown.ts`, supporting headings, bold, italic, strikethrough, code, links, blockquotes, and ordered/unordered lists) and integrated into `ReplyBox.tsx` and `article-editor.tsx`.
 
-### P3 — Enterprise Cloud, Audio AI, Hardening & Test Suite
+### P3 — Open Source Enterprise Core, Reports, Audio AI, Hardening & Test Suite
 
+- [x] **Open Source Enterprise core edition**: Enabled self-hosted enterprise & core features (`custom_roles`, `sla`, `audit_logs`, `saml`, `captain_*`, `conversation_monitors`, `advanced_assignment`, `inbox_view`, etc.) in `features.json`, set `IS_ENTERPRISE: true` and `INSTALLATION_PRICING_PLAN: "open-source-enterprise"` (`src/web.rs`, `installation_defaults.json`), and `"Open Source Enterprise"` billing summary default (`src/main.rs`).
 - [x] **Audio & Voice Call AI transcription (`audio_transcription_job`, `call_transcription_job`)**: Implemented `POST /conversations/{id}/messages/{message_id}/transcribe` and `POST /calls/{id}/transcribe` in `src/voice.rs` + `storage::read_first_audio_blob` via Whisper `/audio/transcriptions`.
 - [x] **Custom domains & Cloudflare SSL checks (`ee/custom_domains`, `cloudflare_verification_job`)**: Implemented `/custom_domains` CRUD + `/verify` in `src/custom_domains.rs` (`pulsar_custom_domains` table, Cloudflare API & DNS-over-HTTPS TXT verification).
-- [x] **Bot resolution time-series & channel report summary**: Implemented `bot_resolutions_count`, `bot_handoffs_count`, and `summary_reports_channel` queries in `src/reports.rs`.
-- [x] **Encrypt webhook & agent bot secrets (`ar_encryption`)**: Verified `src/bots.rs` and `src/automation.rs` store secrets via `ar_encryption::new_secret()` and reveal via `ar_encryption::reveal_secret()`, and cleaned stale comment.
-- [x] **Backend `ponytail:` cleanups & optimizations**: Implemented `pulsar_message_errors` (`external_error` persistence in `src/conversations.rs`), self-assignment skip + recent message snippets in `src/listeners/notifications.rs`, `auto_resolve_label` in `src/scheduler.rs`, IMAP CRAM-MD5 in `src/email_inbound.rs`, and Bandwidth OAuth token cache in `src/channels/sms.rs`.
-- [x] **OpenAPI `/swagger` endpoint & automated frontend component tests**: Added `/swagger` & `/swagger/openapi.json` (`src/web.rs`), Bun test suite `web/app/lib/{i18n,plural,theme,markdown}.test.ts`, CI `bun test` gate, and live end-to-end `tools/wave6-parity-todos.sh`.
-- [ ] **Chatwoot Cloud SaaS checkout (`enterprise_checkout_stub`)**: `src/main.rs` keeps hosted-billing stub responses (Cloud SaaS Stripe billing only, N/A for self-hosted Pulsar deployments).
+- [x] **Reports v2 parity (`bot_resolutions_count`, `channel` summary, matrix, FRT distribution, outgoing counts)**: Implemented `bot_resolutions_count`, `bot_handoffs_count`, `summary_reports_channel`, `inbox_label_matrix`, `first_response_time_distribution`, and `outgoing_messages_count` (`agent`, `team`, `inbox`, `label`) in `src/reports.rs`.
+- [x] **Set-based conversation serialization & `ponytail:` cleanups**: Replaced N+1 conversation list queries with batched `convs_json_batch` in `src/conversations.rs` (backed by `avatar_urls_batch` and `attachments_json_batch` in `src/storage.rs`), encrypted webhook/bot secrets (`ar_encryption`), and removed stale `ponytail:` comments.
+- [x] **OpenAPI `/swagger`, RFC 8291 unit tests, Wave 6/7 & Bun suites**: Verified `/swagger` & `/swagger/openapi.json` (`src/web.rs`), `web_push` RFC 8291/8292 crypto tests (`cargo test --locked`), Bun unit/typecheck/build suite, live integration `tools/wave6-parity-todos.sh` & `tools/wave7-enterprise-polish.sh`.
+- [ ] **Hosted Cloud SaaS Stripe checkout (`enterprise_checkout_stub`)**: Intentionally out of scope for self-hosted Open Source Enterprise deployments (`stripe_integration: false`).

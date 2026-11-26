@@ -41,6 +41,7 @@ mod storage;
 mod super_admin;
 mod voice;
 mod web;
+mod web_push;
 mod widget;
 
 use axum::{
@@ -155,7 +156,7 @@ async fn enterprise_billing_summary(
     let attrs = attrs.unwrap_or_else(|| serde_json::json!({}));
     Ok(axum::Json(serde_json::json!({
         "id": account_id,
-        "plan": attrs.get("plan_name").and_then(|v| v.as_str()).unwrap_or("Enterprise"),
+        "plan": attrs.get("plan_name").and_then(|v| v.as_str()).unwrap_or("Open Source Enterprise"),
         "billing_currency": attrs.get("billing_currency").and_then(|v| v.as_str()).unwrap_or("usd"),
         "stripe_customer_id": attrs.get("stripe_customer_id"),
         "marked_for_deletion_at": attrs.get("marked_for_deletion_at"),

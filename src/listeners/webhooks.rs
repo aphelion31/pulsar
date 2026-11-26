@@ -40,7 +40,7 @@ pub(crate) fn public_ip(ip: IpAddr) -> bool {
     }
 }
 
-async fn validated_client(raw_url: &str, timeout_secs: u64) -> anyhow::Result<(url::Url, reqwest::Client)> {
+pub(crate) async fn validated_client(raw_url: &str, timeout_secs: u64) -> anyhow::Result<(url::Url, reqwest::Client)> {
     let url = url::Url::parse(raw_url)?;
     anyhow::ensure!(
         matches!(url.scheme(), "http" | "https")
@@ -56,7 +56,9 @@ async fn validated_client(raw_url: &str, timeout_secs: u64) -> anyhow::Result<(u
         .ok_or_else(|| anyhow::anyhow!("missing port"))?;
     let addresses: Vec<SocketAddr> = tokio::net::lookup_host((host, port)).await?.collect();
     anyhow::ensure!(!addresses.is_empty(), "host has no addresses");
-    if std::env::var("PULSAR_WEBHOOK_ALLOW_PRIVATE").as_deref() != Ok("1") {
+    if std::env::var("PULSAR_WEBHOOK_ALLOW_PRIVATE").as_deref() != Ok("1")
+        && std::env::var("WEB_PUSH_ALLOW_PRIVATE").as_deref() != Ok("1")
+    {
         anyhow::ensure!(
             addresses.iter().all(|a| public_ip(a.ip())),
             "private webhook address refused"

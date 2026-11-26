@@ -1627,34 +1627,261 @@ async fn reports_bot_metrics(
     })))
 }
 
+fn query_param<'a>(params: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    params
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
+fn query_i64_list(params: &[(String, String)], key: &str) -> Vec<i64> {
+    let bracketed = format!("{key}[]");
+    let mut ids = Vec::new();
+    for (k, v) in params {
+        if k != key && *k != bracketed {
+            continue;
+        }
+        for part in v.split(',') {
+            if let Ok(id) = part.trim().parse::<i64>() {
+                ids.push(id);
+            }
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 async fn reports_inbox_label_matrix(
     State(st): State<AppState>,
     user: CurrentUser,
     Path(account_id): Path<i64>,
-    Query(_params): Query<ReportParams>,
+    Query(q): Query<Vec<(String, String)>>,
 ) -> ApiResult {
     let _au = require_report_viewer(&st.db, &user, account_id).await?;
-    Ok(Json(json!({})))
+    let since = parse_ts(query_param(&q, "since"));
+    let until = parse_ts(query_param(&q, "until"));
+    let inbox_filter = query_i64_list(&q, "inbox_ids");
+    let label_filter = query_i64_list(&q, "label_ids");
+
+    let inboxes: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id::bigint, name FROM inboxes
+         WHERE account_id = $1 AND ($2::bigint[] IS NULL OR id = ANY($2))
+         ORDER BY name ASC, id ASC",
+    )
+    .bind(account_id)
+    .bind((!inbox_filter.is_empty()).then_some(inbox_filter.as_slice()))
+    .fetch_all(&st.db)
+    .await?;
+
+    let labels: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id::bigint, title FROM labels
+         WHERE account_id = $1 AND ($2::bigint[] IS NULL OR id = ANY($2))
+         ORDER BY title ASC, id ASC",
+    )
+    .bind(account_id)
+    .bind((!label_filter.is_empty()).then_some(label_filter.as_slice()))
+    .fetch_all(&st.db)
+    .await?;
+
+    let label_titles: Vec<&str> = labels.iter().map(|(_, t)| t.as_str()).collect();
+    let inbox_ids: Vec<i64> = inboxes.iter().map(|(id, _)| *id).collect();
+    let mut counts: std::collections::HashMap<(i64, String), i64> = std::collections::HashMap::new();
+    if !inbox_ids.is_empty() && !label_titles.is_empty() {
+        let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+            "SELECT c.inbox_id::bigint, t.name, COUNT(*)::bigint
+             FROM taggings tg
+             JOIN conversations c ON c.id = tg.taggable_id
+             JOIN tags t ON t.id = tg.tag_id
+             WHERE tg.taggable_type = 'Conversation'
+               AND tg.context = 'labels'
+               AND c.account_id = $1
+               AND c.inbox_id = ANY($2)
+               AND t.name = ANY($3)
+               AND ($4::timestamp IS NULL OR c.created_at >= $4)
+               AND ($5::timestamp IS NULL OR c.created_at <= $5)
+             GROUP BY c.inbox_id, t.name",
+        )
+        .bind(account_id)
+        .bind(&inbox_ids)
+        .bind(&label_titles)
+        .bind(since)
+        .bind(until)
+        .fetch_all(&st.db)
+        .await?;
+        for (iid, title, cnt) in rows {
+            counts.insert((iid, title), cnt);
+        }
+    }
+
+    let matrix: Vec<Vec<i64>> = inboxes
+        .iter()
+        .map(|(iid, _)| {
+            labels
+                .iter()
+                .map(|(_, title)| *counts.get(&(*iid, title.clone())).unwrap_or(&0))
+                .collect()
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "inboxes": inboxes.into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
+        "labels": labels.into_iter().map(|(id, title)| json!({ "id": id, "title": title })).collect::<Vec<_>>(),
+        "matrix": matrix,
+    })))
 }
 
 async fn reports_first_response_time_distribution(
     State(st): State<AppState>,
     user: CurrentUser,
     Path(account_id): Path<i64>,
-    Query(_params): Query<ReportParams>,
+    Query(params): Query<ReportParams>,
 ) -> ApiResult {
     let _au = require_report_viewer(&st.db, &user, account_id).await?;
-    Ok(Json(json!({})))
+    let since = parse_ts(params.since.as_deref());
+    let until = parse_ts(params.r#until.as_deref());
+
+    let rows: Vec<(String, i64, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT COALESCE(i.channel_type, 'Channel::Api'),
+                COUNT(CASE WHEN re.value < 3600 THEN 1 END)::bigint,
+                COUNT(CASE WHEN re.value >= 3600 AND re.value < 14400 THEN 1 END)::bigint,
+                COUNT(CASE WHEN re.value >= 14400 AND re.value < 28800 THEN 1 END)::bigint,
+                COUNT(CASE WHEN re.value >= 28800 AND re.value < 86400 THEN 1 END)::bigint,
+                COUNT(CASE WHEN re.value >= 86400 THEN 1 END)::bigint
+         FROM reporting_events re
+         JOIN inboxes i ON i.id = re.inbox_id AND i.account_id = re.account_id
+         WHERE re.account_id = $1
+           AND re.name = 'first_response'
+           AND ($2::timestamp IS NULL OR re.created_at >= $2)
+           AND ($3::timestamp IS NULL OR re.created_at <= $3)
+         GROUP BY i.channel_type",
+    )
+    .bind(account_id)
+    .bind(since)
+    .bind(until)
+    .fetch_all(&st.db)
+    .await?;
+
+    let mut out = serde_json::Map::new();
+    for (channel_type, b0, b1, b2, b3, b4) in rows {
+        out.insert(
+            channel_type,
+            json!({
+                "0-1h": b0,
+                "1-4h": b1,
+                "4-8h": b2,
+                "8-24h": b3,
+                "24h+": b4,
+            }),
+        );
+    }
+    Ok(Json(Value::Object(out)))
 }
 
 async fn reports_outgoing_messages_count(
     State(st): State<AppState>,
     user: CurrentUser,
     Path(account_id): Path<i64>,
-    Query(_params): Query<ReportParams>,
+    Query(params): Query<ReportParams>,
 ) -> ApiResult {
     let _au = require_report_viewer(&st.db, &user, account_id).await?;
-    Ok(Json(json!([])))
+    let since = parse_ts(params.since.as_deref());
+    let until = parse_ts(params.r#until.as_deref());
+    let group_by = params.group_by.as_deref().unwrap_or("agent");
+
+    let list: Vec<Value> = match group_by {
+        "team" => {
+            let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+                "SELECT t.id::bigint, t.name, COUNT(m.id)::bigint AS cnt
+                 FROM messages m
+                 JOIN conversations c ON c.id = m.conversation_id AND c.account_id = m.account_id
+                 JOIN teams t ON t.id = c.team_id AND t.account_id = m.account_id
+                 WHERE m.account_id = $1
+                   AND m.message_type = 1
+                   AND ($2::timestamp IS NULL OR m.created_at >= $2)
+                   AND ($3::timestamp IS NULL OR m.created_at <= $3)
+                 GROUP BY t.id, t.name
+                 ORDER BY cnt DESC, t.id ASC",
+            )
+            .bind(account_id)
+            .bind(since)
+            .bind(until)
+            .fetch_all(&st.db)
+            .await?;
+            rows.into_iter()
+                .map(|(id, name, cnt)| json!({ "id": id, "name": name, "outgoing_messages_count": cnt }))
+                .collect()
+        }
+        "inbox" => {
+            let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+                "SELECT i.id::bigint, i.name, COUNT(m.id)::bigint AS cnt
+                 FROM messages m
+                 JOIN inboxes i ON i.id = m.inbox_id AND i.account_id = m.account_id
+                 WHERE m.account_id = $1
+                   AND m.message_type = 1
+                   AND ($2::timestamp IS NULL OR m.created_at >= $2)
+                   AND ($3::timestamp IS NULL OR m.created_at <= $3)
+                 GROUP BY i.id, i.name
+                 ORDER BY cnt DESC, i.id ASC",
+            )
+            .bind(account_id)
+            .bind(since)
+            .bind(until)
+            .fetch_all(&st.db)
+            .await?;
+            rows.into_iter()
+                .map(|(id, name, cnt)| json!({ "id": id, "name": name, "outgoing_messages_count": cnt }))
+                .collect()
+        }
+        "label" => {
+            let rows: Vec<(Option<i64>, String, i64)> = sqlx::query_as(
+                "SELECT MIN(l.id)::bigint, t.name, COUNT(m.id)::bigint AS cnt
+                 FROM messages m
+                 JOIN conversations c ON c.id = m.conversation_id AND c.account_id = m.account_id
+                 JOIN taggings tg ON tg.taggable_id = c.id AND tg.taggable_type = 'Conversation' AND tg.context = 'labels'
+                 JOIN tags t ON t.id = tg.tag_id
+                 LEFT JOIN labels l ON l.title = t.name AND l.account_id = m.account_id
+                 WHERE m.account_id = $1
+                   AND m.message_type = 1
+                   AND ($2::timestamp IS NULL OR m.created_at >= $2)
+                   AND ($3::timestamp IS NULL OR m.created_at <= $3)
+                 GROUP BY t.name
+                 ORDER BY cnt DESC, t.name ASC",
+            )
+            .bind(account_id)
+            .bind(since)
+            .bind(until)
+            .fetch_all(&st.db)
+            .await?;
+            rows.into_iter()
+                .map(|(id, name, cnt)| json!({ "id": id, "name": name, "outgoing_messages_count": cnt }))
+                .collect()
+        }
+        _ => {
+            let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+                "SELECT u.id::bigint, u.name, COUNT(m.id)::bigint AS cnt
+                 FROM messages m
+                 JOIN users u ON u.id = m.sender_id
+                 WHERE m.account_id = $1
+                   AND m.message_type = 1
+                   AND m.sender_type = 'User'
+                   AND m.sender_id IS NOT NULL
+                   AND ($2::timestamp IS NULL OR m.created_at >= $2)
+                   AND ($3::timestamp IS NULL OR m.created_at <= $3)
+                 GROUP BY u.id, u.name
+                 ORDER BY cnt DESC, u.id ASC",
+            )
+            .bind(account_id)
+            .bind(since)
+            .bind(until)
+            .fetch_all(&st.db)
+            .await?;
+            rows.into_iter()
+                .map(|(id, name, cnt)| json!({ "id": id, "name": name, "outgoing_messages_count": cnt }))
+                .collect()
+        }
+    };
+    Ok(Json(Value::Array(list)))
 }
 
 async fn year_in_review_show(

@@ -50,26 +50,10 @@ import whatsappTemplates from "../i18n/en/whatsappTemplates.json";
 import yearInReview from "../i18n/en/yearInReview.json";
 
 import { useEffect, useState } from "react";
+import { SUPPORTED_LOCALES, type LocaleOption } from "./locales.generated";
 import { pickPlural, type Vars } from "./plural";
-export type { Vars };
-
-export type LocaleOption = {
-  code: string;
-  name: string;
-  dir: "ltr" | "rtl";
-};
-
-export const SUPPORTED_LOCALES: LocaleOption[] = [
-  { code: "en", name: "English", dir: "ltr" },
-  { code: "id", name: "Bahasa Indonesia", dir: "ltr" },
-  { code: "es", name: "Español", dir: "ltr" },
-  { code: "fr", name: "Français", dir: "ltr" },
-  { code: "de", name: "Deutsch", dir: "ltr" },
-  { code: "pt_BR", name: "Português (Brasil)", dir: "ltr" },
-  { code: "ja", name: "日本語", dir: "ltr" },
-  { code: "zh_CN", name: "简体中文", dir: "ltr" },
-  { code: "ar", name: "العربية", dir: "rtl" },
-];
+export type { LocaleOption, Vars };
+export { SUPPORTED_LOCALES };
 
 const LOCALE_KEY = "pulsar.locale";
 
@@ -207,7 +191,7 @@ function lookupIn(dict: Record<string, unknown>, key: string): string | undefine
       return undefined;
     }
   }
-  return typeof node === "string" ? node : undefined;
+  return typeof node === "string" && node.length > 0 ? node : undefined;
 }
 
 export function t(key: string, vars?: Vars): string {

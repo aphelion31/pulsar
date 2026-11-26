@@ -26,12 +26,12 @@
   },
   {
     "name": "disable_branding",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "email_continuity_on_api_channel",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
@@ -96,7 +96,7 @@
   },
   {
     "name": "report_rollup",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
@@ -126,62 +126,62 @@
   },
   {
     "name": "custom_reply_email",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "custom_reply_domain",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "audit_logs",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "custom_tools",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "message_reply_to",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "branded_email_templates",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "inbox_view",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "sla",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "help_center_embedding_search",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "linear_integration",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "captain_integration",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "custom_roles",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
@@ -191,7 +191,7 @@
   },
   {
     "name": "captain_v1_action_classifier",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
@@ -201,12 +201,12 @@
   },
   {
     "name": "shopify_integration",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "search_with_gin",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
@@ -216,37 +216,37 @@
   },
   {
     "name": "crm_integration",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "channel_voice",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "notion_integration",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "captain_integration_v2",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "whatsapp_embedded_signup",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "whatsapp_campaign",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "crm_v2",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
@@ -256,32 +256,32 @@
   },
   {
     "name": "captain_document_auto_sync",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "advanced_search",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "saml",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "advanced_search_indexing",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "reply_mailer_migration",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "unread_count_for_filters",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
@@ -296,7 +296,7 @@
   },
   {
     "name": "csat_review_notes",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
@@ -306,17 +306,17 @@
   },
   {
     "name": "conversation_required_attributes",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "advanced_assignment",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags"
   },
   {
     "name": "whatsapp_manual_transfer",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags_ext_1"
   },
   {
@@ -331,42 +331,42 @@
   },
   {
     "name": "whatsapp_reconfigure",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags_ext_1"
   },
   {
     "name": "whatsapp_embedded_signup_inbox_creation",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags_ext_1"
   },
   {
     "name": "delayed_automations",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags_ext_1"
   },
   {
     "name": "audit_log_ip_address",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags_ext_1"
   },
   {
     "name": "captain_classifier",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags_ext_1"
   },
   {
     "name": "conversation_monitors",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags_ext_1"
   },
   {
     "name": "campaign_analytics",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags_ext_1"
   },
   {
     "name": "company_enrichment",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags_ext_1"
   },
   {
@@ -381,22 +381,22 @@
   },
   {
     "name": "auto_translate",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags_ext_1"
   },
   {
     "name": "copilot_workflows",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags_ext_1"
   },
   {
     "name": "shopify_custom_apps",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags_ext_1"
   },
   {
     "name": "captain_mcp_servers",
-    "enabled": false,
+    "enabled": true,
     "column": "feature_flags_ext_1"
   }
 ]

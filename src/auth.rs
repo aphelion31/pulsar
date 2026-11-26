@@ -934,9 +934,28 @@ pub async fn profile_avatar_destroy(State(db): State<PgPool>, user: CurrentUser)
     Ok(Json(user_json(&db, user.id).await?))
 }
 
-/// POST /api/v1/profile/resend_confirmation. Confirmation email sending is not ported; mirrors Chatwoot's `head :ok`.
-pub async fn resend_confirmation(_user: CurrentUser) -> StatusCode {
-    StatusCode::OK
+/// POST /api/v1/profile/resend_confirmation: generates a fresh confirmation token and sends the confirmation email if unconfirmed.
+pub async fn resend_confirmation(
+    State(db): State<PgPool>,
+    user: CurrentUser,
+) -> ApiResult<StatusCode> {
+    let row: Option<(String, String, Option<chrono::NaiveDateTime>)> =
+        sqlx::query_as("SELECT name, email, confirmed_at FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_optional(&db)
+            .await?;
+    if let Some((name, email, None)) = row {
+        let token = random_token(20);
+        sqlx::query(
+            "UPDATE users SET confirmation_token = $1, confirmation_sent_at = now(), updated_at = now() WHERE id = $2",
+        )
+        .bind(&token)
+        .bind(user.id)
+        .execute(&db)
+        .await?;
+        crate::registration::send_confirmation_email(&email, &name, &token, None).await;
+    }
+    Ok(StatusCode::OK)
 }
 
 /// POST /api/v1/profile/reset_access_token: regenerates the user's API access token.

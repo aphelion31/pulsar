@@ -5,6 +5,7 @@ declare module "bun:test" {
     toBe(expected: unknown): void;
     toEqual(expected: unknown): void;
     toContain(expected: unknown): void;
+    toBeGreaterThanOrEqual(expected: number): void;
     not: {
       toContain(expected: unknown): void;
       toBe(expected: unknown): void;

@@ -84,7 +84,16 @@ pub async fn global_config(db: &PgPool) -> Map<String, Value> {
     }
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
     out.insert("APP_VERSION".into(), json!("4.19.1"));
-    out.insert("IS_ENTERPRISE".into(), json!(false));
+    out.insert("IS_ENTERPRISE".into(), json!(true));
+    if out
+        .get("INSTALLATION_PRICING_PLAN")
+        .is_none_or(|v| v.is_null())
+    {
+        out.insert(
+            "INSTALLATION_PRICING_PLAN".into(),
+            json!("open-source-enterprise"),
+        );
+    }
     out.insert(
         "FACEBOOK_API_VERSION".into(),
         json!(env("FACEBOOK_API_VERSION", "v18.0")),
@@ -117,6 +126,8 @@ pub async fn api_info() -> Json<Value> {
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "app": "pulsar",
+        "is_enterprise": true,
+        "edition": "open-source-enterprise",
         "google_oauth_enabled": google_enabled,
         "allowed_login_methods": login_methods,
     }))
@@ -224,5 +235,15 @@ mod tests {
         assert_eq!(super::parse_serialized(&v), serde_json::json!("Acme"));
         let v = serde_json::json!("---\nvalue: false\n");
         assert_eq!(super::parse_serialized(&v), serde_json::json!(false));
+    }
+
+    #[test]
+    fn open_source_enterprise_defaults() {
+        let defaults: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(include_str!("../installation_defaults.json")).unwrap();
+        assert_eq!(
+            defaults["INSTALLATION_PRICING_PLAN"],
+            serde_json::json!("open-source-enterprise")
+        );
     }
 }

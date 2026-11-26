@@ -481,37 +481,48 @@ pub(crate) async fn read_first_audio_blob(
 
 /// Attachment JSON in the shape of `_attachment.json.jbuilder`. Empty when the message has none.
 pub(crate) async fn attachments_json(db: &PgPool, message_id: i64) -> Vec<Value> {
+    attachments_json_batch(db, &[message_id])
+        .await
+        .remove(&message_id)
+        .unwrap_or_default()
+}
+
+pub(crate) async fn attachments_json_batch(
+    db: &PgPool,
+    message_ids: &[i64],
+) -> std::collections::HashMap<i64, Vec<Value>> {
+    let mut out = std::collections::HashMap::new();
+    if message_ids.is_empty() {
+        return out;
+    }
     let rows: Vec<(i64, i32, Option<String>, i64, i64, NaiveDateTime, i64, String, Option<String>, i64)> = sqlx::query_as(
         "SELECT at.id::bigint, COALESCE(at.file_type, 3), at.extension, at.account_id::bigint, at.message_id::bigint, at.created_at,
                 b.id, b.filename, b.content_type, b.byte_size
          FROM attachments at
          JOIN active_storage_attachments asa ON asa.record_type = 'Attachment' AND asa.record_id = at.id AND asa.name = 'file'
          JOIN active_storage_blobs b ON b.id = asa.blob_id
-         WHERE at.message_id = $1 ORDER BY at.id",
+         WHERE at.message_id = ANY($1) ORDER BY at.message_id, at.id",
     )
-    .bind(message_id)
+    .bind(message_ids)
     .fetch_all(db)
     .await
     .unwrap_or_else(|e| {
-        tracing::error!("attachments for message {message_id}: {e}");
+        tracing::error!("attachments batch: {e}");
         vec![]
     });
-    rows.into_iter()
-        .map(
-            |(id, ft, ext, account_id, msg_id, created, blob_id, filename, ct, size)| {
-                let data_url = blob_url(blob_id, &filename);
-                let is_image = ct.as_deref().is_some_and(|c| c.starts_with("image/"));
-                json!({
-                    "id": id, "message_id": msg_id, "account_id": account_id,
-                    "file_type": file_type_name(ft), "extension": ext,
-                    "data_url": data_url,
-                    "thumb_url": if is_image { data_url.clone() } else { String::new() },
-                    "file_size": size, "width": null, "height": null,
-                    "created_at": created.and_utc().timestamp(),
-                })
-            },
-        )
-        .collect()
+    for (id, ft, ext, account_id, msg_id, created, blob_id, filename, ct, size) in rows {
+        let data_url = blob_url(blob_id, &filename);
+        let is_image = ct.as_deref().is_some_and(|c| c.starts_with("image/"));
+        out.entry(msg_id).or_insert_with(Vec::new).push(json!({
+            "id": id, "message_id": msg_id, "account_id": account_id,
+            "file_type": file_type_name(ft), "extension": ext,
+            "data_url": data_url,
+            "thumb_url": if is_image { data_url.clone() } else { String::new() },
+            "file_size": size, "width": null, "height": null,
+            "created_at": created.and_utc().timestamp(),
+        }));
+    }
+    out
 }
 
 fn multipart_text_flag(s: &str) -> bool {
@@ -680,21 +691,40 @@ pub(crate) async fn set_avatar(
 
 /// URL of the record's avatar, or "" when none.
 pub(crate) async fn avatar_url(db: &PgPool, record_type: &str, record_id: i64) -> String {
-    let row: Option<(i64, String)> = sqlx::query_as(
-        "SELECT b.id, b.filename FROM active_storage_attachments a
+    avatar_urls_batch(db, record_type, &[record_id])
+        .await
+        .remove(&record_id)
+        .unwrap_or_default()
+}
+
+pub(crate) async fn avatar_urls_batch(
+    db: &PgPool,
+    record_type: &str,
+    record_ids: &[i64],
+) -> std::collections::HashMap<i64, String> {
+    let mut out = std::collections::HashMap::new();
+    if record_ids.is_empty() {
+        return out;
+    }
+    let rows: Vec<(i64, i64, String)> = sqlx::query_as(
+        "SELECT DISTINCT ON (a.record_id) a.record_id::bigint, b.id::bigint, b.filename
+         FROM active_storage_attachments a
          JOIN active_storage_blobs b ON b.id = a.blob_id
-         WHERE a.record_type = $1 AND a.record_id = $2 AND a.name = 'avatar'
-         ORDER BY a.id DESC LIMIT 1",
+         WHERE a.record_type = $1 AND a.record_id = ANY($2) AND a.name = 'avatar'
+         ORDER BY a.record_id, a.id DESC",
     )
     .bind(record_type)
-    .bind(record_id)
-    .fetch_optional(db)
+    .bind(record_ids)
+    .fetch_all(db)
     .await
     .unwrap_or_else(|e| {
-        tracing::error!("avatar_url: {e}");
-        None
+        tracing::error!("avatar_urls_batch: {e}");
+        vec![]
     });
-    row.map(|(id, f)| blob_url(id, &f)).unwrap_or_default()
+    for (record_id, blob_id, fname) in rows {
+        out.insert(record_id, blob_url(blob_id, &fname));
+    }
+    out
 }
 
 /// Detach and purge the record's avatar.
