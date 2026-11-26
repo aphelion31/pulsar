@@ -1,0 +1,95 @@
+services:
+  nginx:
+    build:
+      context: .
+      dockerfile: ./docker/nginx/Dockerfile
+    image: pulsar-nginx:1.3.0
+    ports:
+      - "127.0.0.1:${NGINX_PORT:-8080}:80"
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=64m,uid=1001,gid=1001
+      - /var/run:rw,noexec,nosuid,size=1m,uid=1001,gid=1001
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    init: true
+    mem_limit: 64m
+    restart: unless-stopped
+    depends_on:
+      axum:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks: [pulsar]
+
+  axum:
+    build:
+      context: .
+      dockerfile: ./docker/axum/Dockerfile
+    image: pulsar-axum:1.3.0
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      BIND: 0.0.0.0:3000
+      WEB_DIR: /srv/pulsar/web/build/client
+      STORAGE_DIR: /srv/pulsar/storage
+      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-pulsar}:${POSTGRES_PASSWORD:-pulsar}@postgres:5432/${POSTGRES_DB:-pulsar}}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:-pulsar-dev-secret-change-me}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - pulsar_storage:/srv/pulsar/storage
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m,uid=1001,gid=1001,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    init: true
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 2
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:3000/health]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [pulsar]
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pulsar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pulsar}
+      POSTGRES_DB: ${POSTGRES_DB:-pulsar}
+    volumes:
+      - pulsar_pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pulsar} -d ${POSTGRES_DB:-pulsar}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [pulsar]
+
+volumes:
+  pulsar_pgdata:
+  pulsar_storage:
+
+networks:
+  pulsar:
+    driver: bridge
