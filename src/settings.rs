@@ -193,7 +193,7 @@ async fn labels_create(
     }
     let l: Label = sqlx::query_as(&format!(
         "INSERT INTO labels (title, description, color, show_on_sidebar, account_id, created_at, updated_at)
-         VALUES ($1, $2, COALESCE($3, '#1f93ff'), $4, $5, now(), now()) RETURNING {LABEL_COLS}"
+         VALUES ($1, $2, COALESCE($3, '#3B7AF5'), $4, $5, now(), now()) RETURNING {LABEL_COLS}"
     ))
     .bind(&title)
     .bind(s(&b, "description"))

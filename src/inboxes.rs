@@ -975,7 +975,7 @@ async fn inbox_create(
             let id: i64 = sqlx::query_scalar(
                 "INSERT INTO channel_web_widgets (account_id, website_url, widget_color, welcome_title, welcome_tagline,
                     website_token, hmac_token, reply_time, created_at, updated_at)
-                 VALUES ($1::bigint, $2, COALESCE($3::varchar, '#1f93ff'), $4, $5, $6, $7, 0, now(), now())
+                 VALUES ($1::bigint, $2, COALESCE($3::varchar, '#3B7AF5'), $4, $5, $6, $7, 0, now(), now())
                  RETURNING id::bigint",
             )
             .bind(account_id)

@@ -409,7 +409,15 @@ pub fn app(state: AppState) -> Router {
         )
         .route(
             "/favicon.ico",
-            get(|| async { axum::http::StatusCode::NO_CONTENT }),
+            get(|| async {
+                (
+                    [
+                        (axum::http::header::CONTENT_TYPE, "image/x-icon"),
+                        (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
+                    ],
+                    include_bytes!("../web/public/favicon.ico").as_slice(),
+                )
+            }),
         )
         .route(
             "/.well-known/assetlinks.json",

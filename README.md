@@ -1,16 +1,12 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="web/public/brand-assets/logo_dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="web/public/brand-assets/logo.svg">
-  <img src="web/public/brand-assets/logo.svg" alt="Pulsar" height="48">
-</picture>
+<img src="web/public/brand-assets/logo_thumbnail.svg" alt="Pulsar" width="128">
 
 # Pulsar
 
 <p>
   <strong>Single-binary customer support platform — Rust + React Router rewrite of Chatwoot.</strong><br>
-  Drop-in PostgreSQL 4.19 compatibility with zero Redis, zero Sidekiq, and ~19 MB RAM.
+  Drop-in PostgreSQL 4.20 compatibility with zero Redis, zero Sidekiq, and ~19 MB RAM.
 </p>
 
 <p>
@@ -87,7 +83,7 @@ SECRET_KEY_BASE=$(openssl rand -hex 64) cargo run --release   # http://localhost
 
 Put a TLS reverse proxy (Caddy, Traefik, nginx) in front and forward websocket upgrades on `/cable`. Embed live chat with `<script src="https://your-pulsar/sdk.js" data-website-token="..."></script>`. Full guide: [`docs/architectures/04.DEPLOY.md`](docs/architectures/04.DEPLOY.md).
 
-**Existing Chatwoot 4.19 database:** point `DATABASE_URL` at a copy first, keep `STORAGE_DIR` aligned, and stop Chatwoot's Sidekiq before switching. New passwords and tokens use **Argon2id**; existing `bcrypt` hashes (`$2a$`/`$2b$`/`$2y$`) continue to verify and transparently upgrade to Argon2id on login.
+**Existing Chatwoot 4.20 database:** point `DATABASE_URL` at a copy first, keep `STORAGE_DIR` aligned, and stop Chatwoot's Sidekiq before switching. New passwords and tokens use **Argon2id**; existing `bcrypt` hashes (`$2a$`/`$2b$`/`$2y$`) continue to verify and transparently upgrade to Argon2id on login.
 
 ---
 

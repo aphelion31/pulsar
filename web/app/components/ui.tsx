@@ -5,7 +5,7 @@ import { initials } from "~/lib/format";
 export function Button({ variant = "primary", className = "", ...p }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "quiet" | "danger" }) {
   const v =
     variant === "primary"
-      ? "bg-accent text-accent-ink hover:bg-[#1a5fb4]"
+      ? "bg-accent text-accent-ink hover:bg-[#2563eb]"
       : variant === "danger"
         ? "text-bad hover:bg-n-ruby-3"
         : "text-ink-2 hover:bg-raised hover:text-ink";

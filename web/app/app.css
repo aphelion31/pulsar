@@ -71,7 +71,7 @@
   --color-ink: rgb(var(--slate-12));
   --color-ink-2: rgb(var(--slate-11));
   --color-ink-3: rgb(var(--slate-10));
-  --color-accent: #2781f6;
+  --color-accent: #3b7af5;
   --color-accent-ink: #ffffff;
   --color-accent-soft: rgb(var(--blue-3));
   --color-note: rgb(var(--amber-2));
@@ -103,7 +103,7 @@ button {
 }
 
 :focus-visible {
-  outline: 2px solid #2781f6;
+  outline: 2px solid #3b7af5;
   outline-offset: 2px;
 }
 

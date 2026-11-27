@@ -374,7 +374,7 @@ export default function InboxRoute() {
                           >
                             <span
                               className="size-1.5 rounded-full"
-                              style={{ backgroundColor: labelColors[l] || "#2781F6" }}
+                              style={{ backgroundColor: labelColors[l] || "#3B7AF5" }}
                             />
                             {l}
                           </span>

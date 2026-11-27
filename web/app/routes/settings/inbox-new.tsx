@@ -52,7 +52,7 @@ type Agent = {
 
 const COLOR_PRESETS = [
   "#009CE0",
-  "#1f93ff",
+  "#3B7AF5",
   "#00C2A8",
   "#27AE60",
   "#F2994A",
