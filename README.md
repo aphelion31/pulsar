@@ -23,7 +23,7 @@
 <div align="center">
 
   <a href="https://github.com/aphelion31/pulsar/releases/download/readme-assets/pulsar-showcase.mp4">
-    <img src="https://github.com/aphelion31/pulsar/releases/download/readme-assets/pulsar-showcase.webp" alt="Pulsar product showcase" width="900">
+    <img src="https://github.com/aphelion31/pulsar/releases/download/readme-assets/pulsar-showcase.webp?v=2" alt="Pulsar product showcase" width="900">
   </a>
 
   <p><em>Pulsar workspace tour — click to watch the full HD MP4</em></p>
@@ -135,10 +135,10 @@ Measured directly on the checked-out upstream Chatwoot tree vs Pulsar (`src/`, `
 <details>
 <summary>Breakdown of built Pulsar frontend assets (<code>web/build/client</code>)</summary>
 
-- Total `web/build/client`: **4.1 MiB** (`4,232 KiB`)
-  - JS & CSS bundles (`assets/`): **2.9 MiB** (`2,932 KiB`)
-  - Self-hosted Inter & InterDisplay fonts (`fonts/`): **1.3 MiB** (`1,280 KiB`)
-  - Custom geometric SVG brand assets (`brand-assets/`): **12 KiB**
+- Total `web/build/client`: **31 MiB** (incl. 57 synced `i18n/` locale bundles)
+  - JS & CSS bundles (`assets/`): **3.0 MiB**
+  - Self-hosted Inter & InterDisplay fonts (`fonts/`): **1.3 MiB**
+  - Woodcut SVG brand assets (`brand-assets/`): **1.2 MiB**
 - Release executable (`target/release/pulsar`): **29,510,944 bytes** (`28.1 MiB`)
 - Note: The Docker API benchmark above was recorded prior to full omni-channel, Captain AI, Help Center, and Inter webfont parity; current full-featured local `--release` footprint is **28.1 MiB** binary + **4.1 MiB** `web/build/client`, **15.1 MiB** idle / **50.0 MiB** active RSS on macOS `arm64`.
 
@@ -152,8 +152,8 @@ Measured directly on the checked-out upstream Chatwoot tree vs Pulsar (`src/`, `
 
 <table>
   <tr>
-    <td align="center"><a href="docs/screenshots/conversations-light.png"><img src="docs/screenshots/conversations-light.png" alt="Pulsar Conversations Light" width="440" /></a><br>Conversations Inbox (Light)</td>
-    <td align="center"><a href="docs/screenshots/conversations-dark.png"><img src="docs/screenshots/conversations-dark.png" alt="Pulsar Conversations Dark" width="440" /></a><br>Conversations Inbox (Dark)</td>
+    <td align="center"><a href="docs/screenshots/conversations-light.png"><img src="docs/screenshots/conversations-light.png" alt="Pulsar Conversations Light" width="440" /></a><br>Conversations Inbox (Light · Cobalt &amp; Parchment)</td>
+    <td align="center"><a href="docs/screenshots/conversations-dark.png"><img src="docs/screenshots/conversations-dark.png" alt="Pulsar Conversations Dark" width="440" /></a><br>Conversations Inbox (Dark · Obsidian)</td>
   </tr>
   <tr>
     <td align="center"><a href="docs/screenshots/reports-overview.png"><img src="docs/screenshots/reports-overview.png" alt="Pulsar Reports Overview" width="440" /></a><br>Live Reports Overview</td>
