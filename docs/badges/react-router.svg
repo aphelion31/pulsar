@@ -2,7 +2,7 @@
   <title>frontend: React Router</title>
   <g shape-rendering="crispEdges">
     <rect width="62" height="20" fill="#555"/>
-    <rect x="62" width="90" height="20" fill="#2781f6"/>
+    <rect x="62" width="90" height="20" fill="#3b7af5"/>
   </g>
   <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="110">
     <text x="315" y="140" transform="scale(.1)" fill="#010101" fill-opacity=".3" textLength="500">frontend</text>
