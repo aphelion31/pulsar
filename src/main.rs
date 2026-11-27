@@ -409,7 +409,15 @@ pub fn app(state: AppState) -> Router {
         )
         .route(
             "/favicon.ico",
-            get(|| async { axum::http::StatusCode::NO_CONTENT }),
+            get(|| async {
+                (
+                    [
+                        (axum::http::header::CONTENT_TYPE, "image/x-icon"),
+                        (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
+                    ],
+                    include_bytes!("../web/public/favicon.ico").as_slice(),
+                )
+            }),
         )
         .route(
             "/.well-known/assetlinks.json",
@@ -535,7 +543,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Pulsar's queries target this Chatwoot schema version. An older Chatwoot database misses columns and some endpoints 500.
-    const SCHEMA: &str = "20261103142055";
+    const SCHEMA: &str = "20261125100456";
     let db_schema: Option<String> =
         sqlx::query_scalar("SELECT max(version) FROM schema_migrations")
             .fetch_one(&db)
@@ -544,7 +552,7 @@ async fn main() -> anyhow::Result<()> {
             .flatten();
     if db_schema.as_deref().is_none_or(|v| v < SCHEMA) {
         tracing::warn!(
-            "database schema {} is older than {SCHEMA} (Chatwoot 4.19). Upgrade Chatwoot first, or apply migrations/0001_schema.sql column additions",
+            "database schema {} is older than {SCHEMA} (Chatwoot 4.20). Upgrade Chatwoot first, or apply migrations/0001_schema.sql column additions",
             db_schema.as_deref().unwrap_or("unknown")
         );
     }
@@ -589,6 +597,10 @@ async fn main() -> anyhow::Result<()> {
         .execute(&db)
         .await
         .map_err(|e| anyhow::anyhow!("creating parity extras: {e}"))?;
+    sqlx::raw_sql(include_str!("../migrations/0008_chatwoot_4_20.sql"))
+        .execute(&db)
+        .await
+        .map_err(|e| anyhow::anyhow!("applying chatwoot 4.20 schema delta: {e}"))?;
 
     let hub = cable::Hub::with_db(db.clone());
     let state = AppState {

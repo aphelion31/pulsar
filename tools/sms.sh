@@ -129,9 +129,10 @@ psql -qtAX "$DB_URL" -c "delete from access_tokens where token='${AGENT_TOKEN}'"
 echo "Verified provider_config hidden from agents"
 
 # 5. Inbound webhook: unknown type ignored; message-received creates message
+SMS_SECRET=$(psql -qtAX "$DB_URL" -c "SELECT secret FROM channel_sms WHERE phone_number = '${SMS_PHONE}'")
 WH_URL="${BASE}/webhooks/sms/${SMS_PHONE#+}"
 INBOUND_BODY="[{\"type\":\"message-received\",\"to\":\"${SMS_PHONE}\",\"message\":{\"id\":\"bw-in-001\",\"from\":\"${CUSTOMER_NUM}\",\"to\":[\"${SMS_PHONE}\"],\"text\":\"Hello from Bandwidth\"}}]"
-WH_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${WH_URL}" -H "Content-Type: application/json" -d "${INBOUND_BODY}")
+WH_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "chatwoot:${SMS_SECRET}" -X POST "${WH_URL}" -H "Content-Type: application/json" -d "${INBOUND_BODY}")
 echo "INBOUND webhook: HTTP ${WH_CODE}"
 [[ "${WH_CODE}" == "200" ]] || exit 1
 sleep 0.5
@@ -142,7 +143,7 @@ CONV_DISPLAY_ID=$(psql -qtAX "$DB_URL" -c "SELECT display_id FROM conversations 
 echo "Inbound stored conversation display_id=${CONV_DISPLAY_ID}"
 
 # Duplicate delivery is idempotent
-curl -s -o /dev/null -X POST "${WH_URL}" -H "Content-Type: application/json" -d "${INBOUND_BODY}"
+curl -s -o /dev/null -u "chatwoot:${SMS_SECRET}" -X POST "${WH_URL}" -H "Content-Type: application/json" -d "${INBOUND_BODY}"
 sleep 0.3
 DUP_COUNT=$(psql -qtAX "$DB_URL" -c "SELECT count(*) FROM messages WHERE inbox_id = ${INBOX_ID} AND source_id = 'bw-in-001'")
 [[ "${DUP_COUNT}" == "1" ]] || { echo "FAIL: duplicate inbound stored ${DUP_COUNT} times"; exit 1; }
@@ -176,14 +177,14 @@ echo "Outbound source_id stored"
 
 # 7. Delivery status webhook -> delivered
 DLV_BODY="[{\"type\":\"message-delivered\",\"to\":\"${SMS_PHONE}\",\"message\":{\"id\":\"bw-msg-mock-001\"}}]"
-curl -s -o /dev/null -w "DELIVERED webhook: HTTP %{http_code}\n" -X POST "${WH_URL}" -H "Content-Type: application/json" -d "${DLV_BODY}"
+curl -s -o /dev/null -w "DELIVERED webhook: HTTP %{http_code}\n" -u "chatwoot:${SMS_SECRET}" -X POST "${WH_URL}" -H "Content-Type: application/json" -d "${DLV_BODY}"
 sleep 0.3
 DLV_STATUS=$(psql -qtAX "$DB_URL" -c "SELECT status FROM messages WHERE id = ${REPLY_ID}")
 [[ "${DLV_STATUS}" == "1" ]] || { echo "FAIL: delivered status=${DLV_STATUS}"; exit 1; }
 
 # 8. Failed delivery with errorCode -> status 3 + external_error
 FAIL_BODY="[{\"type\":\"message-failed\",\"to\":\"${SMS_PHONE}\",\"errorCode\":30003,\"description\":\"Unreachable\",\"message\":{\"id\":\"bw-msg-mock-001\"}}]"
-curl -s -o /dev/null -X POST "${WH_URL}" -H "Content-Type: application/json" -d "${FAIL_BODY}"
+curl -s -o /dev/null -u "chatwoot:${SMS_SECRET}" -X POST "${WH_URL}" -H "Content-Type: application/json" -d "${FAIL_BODY}"
 sleep 0.3
 FAIL_ROW=$(psql -qtAX "$DB_URL" -c "SELECT status || '|' || (content_attributes->>'external_error') FROM messages WHERE id = ${REPLY_ID}")
 [[ "${FAIL_ROW}" == "3|30003 - Unreachable" ]] || { echo "FAIL: failed status row=${FAIL_ROW}"; exit 1; }

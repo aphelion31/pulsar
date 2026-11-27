@@ -81,6 +81,10 @@ pub fn routes() -> Router<AppState> {
                 .put(article_update)
                 .delete(article_delete),
         )
+        .route(
+            "/portals/{portal}/articles/{id}/preview_token",
+            get(article_preview_token),
+        )
         .route("/portals/{portal}/articles/{id}/edit", get(article_show))
 }
 pub fn public_routes() -> Router<AppState> {
@@ -1007,6 +1011,16 @@ async fn validate_article(
     if value["status"] == 1 && text(&value, "content").is_none() {
         return Err(ApiError::bad("Content can't be blank"));
     }
+    for field in ["content", "draft_content"] {
+        if let Some(s) = value[field].as_str()
+            && s.chars().count() > 50_000
+        {
+            return Err(ApiError(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Content is too long (maximum is 50000 characters)".into(),
+            ));
+        }
+    }
     if let Some(s) = text(&value, "slug") {
         if !valid_slug(s) {
             return Err(ApiError::bad("Slug is invalid"));
@@ -1056,6 +1070,63 @@ async fn validate_article(
     }
     Ok(value)
 }
+async fn article_webhook_data(
+    db: &PgPool,
+    account_id: i64,
+    p: &Value,
+    a: &Value,
+) -> Result<Value, ApiError> {
+    let acc_name: String = sqlx::query_scalar("SELECT name FROM accounts WHERE id = $1")
+        .bind(account_id)
+        .fetch_optional(db)
+        .await?
+        .unwrap_or_default();
+    let author: Option<Value> = sqlx::query_scalar(
+        "SELECT jsonb_build_object('id', id, 'name', name, 'email', email) FROM users WHERE id = $1",
+    )
+    .bind(a["author_id"].as_i64())
+    .fetch_optional(db)
+    .await?;
+    let category: Option<Value> = if let Some(cid) = a["category_id"].as_i64() {
+        sqlx::query_scalar(
+            "SELECT jsonb_build_object('id', id, 'name', name, 'slug', slug, 'locale', locale) FROM categories WHERE id = $1",
+        )
+        .bind(cid)
+        .fetch_optional(db)
+        .await?
+    } else {
+        None
+    };
+    let status = match a["status"].as_i64() {
+        Some(1) => "published",
+        Some(2) => "archived",
+        _ => "draft",
+    };
+    Ok(json!({
+        "account": { "id": account_id, "name": acc_name },
+        "author": author,
+        "category": category,
+        "content": a["content"],
+        "created_at": a["created_at"],
+        "description": a["description"],
+        "id": a["id"],
+        "locale": a["locale"],
+        "meta": a["meta"],
+        "portal": {
+            "id": p["id"],
+            "name": p["name"],
+            "slug": p["slug"],
+            "custom_domain": p["custom_domain"],
+        },
+        "position": a["position"],
+        "slug": a["slug"],
+        "status": status,
+        "title": a["title"],
+        "updated_at": a["updated_at"],
+        "views": a["views"],
+    }))
+}
+
 async fn article_create(
     State(st): State<AppState>,
     u: CurrentUser,
@@ -1068,6 +1139,9 @@ async fn article_create(
     let p = portal(&st.db, account, &slug).await?;
     let b = validate_article(&st.db, &p, data(&body, "article")?, None, account).await?;
     let a:Value=sqlx::query_scalar("INSERT INTO articles (account_id,portal_id,title,slug,content,description,status,category_id,author_id,locale,position,views,meta,draft_title,draft_content,associated_article_id,created_at,updated_at) SELECT $2,$3,x.title,x.slug,x.content,x.description,x.status,x.category_id,x.author_id,x.locale,COALESCE(x.position,(SELECT COALESCE(max(position),0)+10 FROM articles WHERE account_id=$2 AND category_id IS NOT DISTINCT FROM x.category_id)),0,COALESCE(x.meta,'{}'::jsonb),x.draft_title,x.draft_content,x.associated_article_id,now(),now() FROM jsonb_populate_record(NULL::articles,$1) x RETURNING to_jsonb(articles.*)").bind(&b).bind(account).bind(id(&p)).fetch_one(&st.db).await?;
+    if let Ok(wh) = article_webhook_data(&st.db, account, &p, &a).await {
+        crate::events::publish("article.created", account, wh, None);
+    }
     Ok(Json(
         json!({"payload":article_json(&st.db,&a,false).await?}),
     ))
@@ -1094,6 +1168,22 @@ async fn article_show(
     Ok(Json(
         json!({"payload":article_json(&st.db,&a,false).await?}),
     ))
+}
+async fn article_preview_token(
+    State(st): State<AppState>,
+    u: CurrentUser,
+    Path((account, slug, aid)): Path<(i64, String, i64)>,
+) -> ApiResult {
+    require_account(&st.db, &u, account).await?;
+    let p = portal(&st.db, account, &slug).await?;
+    let _ = article_row(&st.db, id(&p), aid).await?;
+    let preview_token = crate::common::sign_oauth_claims(&json!({
+        "purpose": "article_preview",
+        "article_id": aid,
+        "portal_id": id(&p),
+        "exp": chrono::Utc::now().timestamp() + 3600,
+    }));
+    Ok(Json(json!({ "preview_token": preview_token })))
 }
 async fn article_update(
     State(st): State<AppState>,
@@ -1126,6 +1216,28 @@ async fn article_update(
         .keys()
         .any(|k| k != "draft_title" && k != "draft_content");
     let a = update(&st.db, "articles", id(&p), aid, &b, ARTICLE_FIELDS, touch).await?;
+    let mut changed = serde_json::Map::new();
+    for k in [
+        "title",
+        "slug",
+        "content",
+        "description",
+        "status",
+        "category_id",
+        "author_id",
+        "locale",
+        "meta",
+        "associated_article_id",
+    ] {
+        if old.get(k) != a.get(k) {
+            changed.insert(k.to_string(), json!([old.get(k), a.get(k)]));
+        }
+    }
+    if !changed.is_empty()
+        && let Ok(wh) = article_webhook_data(&st.db, account, &p, &a).await
+    {
+        crate::events::publish("article.updated", account, wh, Some(Value::Object(changed)));
+    }
     Ok(Json(
         json!({"payload":article_json(&st.db,&a,false).await?}),
     ))
@@ -1139,6 +1251,7 @@ async fn article_delete(
         .await?
         .require_admin()?;
     let p = portal(&st.db, account, &slug).await?;
+    let old = article_row(&st.db, id(&p), aid).await.ok();
     let mut tx = st.db.begin().await?;
     sqlx::query("UPDATE articles SET associated_article_id=NULL WHERE associated_article_id=$1 AND portal_id=$2").bind(aid).bind(id(&p)).execute(&mut *tx).await?;
     let n = sqlx::query("DELETE FROM articles WHERE id=$1 AND portal_id=$2")
@@ -1151,6 +1264,11 @@ async fn article_delete(
         return Err(ApiError::not_found());
     }
     tx.commit().await?;
+    if let Some(a) = old
+        && let Ok(wh) = article_webhook_data(&st.db, account, &p, &a).await
+    {
+        crate::events::publish("article.deleted", account, wh, None);
+    }
     Ok(Json(json!({})))
 }
 fn article_ids(body: &Value) -> Vec<i64> {
@@ -1590,8 +1708,19 @@ async fn public_category_articles(
 async fn public_article(
     State(st): State<AppState>,
     Path((slug, article)): Path<(String, String)>,
+    Query(q): Query<Params>,
 ) -> Result<Response, ApiError> {
     let p = public_portal_row(&st.db, &slug).await?;
+    let preview_aid = q.get("preview_token").and_then(|tok| {
+        let claims = crate::common::verify_oauth_claims(tok)?;
+        if claims["purpose"].as_str() == Some("article_preview")
+            && claims["portal_id"].as_i64() == Some(id(&p))
+        {
+            claims["article_id"].as_i64()
+        } else {
+            None
+        }
+    });
     if let Some(stem) = article.strip_suffix(".png") {
         let aid: Option<(i64, i32)> = sqlx::query_as(
             "SELECT id::bigint, status FROM articles WHERE portal_id=$1 AND slug=$2 LIMIT 1",
@@ -1603,7 +1732,7 @@ async fn public_article(
         let Some((aid, status)) = aid else {
             return Err(ApiError::not_found());
         };
-        if status == 1 {
+        if status == 1 && preview_aid != Some(aid) {
             sqlx::query("UPDATE articles SET views = COALESCE(views, 0) + 1 WHERE id = $1")
                 .bind(aid)
                 .execute(&st.db)
@@ -1629,30 +1758,44 @@ async fn public_article(
     }
     if let Some(stem) = article.strip_suffix(".md") {
         let a: Value = sqlx::query_scalar(
-            "SELECT to_jsonb(a) FROM articles a WHERE portal_id=$1 AND slug=$2 AND status=1",
+            "SELECT to_jsonb(a) FROM articles a WHERE portal_id=$1 AND slug=$2 AND (status=1 OR id=$3)",
         )
         .bind(id(&p))
         .bind(stem)
+        .bind(preview_aid.unwrap_or(-1))
         .fetch_optional(&st.db)
         .await?
         .ok_or_else(ApiError::not_found)?;
         let content = a["content"].as_str().unwrap_or("").to_string();
-        return Ok((
+        let mut resp = (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
             content,
         )
-            .into_response());
+            .into_response();
+        if preview_aid.is_some() && a["status"].as_i64() != Some(1) {
+            resp.headers_mut()
+                .insert("x-robots-tag", header::HeaderValue::from_static("noindex"));
+        }
+        return Ok(resp);
     }
     let article = article.strip_suffix(".json").unwrap_or(&article);
     let a: Value = sqlx::query_scalar(
-        "SELECT to_jsonb(a) FROM articles a WHERE portal_id=$1 AND slug=$2 AND status=1",
+        "SELECT to_jsonb(a) FROM articles a WHERE portal_id=$1 AND slug=$2 AND (status=1 OR id=$3)",
     )
     .bind(id(&p))
     .bind(article)
-    .fetch_one(&st.db)
-    .await?;
-    Ok(Json(article_json(&st.db, &a, true).await?).into_response())
+    .bind(preview_aid.unwrap_or(-1))
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+    let is_preview = preview_aid.is_some() && a["status"].as_i64() != Some(1);
+    let mut resp = Json(article_json(&st.db, &a, true).await?).into_response();
+    if is_preview {
+        resp.headers_mut()
+            .insert("x-robots-tag", header::HeaderValue::from_static("noindex"));
+    }
+    Ok(resp)
 }
 
 async fn public_sitemap(

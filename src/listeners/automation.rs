@@ -1217,6 +1217,10 @@ async fn execute_rule(
                         .await?;
 
                         if let Some(mid) = msg_id {
+                            let _ = sqlx::query("UPDATE conversations SET last_message_at = now() WHERE id = $1")
+                                .bind(conv.id)
+                                .execute(&st.db)
+                                .await;
                             for (blob_id, fname, ct) in blobs {
                                 let ft = if ct.as_deref().unwrap_or("").starts_with("image/") {
                                     0
@@ -1337,6 +1341,7 @@ mod tests {
             waiting_since: None,
             cached_label_list: Some("support, billing".into()),
             sla_policy_id: None,
+            last_message_at: None,
         }
     }
 

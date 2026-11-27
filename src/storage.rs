@@ -614,7 +614,8 @@ pub(crate) async fn create_with_attachments(
     sqlx::query(
         "UPDATE conversations SET last_activity_at = now(), updated_at = now(),
            first_reply_created_at = CASE WHEN NOT $2 THEN COALESCE(first_reply_created_at, now()) ELSE first_reply_created_at END,
-           waiting_since = CASE WHEN NOT $2 THEN NULL ELSE waiting_since END
+           waiting_since = CASE WHEN NOT $2 THEN NULL ELSE waiting_since END,
+           last_message_at = CASE WHEN NOT $2 THEN now() ELSE last_message_at END
          WHERE id = $1",
     )
     .bind(conv.id)

@@ -7,7 +7,7 @@ import type { ShellCtx } from "../shell";
 
 type Label = { id: number; title: string; description: string | null; color: string; show_on_sidebar: boolean };
 type Form = { title: string; description: string; color: string; show_on_sidebar: boolean };
-const empty: Form = { title: "", description: "", color: "#1f93ff", show_on_sidebar: true };
+const empty: Form = { title: "", description: "", color: "#3B7AF5", show_on_sidebar: true };
 
 export default function LabelsSettings() {
   const { accountId } = useOutletContext<ShellCtx>();

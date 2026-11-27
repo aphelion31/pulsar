@@ -7,7 +7,7 @@
   if (!token || window.__pulsarWidget) return;
   window.__pulsarWidget = true;
   var base = new URL(s.src).origin;
-  var color = s.getAttribute("data-color") || "#1f6fd1";
+  var color = s.getAttribute("data-color") || "#3B7AF5";
 
   var frame = document.createElement("iframe");
   frame.src = base + "/widget?website_token=" + encodeURIComponent(token);

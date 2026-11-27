@@ -800,6 +800,10 @@ async fn accounts_seed(
     .bind(contact_id)
     .execute(&mut *tx)
     .await?;
+    sqlx::query("UPDATE conversations SET last_message_at = now() WHERE id = $1")
+        .bind(conv_id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(Json(
         json!({ "ok": true, "account_id": id, "conversation_id": conv_id }),
