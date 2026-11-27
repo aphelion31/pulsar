@@ -27,9 +27,9 @@ export function BarChart({
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const categories = data.categories ?? [];
-  const primary = data.series[0] ?? { label: "Value", color: "#2781F6", data: [] };
+  const primary = data.series[0] ?? { label: "Value", color: "#3B7AF5", data: [] };
   const values = primary.data ?? [];
-  const color = primary.color || "#2781F6";
+  const color = primary.color || "#3B7AF5";
 
   if (!categories.length || !values.length) {
     return (

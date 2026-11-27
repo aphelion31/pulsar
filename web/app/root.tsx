@@ -15,6 +15,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>Pulsar</title>
         <link rel="icon" type="image/svg+xml" href="/app/brand-assets/logo_thumbnail.svg" />
+        <link rel="icon" type="image/png" sizes="32x32" href="/app/favicon-32x32.png" />
+        <link rel="shortcut icon" href="/favicon.ico" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/app/apple-touch-icon.png" />
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <Meta />
         <Links />

@@ -90,7 +90,7 @@ export default function HelpCenterDashboard() {
   const [newSlug, setNewSlug] = useState("");
   const [newHeaderText, setNewHeaderText] = useState("");
   const [newPageTitle, setNewPageTitle] = useState("");
-  const [newColor, setNewColor] = useState("#1f93ff");
+  const [newColor, setNewColor] = useState("#3B7AF5");
   const [newHomepage, setNewHomepage] = useState("");
   const [newCustomDomain, setNewCustomDomain] = useState("");
 
@@ -100,7 +100,7 @@ export default function HelpCenterDashboard() {
   const [editTitle, setEditTitle] = useState("");
   const [editHomepage, setEditHomepage] = useState("");
   const [editDomain, setEditDomain] = useState("");
-  const [editColor, setEditColor] = useState("#1f93ff");
+  const [editColor, setEditColor] = useState("#3B7AF5");
   const [editLayout, setEditLayout] = useState("classic");
   const [editNoIndex, setEditNoIndex] = useState(false);
   const [dnsEmail, setDnsEmail] = useState("");
@@ -144,7 +144,7 @@ export default function HelpCenterDashboard() {
       setEditTitle(p.page_title || "");
       setEditHomepage(p.homepage_link || "");
       setEditDomain(p.custom_domain || "");
-      setEditColor(p.color || "#1f93ff");
+      setEditColor(p.color || "#3B7AF5");
       setEditLayout(p.config?.layout || "classic");
       setEditNoIndex(Boolean(p.config?.disable_search_indexing));
 

@@ -34,7 +34,7 @@ export function AuthShell({
       </section>
 
       <section
-        className={`mx-auto mt-10 w-full max-w-lg rounded-xl border border-n-weak bg-white p-8 shadow-lg dark:bg-n-solid-2 sm:p-11 ${
+        className={`mx-auto mt-10 w-full max-w-lg rounded-xl border border-n-weak bg-n-solid-2 p-8 shadow-lg sm:p-11 ${
           wiggle ? "animate-wiggle" : ""
         }`}
       >
