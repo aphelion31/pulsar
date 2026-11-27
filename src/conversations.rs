@@ -188,13 +188,14 @@ pub(crate) struct Conv {
     pub(crate) waiting_since: Option<NaiveDateTime>,
     pub(crate) cached_label_list: Option<String>,
     pub(crate) sla_policy_id: Option<i64>,
+    pub(crate) last_message_at: Option<NaiveDateTime>,
 }
 
 pub(crate) const CONV_COLS: &str = "c.id::bigint AS id, c.account_id::bigint AS account_id, c.inbox_id::bigint AS inbox_id, c.status,
   c.assignee_id::bigint AS assignee_id, c.created_at, c.updated_at, c.contact_id, c.display_id::bigint AS display_id,
   c.contact_last_seen_at, c.agent_last_seen_at, c.additional_attributes, c.contact_inbox_id, c.uuid::text AS uuid,
   c.last_activity_at, c.team_id, c.snoozed_until, c.custom_attributes, c.assignee_last_seen_at, c.first_reply_created_at,
-  c.priority, c.waiting_since, c.cached_label_list, c.sla_policy_id::bigint AS sla_policy_id";
+  c.priority, c.waiting_since, c.cached_label_list, c.sla_policy_id::bigint AS sla_policy_id, c.last_message_at";
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct Msg {
@@ -361,7 +362,9 @@ fn build_msg_value(
         "processed_message_content": m.processed_message_content, "sentiment": m.sentiment.clone().unwrap_or(json!({})),
         "conversation": {
             "assignee_id": c.assignee_id, "unread_count": unread,
-            "last_activity_at": c.last_activity_at.and_utc().timestamp(), "contact_inbox": { "source_id": source_id },
+            "last_activity_at": c.last_activity_at.and_utc().timestamp(),
+            "last_message_at": c.last_message_at.map(|t| t.and_utc().timestamp_millis() as f64 / 1000.0),
+            "contact_inbox": { "source_id": source_id },
         },
     });
     if !sender.is_null() {
@@ -416,6 +419,7 @@ fn build_conv_value(
         "status": name_of(&STATUSES, c.status), "created_at": c.created_at.and_utc().timestamp(),
         "updated_at": c.updated_at.and_utc().timestamp_millis() as f64 / 1000.0,
         "timestamp": c.last_activity_at.and_utc().timestamp(), "last_activity_at": c.last_activity_at.and_utc().timestamp(),
+        "last_message_at": c.last_message_at.map(|t| t.and_utc().timestamp_millis() as f64 / 1000.0),
         "first_reply_created_at": ts(c.first_reply_created_at), "unread_count": unread,
         "last_non_activity_message": last_non_activity,
         "priority": c.priority.map(|p| name_of(&PRIORITIES, p)), "waiting_since": ts(c.waiting_since),
@@ -998,12 +1002,14 @@ pub(crate) async fn insert_message(
         sqlx::query(
             "UPDATE conversations SET last_activity_at = now(), updated_at = now(),
                first_reply_created_at = CASE WHEN $2 = 1 AND NOT $3 THEN COALESCE(first_reply_created_at, now()) ELSE first_reply_created_at END,
-               waiting_since = CASE WHEN $2 = 1 AND NOT $3 THEN NULL WHEN $2 = 0 THEN COALESCE(waiting_since, now()) ELSE waiting_since END
+               waiting_since = CASE WHEN $2 = 1 AND NOT $3 THEN NULL WHEN $2 = 0 THEN COALESCE(waiting_since, now()) ELSE waiting_since END,
+               last_message_at = CASE WHEN NOT $3 AND (last_message_at IS NULL OR last_message_at < $4) THEN $4 ELSE last_message_at END
              WHERE id = $1",
         )
         .bind(c.id)
         .bind(message_type)
         .bind(private)
+        .bind(m.created_at)
         .execute(&st.db)
         .await?;
     }
@@ -1035,6 +1041,24 @@ struct Filter {
     assignee: &'static str,
     page: i64,
     sort: &'static str,
+}
+
+/// Chatwoot `Conversations::SortService`: newest/oldest public message (nulls last), behind the
+/// `last_message_sort` account feature.
+const LAST_MESSAGE_ASC: &str = "c.last_message_at ASC NULLS LAST, c.display_id ASC";
+const LAST_MESSAGE_DESC: &str = "c.last_message_at DESC NULLS LAST, c.display_id DESC";
+const DEFAULT_SORT: &str = "c.last_activity_at DESC, c.id DESC";
+
+async fn last_message_sort_enabled(db: &PgPool, account_id: i64) -> bool {
+    let flags: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT COALESCE(feature_flags, 0)::bigint, COALESCE(feature_flags_ext_1, 0)::bigint FROM accounts WHERE id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    flags.is_some_and(|(a, b)| crate::auth::enabled_features(a, b).contains_key("last_message_sort"))
 }
 
 fn parse_filter(q: &[(String, String)]) -> Filter {
@@ -1075,13 +1099,15 @@ fn parse_filter(q: &[(String, String)]) -> Filter {
             .max(1),
         sort: match get("sort_by").as_deref() {
             Some("last_activity_at_asc") => "c.last_activity_at ASC, c.id ASC",
+            Some("last_message_at_asc") => LAST_MESSAGE_ASC,
+            Some("last_message_at_desc") => LAST_MESSAGE_DESC,
             Some("created_at_desc") => "c.created_at DESC, c.id DESC",
             Some("created_at_asc") => "c.created_at ASC, c.id ASC",
             Some("priority_desc") => "c.priority DESC NULLS LAST, c.last_activity_at DESC",
             Some("priority_asc") => "c.priority ASC NULLS FIRST, c.last_activity_at DESC",
             Some("waiting_since_desc") => "c.waiting_since DESC NULLS LAST, c.id DESC",
             Some("waiting_since_asc") => "c.waiting_since ASC NULLS LAST, c.id ASC",
-            _ => "c.last_activity_at DESC, c.id DESC",
+            _ => DEFAULT_SORT,
         },
     }
 }
@@ -1130,15 +1156,49 @@ async fn counts(db: &PgPool, f: &Filter, au: &AccountUser) -> Result<Value, ApiE
     )
 }
 
-async fn index(
-    State(st): State<AppState>,
-    user: CurrentUser,
-    Path(account_id): Path<i64>,
-    Query(q): Query<Vec<(String, String)>>,
-) -> ApiResult {
-    let au = require_account(&st.db, &user, account_id).await?;
-    let f = parse_filter(&q);
-    let meta = counts(&st.db, &f, &au).await?;
+async fn enforce_conv_rate_limit(
+    db: &PgPool,
+    key_prefix: &str,
+    env_var: &str,
+    user_id: i64,
+    account_id: i64,
+) -> Option<axum::response::Response> {
+    let limit = std::env::var(env_var)
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1000);
+    if limit == 0 {
+        return None;
+    }
+    let key = format!("{key_prefix}:{user_id}:{account_id}");
+    let retry_after = crate::auth::check_window_rate_limit(db, &key, 60, limit).await?;
+    let mut resp = axum::response::IntoResponse::into_response((
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({
+            "error": "Rate limit exceeded. Please try again later.",
+            "retry_after": retry_after,
+        })),
+    ));
+    if let Ok(val) = axum::http::HeaderValue::from_str(&retry_after.to_string()) {
+        resp.headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, val);
+    }
+    Some(resp)
+}
+
+async fn index_inner(
+    st: &AppState,
+    au: &AccountUser,
+    account_id: i64,
+    q: &[(String, String)],
+) -> Result<Value, ApiError> {
+    let mut f = parse_filter(q);
+    if (f.sort == LAST_MESSAGE_ASC || f.sort == LAST_MESSAGE_DESC)
+        && !last_message_sort_enabled(&st.db, account_id).await
+    {
+        f.sort = DEFAULT_SORT;
+    }
+    let meta = counts(&st.db, &f, au).await?;
     let sql = format!(
         "SELECT {CONV_COLS} {BASE} AND {} AND {} ORDER BY {} LIMIT {PER_PAGE} OFFSET {}",
         au.custom_scope_sql("$8"),
@@ -1150,9 +1210,29 @@ async fn index(
         .fetch_all(&st.db)
         .await?;
     let payload = convs_json_batch(&st.db, account_id, &rows).await;
-    Ok(Json(
-        json!({ "data": { "meta": meta, "payload": payload } }),
-    ))
+    Ok(json!({ "data": { "meta": meta, "payload": payload } }))
+}
+
+async fn index(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Query(q): Query<Vec<(String, String)>>,
+) -> Result<axum::response::Response, ApiError> {
+    let au = require_account(&st.db, &user, account_id).await?;
+    if let Some(resp) = enforce_conv_rate_limit(
+        &st.db,
+        "conv_list",
+        "RATE_LIMIT_CONVERSATIONS_LIST",
+        user.id,
+        account_id,
+    )
+    .await
+    {
+        return Ok(resp);
+    }
+    let data = index_inner(&st, &au, account_id, &q).await?;
+    Ok(axum::response::IntoResponse::into_response(Json(data)))
 }
 
 async fn meta(
@@ -1185,7 +1265,8 @@ async fn search(
     if !q.iter().any(|(k, _)| k == "status") {
         q.push(("status".into(), "all".into()));
     }
-    let Json(result) = index(State(st), user, Path(account_id), Query(q)).await?;
+    let au = require_account(&st.db, &user, account_id).await?;
+    let result = index_inner(&st, &au, account_id, &q).await?;
     Ok(Json(result["data"].clone()))
 }
 
@@ -1195,8 +1276,19 @@ async fn filter_conversations(
     Path(account_id): Path<i64>,
     Query(q): Query<HashMap<String, String>>,
     Json(body): Json<Value>,
-) -> ApiResult {
+) -> Result<axum::response::Response, ApiError> {
     let au = require_account(&st.db, &user, account_id).await?;
+    if let Some(resp) = enforce_conv_rate_limit(
+        &st.db,
+        "conv_filter",
+        "RATE_LIMIT_CONVERSATIONS_FILTER",
+        user.id,
+        account_id,
+    )
+    .await
+    {
+        return Ok(resp);
+    }
     let filters = body
         .get("payload")
         .and_then(Value::as_array)
@@ -1342,9 +1434,9 @@ async fn filter_conversations(
     {
         payload.push(conv_json(&st.db, c).await);
     }
-    Ok(Json(
+    Ok(axum::response::IntoResponse::into_response(Json(
         json!({"meta":{"mine_count":mine,"unassigned_count":unassigned,"all_count":count},"payload":payload}),
-    ))
+    )))
 }
 
 async fn set_mute(
@@ -3383,6 +3475,8 @@ mod tests {
         assert_eq!(f.labels, Some(vec!["vip".to_string()]));
         assert_eq!(f.sort, "c.last_activity_at DESC, c.id DESC");
         assert_eq!(f.conv_type, None);
+        let q = vec![("sort_by".to_string(), "last_message_at_desc".to_string())];
+        assert_eq!(parse_filter(&q).sort, LAST_MESSAGE_DESC);
     }
 }
 

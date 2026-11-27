@@ -204,6 +204,7 @@ pub(crate) async fn build_event_payload(
             | "conversation_updated"
             | "contact_updated"
             | "inbox_updated"
+            | "article_updated"
     ) {
         object.insert(
             "changed_attributes".into(),
@@ -235,10 +236,16 @@ async fn process(st: &AppState, ev: &Event) -> anyhow::Result<()> {
             | "inbox_updated"
             | "conversation_typing_on"
             | "conversation_typing_off"
+            | "article_created"
+            | "article_updated"
+            | "article_deleted"
     ) {
         return Ok(());
     }
-    if matches!(event.as_str(), "contact_updated" | "inbox_updated")
+    if matches!(
+        event.as_str(),
+        "contact_updated" | "inbox_updated" | "article_updated"
+    )
         && ev
             .changed
             .as_ref()

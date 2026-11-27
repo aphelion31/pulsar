@@ -1946,7 +1946,7 @@ async fn reports_bot_metrics(
          bc AS (SELECT c.id FROM conversations c WHERE c.account_id=$1 AND c.inbox_id IN (SELECT id FROM bi) AND c.created_at >= $2 AND c.created_at < $3),
          ho AS (SELECT DISTINCT r.conversation_id FROM reporting_events r JOIN conversations c ON c.id=r.conversation_id WHERE r.account_id=$1 AND r.name='conversation_bot_handoff' AND r.created_at >= $2 AND r.created_at < $3)
          SELECT (SELECT count(*) FROM bc),
-                (SELECT count(*) FROM messages m WHERE m.account_id=$1 AND m.message_type=1 AND m.conversation_id IN (SELECT id FROM bc) AND m.created_at >= $2 AND m.created_at < $3),
+                (SELECT count(*) FROM messages m WHERE m.account_id=$1 AND m.message_type=1 AND m.private=false AND m.sender_type IN ('AgentBot', 'Captain::Assistant') AND m.conversation_id IN (SELECT id FROM bc) AND m.created_at >= $2 AND m.created_at < $3),
                 (SELECT count(DISTINCT r.conversation_id) FROM reporting_events r JOIN conversations c ON c.id=r.conversation_id WHERE r.account_id=$1 AND r.name='conversation_bot_resolved' AND r.created_at >= $2 AND r.created_at < $3 AND r.conversation_id NOT IN (SELECT conversation_id FROM ho)),
                 (SELECT count(*) FROM ho)",
     )

@@ -92,6 +92,10 @@ pub fn account_routes() -> Router<AppState> {
             get(scenarios_index).post(scenarios_create),
         )
         .route(
+            "/captain/assistants/{assistant_id}/scenarios/tool_suggestions",
+            post(scenarios_tool_suggestions),
+        )
+        .route(
             "/captain/assistants/{assistant_id}/scenarios/{id}",
             get(scenarios_show)
                 .patch(scenarios_update)
@@ -198,6 +202,10 @@ pub fn account_routes() -> Router<AppState> {
         .route(
             "/captain/mcp_servers/{id}/live_tools",
             get(mcp_servers_live_tools),
+        )
+        .route(
+            "/captain/mcp_servers/{id}/approve_tool",
+            post(mcp_servers_approve_tool),
         )
         .route(
             "/captain/mcp_servers/{id}/authorization_url",
@@ -1590,6 +1598,88 @@ async fn scenarios_destroy(
         return Err(ApiError::not_found());
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn scenarios_tool_suggestions(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, assistant_id)): Path<(i64, i64)>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id).await?;
+    ensure_assistant(&st.db, account_id, assistant_id).await?;
+    let instruction = sopt(&body, "instruction")
+        .or_else(|| sopt(pick(&body, "scenario"), "instruction"))
+        .ok_or_else(|| ApiError::bad("instruction is required"))?;
+
+    let tools_val = assistants_tools(
+        State(st.clone()),
+        user,
+        Path(account_id),
+        Query(AssistantToolQuery { assistant_id }),
+    )
+    .await?
+    .0;
+    let available = tools_val["payload"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+
+    // Strip existing markdown tool links `[@Title](tool://id)` and collect already-linked IDs.
+    let mut linked_ids = std::collections::HashSet::new();
+    let mut unlinked = String::with_capacity(instruction.len());
+    let mut rest = instruction.as_str();
+    while let Some(start) = rest.find("[@") {
+        unlinked.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        if let Some(mid) = after.find("](tool://") {
+            let after_scheme = &after[mid + 8..];
+            if let Some(end) = after_scheme.find(')') {
+                linked_ids.insert(after_scheme[..end].to_string());
+                rest = &after_scheme[end + 1..];
+                continue;
+            }
+        }
+        unlinked.push_str("[@");
+        rest = after;
+    }
+    unlinked.push_str(rest);
+
+    let lower_unlinked = unlinked.to_ascii_lowercase();
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut suggestions = Vec::new();
+    for tool in available {
+        let Some(tid) = tool["id"].as_str() else {
+            continue;
+        };
+        let Some(title) = tool["title"].as_str() else {
+            continue;
+        };
+        if linked_ids.contains(tid) || !seen_ids.insert(tid.to_string()) {
+            continue;
+        }
+        for candidate in [title, tid] {
+            let needle = candidate.trim().to_ascii_lowercase();
+            if needle.is_empty() {
+                continue;
+            }
+            let matches: Vec<(usize, &str)> = lower_unlinked.match_indices(&needle).collect();
+            if matches.len() == 1 {
+                let (idx, _) = matches[0];
+                if let Some(phrase) = unlinked.get(idx..idx + needle.len()) {
+                    suggestions.push(json!({
+                        "tool_id": tid,
+                        "tool_title": title,
+                        "phrase": phrase,
+                        "replacement": format!("{phrase} [@{title}](tool://{tid})"),
+                    }));
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(Json(json!({ "suggestions": suggestions })))
 }
 
 // ============================================================================
@@ -3323,11 +3413,58 @@ async fn custom_tools_test(
 // MCP Servers & Tools Manifest
 // ============================================================================
 
+fn mcp_definition_digest(def: &Value) -> String {
+    let mut normalized = def.clone();
+    if let Some(o) = normalized.as_object_mut() {
+        o.remove("name");
+    }
+    hex::encode(Sha256::digest(normalized.to_string().as_bytes()))
+}
+
+async fn record_mcp_live_tools(
+    db: &PgPool,
+    mcp_server_id: i64,
+    account_id: i64,
+    live_defs: &[Value],
+) -> Result<(), ApiError> {
+    let mut live_map = std::collections::HashMap::new();
+    for def in live_defs {
+        if let Some(name) = def.get("name").and_then(Value::as_str) {
+            live_map.insert(name, def);
+        }
+    }
+    let rows = sqlx::query(
+        "SELECT id, name, approved_digest, review_state FROM captain_mcp_tools WHERE mcp_server_id = $1 AND account_id = $2",
+    )
+    .bind(mcp_server_id)
+    .bind(account_id)
+    .fetch_all(db)
+    .await?;
+    for r in rows {
+        let tid: i64 = r.try_get("id")?;
+        let name: String = r.try_get("name")?;
+        let approved_digest: String = r.try_get("approved_digest")?;
+        let old_state: String = r.try_get("review_state")?;
+        let new_state = match live_map.get(name.as_str()) {
+            Some(def) if mcp_definition_digest(def) == approved_digest => "current",
+            Some(_) => "changed",
+            None => "missing",
+        };
+        if new_state != old_state {
+            sqlx::query("UPDATE captain_mcp_tools SET review_state = $1 WHERE id = $2")
+                .bind(new_state)
+                .bind(tid)
+                .execute(db)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 async fn mcp_server_json(db: &PgPool, account_id: i64, id: i64) -> Result<Value, ApiError> {
     let r = sqlx::query(
         "SELECT id, account_id, assistant_id, url, name, auth_type, auth_header, status,
                 last_error, enabled,
-                EXTRACT(EPOCH FROM tools_changed_at)::bigint AS tools_changed_at,
                 EXTRACT(EPOCH FROM created_at)::bigint AS created_at,
                 EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at
          FROM captain_mcp_servers WHERE id = $1 AND account_id = $2",
@@ -3339,7 +3476,7 @@ async fn mcp_server_json(db: &PgPool, account_id: i64, id: i64) -> Result<Value,
     .ok_or_else(ApiError::not_found)?;
 
     let tools_rows = sqlx::query(
-        "SELECT id, name, captain_name, approved_definition, enabled
+        "SELECT id, name, captain_name, approved_definition, approved_digest, review_state, enabled
          FROM captain_mcp_tools WHERE mcp_server_id = $1 AND account_id = $2 ORDER BY id ASC",
     )
     .bind(id)
@@ -3355,10 +3492,15 @@ async fn mcp_server_json(db: &PgPool, account_id: i64, id: i64) -> Result<Value,
                 "name": t.try_get::<String, _>("name").ok()?,
                 "captain_name": t.try_get::<String, _>("captain_name").ok()?,
                 "approved_definition": t.try_get::<Value, _>("approved_definition").ok()?,
+                "approved_digest": t.try_get::<String, _>("approved_digest").ok()?,
+                "review_state": t.try_get::<String, _>("review_state").ok()?,
                 "enabled": t.try_get::<bool, _>("enabled").ok()?,
             }))
         })
         .collect();
+    let needs_review = tools
+        .iter()
+        .any(|t| t["review_state"].as_str() != Some("current"));
 
     Ok(json!({
         "id": r.try_get::<i64, _>("id")?,
@@ -3371,8 +3513,8 @@ async fn mcp_server_json(db: &PgPool, account_id: i64, id: i64) -> Result<Value,
         "status": r.try_get::<String, _>("status")?,
         "last_error": r.try_get::<Option<String>, _>("last_error")?,
         "enabled": r.try_get::<bool, _>("enabled")?,
+        "needs_review": needs_review,
         "tools": tools,
-        "tools_changed_at": r.try_get::<Option<i64>, _>("tools_changed_at")?,
         "created_at": r.try_get::<i64, _>("created_at")?,
         "updated_at": r.try_get::<i64, _>("updated_at")?,
     }))
@@ -3571,7 +3713,7 @@ async fn mcp_servers_update(
             };
             let t_enabled = t.get("enabled").and_then(Value::as_bool).unwrap_or(true);
             let cname = format!("mcp_{id}_{}", slugify(tname));
-            let digest = hex::encode(Sha256::digest(t.to_string().as_bytes()));
+            let digest = mcp_definition_digest(t);
             sqlx::query(
                 "INSERT INTO captain_mcp_tools
                     (account_id, mcp_server_id, name, captain_name, approved_definition, approved_digest, enabled, created_at, updated_at)
@@ -3634,9 +3776,106 @@ async fn mcp_servers_live_tools(
     let url: String = r.try_get("url")?;
     let auth_header: Option<String> = r.try_get("auth_header")?;
     let auth_cfg: Value = r.try_get("auth_config")?;
-    let tools =
+    let live =
         mcp_discover_tools(&url, auth_cfg["token"].as_str(), auth_header.as_deref()).await?;
-    Ok(Json(json!({ "payload": tools })))
+    record_mcp_live_tools(&st.db, id, account_id, &live).await?;
+
+    let approved_rows = sqlx::query(
+        "SELECT name, review_state FROM captain_mcp_tools WHERE mcp_server_id = $1 AND account_id = $2 ORDER BY id ASC",
+    )
+    .bind(id)
+    .bind(account_id)
+    .fetch_all(&st.db)
+    .await?;
+    let mut state_by_name = std::collections::HashMap::new();
+    let mut missing = Vec::new();
+    for ar in approved_rows {
+        let n: String = ar.try_get("name")?;
+        let st_str: String = ar.try_get("review_state")?;
+        if st_str == "missing" {
+            missing.push(n.clone());
+        }
+        state_by_name.insert(n, st_str);
+    }
+    let entries: Vec<Value> = live
+        .iter()
+        .map(|def| {
+            let name = def.get("name").and_then(Value::as_str).unwrap_or("");
+            let state = state_by_name.get(name).map(String::as_str);
+            json!({
+                "definition": def,
+                "digest": mcp_definition_digest(def),
+                "approved": state.is_some(),
+                "changed": state == Some("changed"),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "payload": live, "tools": entries, "missing": missing })))
+}
+
+async fn mcp_servers_approve_tool(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path((account_id, id)): Path<(i64, i64)>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let tool_name = sopt(&body, "name").ok_or_else(|| ApiError::bad("name is required"))?;
+    let digest = sopt(&body, "digest").ok_or_else(|| ApiError::bad("digest is required"))?;
+
+    let r = sqlx::query(
+        "SELECT url, auth_header, auth_config FROM captain_mcp_servers WHERE id = $1 AND account_id = $2",
+    )
+    .bind(id)
+    .bind(account_id)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+    let url: String = r.try_get("url")?;
+    let auth_header: Option<String> = r.try_get("auth_header")?;
+    let auth_cfg: Value = r.try_get("auth_config")?;
+    let live =
+        mcp_discover_tools(&url, auth_cfg["token"].as_str(), auth_header.as_deref()).await?;
+
+    let live_def = live
+        .iter()
+        .find(|d| d.get("name").and_then(Value::as_str) == Some(tool_name.as_str()))
+        .ok_or_else(|| {
+            ApiError(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Tool is no longer listed on the MCP server".into(),
+            )
+        })?;
+    if mcp_definition_digest(live_def) != digest {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Tool definition changed; refresh live tools and retry".into(),
+        ));
+    }
+    let mut approved_def = live_def.clone();
+    if let Some(o) = approved_def.as_object_mut() {
+        o.remove("name");
+    }
+    let affected = sqlx::query(
+        "UPDATE captain_mcp_tools
+         SET approved_definition = $1, approved_digest = $2, review_state = 'current', updated_at = now()
+         WHERE mcp_server_id = $3 AND account_id = $4 AND name = $5",
+    )
+    .bind(approved_def)
+    .bind(&digest)
+    .bind(id)
+    .bind(account_id)
+    .bind(&tool_name)
+    .execute(&st.db)
+    .await?
+    .rows_affected();
+    if affected == 0 {
+        return Err(ApiError::not_found());
+    }
+    record_mcp_live_tools(&st.db, id, account_id, &live).await?;
+    Ok(Json(mcp_server_json(&st.db, account_id, id).await?))
 }
 
 async fn mcp_servers_auth_url(

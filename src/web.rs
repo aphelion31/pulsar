@@ -83,7 +83,7 @@ pub async fn global_config(db: &PgPool) -> Map<String, Value> {
         out.insert(k.to_string(), v);
     }
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
-    out.insert("APP_VERSION".into(), json!("4.19.1"));
+    out.insert("APP_VERSION".into(), json!("4.20.1"));
     out.insert("IS_ENTERPRISE".into(), json!(true));
     if out
         .get("INSTALLATION_PRICING_PLAN")

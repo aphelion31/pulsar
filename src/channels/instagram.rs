@@ -31,7 +31,167 @@ pub fn routes() -> Router<AppState> {
 }
 
 pub fn account_routes() -> Router<AppState> {
-    Router::new().route("/instagram/authorization", post(authorization))
+    Router::new()
+        .route("/instagram/authorization", post(authorization))
+        .route("/instagram/accounts", post(connections_accounts))
+        .route("/instagram/connections", post(connections_create))
+}
+
+#[derive(Clone)]
+struct PendingIgAccount {
+    instagram_id: String,
+    username: String,
+    access_token: String,
+    configuration_id: Option<String>,
+}
+
+static PENDING_IG: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, (i64, String, i64, Vec<PendingIgAccount>)>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn store_pending_connection(
+    account_id: i64,
+    return_to: String,
+    accounts: Vec<PendingIgAccount>,
+) -> String {
+    use rand::RngCore;
+    let mut raw = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut raw);
+    let token = hex::encode(raw);
+    let exp = chrono::Utc::now().timestamp() + 900;
+    if let Ok(mut map) = PENDING_IG.lock() {
+        let now = chrono::Utc::now().timestamp();
+        map.retain(|_, v| v.2 > now);
+        map.insert(token.clone(), (account_id, return_to, exp, accounts));
+    }
+    token
+}
+
+fn load_pending_connection(
+    account_id: i64,
+    token: &str,
+) -> Result<(String, Vec<PendingIgAccount>), ApiError> {
+    if token.len() != 64 || !token.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Instagram connection expired".into(),
+        ));
+    }
+    let now = chrono::Utc::now().timestamp();
+    if let Ok(mut map) = PENDING_IG.lock() {
+        map.retain(|_, v| v.2 > now);
+        if let Some((aid, return_to, _, accounts)) = map.get(token)
+            && *aid == account_id
+        {
+            return Ok((return_to.clone(), accounts.clone()));
+        }
+    }
+    Err(ApiError(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "Instagram connection expired".into(),
+    ))
+}
+
+async fn connections_accounts(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let token = body["connection_token"].as_str().unwrap_or_default();
+    let (_ret, accounts) = load_pending_connection(account_id, token)?;
+    let list: Vec<Value> = accounts
+        .iter()
+        .map(|a| json!({ "instagram_id": a.instagram_id, "username": a.username }))
+        .collect();
+    Ok(Json(json!({ "accounts": list })))
+}
+
+async fn connections_create(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let token = body["connection_token"].as_str().unwrap_or_default();
+    let ig_id = body["instagram_id"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| ApiError(StatusCode::UNPROCESSABLE_ENTITY, "Invalid Instagram account".into()))?;
+    let (return_to, accounts) = load_pending_connection(account_id, token)?;
+    let acct = accounts
+        .into_iter()
+        .find(|a| a.instagram_id == ig_id)
+        .ok_or_else(|| ApiError(StatusCode::UNPROCESSABLE_ENTITY, "Invalid Instagram account".into()))?;
+
+    let mut tx = st.db.begin().await?;
+    let existing: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT id::bigint, account_id::bigint FROM channel_instagram WHERE instagram_id = $1 LIMIT 1",
+    )
+    .bind(&acct.instagram_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let inbox_id: i64 = if let Some((cid, owner_aid)) = existing {
+        if owner_aid != account_id {
+            return Err(ApiError(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Instagram account is already connected to another account".into(),
+            ));
+        }
+        sqlx::query(
+            "UPDATE channel_instagram SET access_token = $2, auth_type = 'unified_login', configuration_id = $3, expires_at = NULL, updated_at = now() WHERE id = $1",
+        )
+        .bind(cid)
+        .bind(&acct.access_token)
+        .bind(&acct.configuration_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query_scalar(
+            "SELECT id::bigint FROM inboxes WHERE account_id = $1 AND channel_type = 'Channel::Instagram' AND channel_id = $2 LIMIT 1",
+        )
+        .bind(account_id)
+        .bind(cid)
+        .fetch_one(&mut *tx)
+        .await?
+    } else {
+        let cid: i64 = sqlx::query_scalar(
+            "INSERT INTO channel_instagram (account_id, instagram_id, access_token, auth_type, configuration_id, expires_at, created_at, updated_at)
+             VALUES ($1, $2, $3, 'unified_login', $4, NULL, now(), now()) RETURNING id::bigint",
+        )
+        .bind(account_id as i32)
+        .bind(&acct.instagram_id)
+        .bind(&acct.access_token)
+        .bind(&acct.configuration_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query_scalar(
+            "INSERT INTO inboxes (account_id, name, channel_id, channel_type, created_at, updated_at)
+             VALUES ($1, $2, $3, 'Channel::Instagram', now(), now()) RETURNING id::bigint",
+        )
+        .bind(account_id as i32)
+        .bind(&acct.username)
+        .bind(cid as i32)
+        .fetch_one(&mut *tx)
+        .await?
+    };
+    tx.commit().await?;
+    if let Ok(mut map) = PENDING_IG.lock() {
+        map.remove(token);
+    }
+    let base = st.frontend_url.trim_end_matches('/');
+    let redirect_url = if return_to == "onboarding" {
+        format!("{base}/app/accounts/{account_id}/settings/inboxes/new")
+    } else {
+        format!("{base}/app/accounts/{account_id}/settings/inboxes/{inbox_id}")
+    };
+    Ok(Json(json!({ "redirect_url": redirect_url })))
 }
 
 fn ig_api_base() -> String {
@@ -172,6 +332,26 @@ async fn callback(
         .as_str()
         .filter(|s| !s.is_empty())
         .unwrap_or(&ig_user_id);
+
+    if std::env::var("INSTAGRAM_LOGIN_METHOD").unwrap_or_default() == "unified_login" {
+        let config_id = std::env::var("INSTAGRAM_CONFIGURATION_ID")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let token = store_pending_connection(
+            account_id,
+            return_to.clone(),
+            vec![PendingIgAccount {
+                instagram_id: ig_user_id.clone(),
+                username: username.to_string(),
+                access_token: access_token.to_string(),
+                configuration_id: config_id,
+            }],
+        );
+        return Redirect::temporary(&format!(
+            "{base}/app/accounts/{account_id}/settings/inboxes/new/instagram?connection_token={token}"
+        ))
+        .into_response();
+    }
 
     let existing_inbox: Option<i64> = sqlx::query_scalar(
         "SELECT i.id::bigint FROM inboxes i
