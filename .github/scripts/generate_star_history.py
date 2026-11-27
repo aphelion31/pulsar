@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a self-hosted cumulative GitHub stars chart for the README."""
+"""Generate a self-hosted cumulative GitHub stars chart and sync README star visibility."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import datetime as dt
 import json
 import math
 import os
+import re
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -120,6 +121,32 @@ def render_svg(repository: str, dates: list[dt.date], today: dt.date | None = No
 '''
 
 
+def _replace_marker_block(text: str, name: str, inner: str) -> str:
+    pattern = re.compile(rf"(<!-- {re.escape(name)}:start -->).*?(<!-- {re.escape(name)}:end -->)", re.DOTALL)
+    return pattern.sub(lambda m: f"{m.group(1)}{inner}{m.group(2)}", text, count=1)
+
+
+def sync_readme(readme_text: str, repository: str, star_count: int) -> str:
+    """Show README star badge and Star History chart only once star_count >= 1."""
+    if star_count >= 1:
+        badge = (
+            f'\n  <a href="https://github.com/{repository}/stargazers">'
+            f'<img src="https://img.shields.io/github/stars/{repository}?style=flat-square&amp;logo=github" alt="GitHub Stars"></a>'
+        )
+        section = (
+            f"\n\n---\n\n<div align=\"center\">\n\n## Star History\n\n"
+            f'<a href="https://github.com/{repository}/stargazers">\n'
+            f'  <img src="docs/images/star-history.svg" alt="Pulsar cumulative GitHub stars over time" width="800">\n'
+            f"</a>\n\n</div>\n"
+        )
+    else:
+        badge = ""
+        section = ""
+
+    updated = _replace_marker_block(readme_text, "stars-badge", badge)
+    return _replace_marker_block(updated, "star-history", section)
+
+
 def self_test() -> None:
     today = dt.date(2026, 11, 27)
     empty_svg = render_svg("aphelion31/pulsar", [], today=today)
@@ -137,11 +164,23 @@ def self_test() -> None:
     ET.fromstring(many_svg)
     assert "1,500 stars" in many_svg
 
+    sample = (
+        "<p><!-- stars-badge:start --><!-- stars-badge:end --></p>\n"
+        "<!-- star-history:start --><!-- star-history:end -->\n"
+    )
+    hidden = sync_readme(sample, "aphelion31/pulsar", 0)
+    assert "GitHub Stars" not in hidden and "Star History" not in hidden
+    shown = sync_readme(hidden, "aphelion31/pulsar", 5)
+    assert "GitHub Stars" in shown and "Star History" in shown
+    assert sync_readme(shown, "aphelion31/pulsar", 5) == shown
+    assert sync_readme(shown, "aphelion31/pulsar", 0) == hidden
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", default="aphelion31/pulsar")
     parser.add_argument("--output", type=Path, default=Path("docs/images/star-history.svg"))
+    parser.add_argument("--readme", type=Path, default=Path("README.md"))
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -151,8 +190,11 @@ def main() -> None:
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if not token:
         raise SystemExit("GITHUB_TOKEN or GH_TOKEN is required")
+    dates = fetch_stars(args.repo, token)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(render_svg(args.repo, fetch_stars(args.repo, token)))
+    args.output.write_text(render_svg(args.repo, dates))
+    if args.readme.exists():
+        args.readme.write_text(sync_readme(args.readme.read_text(), args.repo, len(dates)))
 
 
 if __name__ == "__main__":

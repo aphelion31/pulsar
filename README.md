@@ -13,13 +13,14 @@
   Drop-in PostgreSQL 4.19 compatibility with zero Redis, zero Sidekiq, and ~19 MB RAM.
 </p>
 
-[![CI](https://img.shields.io/github/actions/workflow/status/aphelion31/pulsar/ci.yml?branch=develop&style=flat-square&logo=githubactions&logoColor=white&label=CI)](https://github.com/aphelion31/pulsar/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/aphelion31/pulsar?style=flat-square&logo=github)](https://github.com/aphelion31/pulsar/releases/latest)
-[![Last Commit](https://img.shields.io/github/last-commit/aphelion31/pulsar/develop?style=flat-square&logo=github)](https://github.com/aphelion31/pulsar/commits/develop)
-[![GitHub Stars](https://img.shields.io/github/stars/aphelion31/pulsar?style=flat-square&logo=github)](https://github.com/aphelion31/pulsar/stargazers)
-[![Rust](https://img.shields.io/badge/backend-Rust-orange?style=flat-square&logo=rust&logoColor=white)](Cargo.toml)
-[![React Router](https://img.shields.io/badge/frontend-React%20Router-2781F6?style=flat-square&logo=reactrouter&logoColor=white)](web/package.json)
-[![License](https://img.shields.io/github/license/aphelion31/pulsar?style=flat-square)](LICENSE)
+<p>
+  <a href="https://github.com/aphelion31/pulsar/actions/workflows/ci.yml"><img src="https://github.com/aphelion31/pulsar/actions/workflows/ci.yml/badge.svg?branch=develop" alt="CI"></a>
+  <a href="https://github.com/aphelion31/pulsar/releases/latest"><img src="https://img.shields.io/github/v/release/aphelion31/pulsar?style=flat-square&amp;logo=github" alt="Release"></a>
+  <a href="https://github.com/aphelion31/pulsar/commits/develop"><img src="https://img.shields.io/github/last-commit/aphelion31/pulsar/develop?style=flat-square&amp;logo=github" alt="Last Commit"></a><!-- stars-badge:start --><!-- stars-badge:end -->
+  <a href="Cargo.toml"><img src="docs/badges/rust.svg" alt="Rust"></a>
+  <a href="web/package.json"><img src="docs/badges/react-router.svg" alt="React Router"></a>
+  <a href="LICENSE"><img src="docs/badges/license.svg" alt="License"></a>
+</p>
 
 </div>
 
@@ -202,19 +203,7 @@ cargo test --offline --locked                         # Rust unit & router tests
 BASE=http://127.0.0.1:3000 tools/smoke.sh             # API smoke test against a running server
 BASE=http://127.0.0.1:3000 tools/chatwoot-issues.sh   # regression checks
 (cd web && bun run typecheck && bun run build)        # frontend types + production bundle
-```
-
----
-
-<div align="center">
-
-## Star History
-
-<a href="https://github.com/aphelion31/pulsar/stargazers">
-  <img src="docs/images/star-history.svg" alt="Pulsar cumulative GitHub stars over time" width="800">
-</a>
-
-</div>
+```<!-- star-history:start --><!-- star-history:end -->
 
 ---
 

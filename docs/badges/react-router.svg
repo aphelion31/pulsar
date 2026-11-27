@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="152" height="20" role="img" aria-label="frontend: React Router">
+  <title>frontend: React Router</title>
+  <g shape-rendering="crispEdges">
+    <rect width="62" height="20" fill="#555"/>
+    <rect x="62" width="90" height="20" fill="#2781f6"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="110">
+    <text x="315" y="140" transform="scale(.1)" fill="#010101" fill-opacity=".3" textLength="500">frontend</text>
+    <text x="315" y="130" transform="scale(.1)" textLength="500">frontend</text>
+    <text x="1070" y="140" transform="scale(.1)" fill="#010101" fill-opacity=".3" textLength="760">React Router</text>
+    <text x="1070" y="130" transform="scale(.1)" textLength="760">React Router</text>
+  </g>
+</svg>
