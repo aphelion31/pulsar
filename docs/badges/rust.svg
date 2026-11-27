@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="98" height="20" role="img" aria-label="backend: Rust">
+  <title>backend: Rust</title>
+  <g shape-rendering="crispEdges">
+    <rect width="58" height="20" fill="#555"/>
+    <rect x="58" width="40" height="20" fill="#ea7233"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="110">
+    <text x="295" y="140" transform="scale(.1)" fill="#010101" fill-opacity=".3" textLength="460">backend</text>
+    <text x="295" y="130" transform="scale(.1)" textLength="460">backend</text>
+    <text x="780" y="140" transform="scale(.1)" fill="#010101" fill-opacity=".3" textLength="260">Rust</text>
+    <text x="780" y="130" transform="scale(.1)" textLength="260">Rust</text>
+  </g>
+</svg>
