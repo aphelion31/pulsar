@@ -61,7 +61,6 @@ pub fn account_routes() -> Router<AppState> {
     Router::new()
         .route("/channels/whatsapp_channel", post(create))
         .route("/whatsapp/authorization", post(embedded_authorization))
-        .route("/whatsapp/access_request", post(access_request))
         .route("/whatsapp/manual/preview", post(manual_preview))
         .route("/whatsapp/manual/connect", post(manual_connect))
         .route(
@@ -900,62 +899,6 @@ async fn embedded_authorization(
         resp["message"] = json!("Inbox reauthorized successfully");
     }
     Ok(Json(resp))
-}
-
-/// POST /whatsapp/access_request
-async fn access_request(
-    State(st): State<AppState>,
-    user: CurrentUser,
-    Path(account_id): Path<i64>,
-    Json(body): Json<Value>,
-) -> ApiResult {
-    require_account(&st.db, &user, account_id)
-        .await?
-        .require_admin()?;
-    let use_case = body["use_case"]
-        .as_str()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| ApiError::bad("use_case is required"))?;
-    let (mut flags, mut flags_ext, mut internal): (i64, i64, Option<Value>) = sqlx::query_as(
-        "SELECT COALESCE(feature_flags, 0)::bigint, COALESCE(feature_flags_ext_1, 0)::bigint, internal_attributes
-         FROM accounts WHERE id = $1",
-    )
-    .bind(account_id)
-    .fetch_one(&st.db)
-    .await?;
-    let feat = "whatsapp_embedded_signup_inbox_creation";
-    crate::auth::set_feature(&mut flags, &mut flags_ext, feat, true);
-    let mut ia = internal
-        .take()
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default();
-    ia.insert("whatsapp_use_case".into(), json!(use_case));
-    let mut managed: Vec<String> = ia
-        .get("manually_managed_features")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    if !managed.iter().any(|s| s == feat) {
-        managed.push(feat.to_string());
-    }
-    ia.insert("manually_managed_features".into(), json!(managed));
-    sqlx::query(
-        "UPDATE accounts SET feature_flags = $2, feature_flags_ext_1 = $3, internal_attributes = $4, updated_at = now() WHERE id = $1",
-    )
-    .bind(account_id)
-    .bind(flags)
-    .bind(flags_ext)
-    .bind(Value::Object(ia))
-    .execute(&st.db)
-    .await?;
-    Ok(Json(json!({
-        "features": crate::auth::enabled_features(flags, flags_ext)
-    })))
 }
 
 /// POST /whatsapp/manual/preview

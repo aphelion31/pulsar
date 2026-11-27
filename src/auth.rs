@@ -577,6 +577,67 @@ async fn check_login_failures(db: &PgPool, key: &str, record_failure: bool) -> u
     check_rate_limit(db, key, record_failure).await
 }
 
+/// Fixed-window rate limiter (returns `Some(retry_after_secs)` when `limit` is exceeded).
+pub(crate) async fn check_window_rate_limit(
+    db: &PgPool,
+    key: &str,
+    window_secs: i64,
+    limit: usize,
+) -> Option<u64> {
+    use std::{
+        collections::HashMap,
+        sync::Mutex,
+        time::{Duration, Instant},
+    };
+    if limit == 0 {
+        return Some(window_secs.max(1) as u64);
+    }
+    if std::env::var("PULSAR_MULTI_NODE").as_deref() == Ok("1") {
+        let row: Option<(i32, i64)> = sqlx::query_as(
+            "INSERT INTO pulsar_rate_limits (bucket, hits, window_start)
+             VALUES ($1, 1, now())
+             ON CONFLICT (bucket) DO UPDATE SET
+               hits = CASE WHEN pulsar_rate_limits.window_start < now() - make_interval(secs => $2) THEN 1 ELSE pulsar_rate_limits.hits + 1 END,
+               window_start = CASE WHEN pulsar_rate_limits.window_start < now() - make_interval(secs => $2) THEN now() ELSE pulsar_rate_limits.window_start END
+             RETURNING hits, GREATEST(1, CEIL($2 - EXTRACT(EPOCH FROM (now() - window_start))))::bigint",
+        )
+        .bind(key)
+        .bind(window_secs as f64)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
+        if let Some((hits, retry_after)) = row
+            && hits as usize > limit
+        {
+            return Some(retry_after.max(1) as u64);
+        }
+        return None;
+    }
+
+    static HITS: std::sync::LazyLock<Mutex<HashMap<String, (Instant, usize)>>> =
+        std::sync::LazyLock::new(Default::default);
+    let win = Duration::from_secs(window_secs.max(1) as u64);
+    let Ok(mut m) = HITS.lock() else {
+        return None;
+    };
+    let now = Instant::now();
+    if m.len() > 50_000 {
+        m.retain(|_, (start, _)| now.duration_since(*start) < win);
+    }
+    let entry = m.entry(key.to_string()).or_insert((now, 0));
+    if now.duration_since(entry.0) >= win {
+        *entry = (now, 0);
+    }
+    entry.1 += 1;
+    if entry.1 > limit {
+        let elapsed = now.duration_since(entry.0);
+        let rem = win.saturating_sub(elapsed).as_secs().max(1);
+        return Some(rem);
+    }
+    None
+}
+
 fn mem_login_failures(email: &str, record_failure: bool) -> usize {
     use std::{
         collections::HashMap,

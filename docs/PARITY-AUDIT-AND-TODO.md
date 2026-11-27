@@ -1,6 +1,6 @@
 # Chatwoot -> Pulsar Parity Audit & TODO
 
-> Audit baseline: `pulsar` `develop` @ `5e73760` (`v1.0.0`) vs reference `/Users/beyondb/Halim/Projects/CEG/prjtss/chatwoot` (`192a2488f7`).
+> Audit baseline: `pulsar` `develop` vs reference `/Users/beyondb/Halim/Projects/CEG/prjtss/chatwoot` (`1c5d15ff30`, `v4.20.1`, schema `20261125100456`).
 > Shipped frontend verification via REA CLI (`rea analyze-javascript-application web/build/client --json`).
 
 ---
@@ -159,3 +159,12 @@
 - [x] **Set-based conversation serialization & 100% `ponytail:` cleanups**: Replaced N+1 conversation list queries with batched `convs_json_batch`, wired real ActiveStorage removal on `DELETE /contacts/{id}/avatar` (`src/contacts.rs`), added widget transcript per-account rate limit (`src/widget.rs`), upgraded `bcrypt_cached` to bounded FIFO (`src/auth.rs`), and cleaned all remaining stale stubs/comments.
 - [x] **OpenAPI `/swagger`, RFC 8291 unit tests, Wave 6/7/8 & Bun suites**: Verified `/swagger`, `web_push` RFC 8291/8292 crypto tests (`cargo test --locked`), Bun tests/build, live integration `wave6-parity-todos.sh`, `wave7-enterprise-polish.sh`, and `wave8-100-parity.sh`.
 - [ ] **Hosted Cloud SaaS Stripe checkout (`enterprise_checkout_stub`)**: Intentionally out of scope for self-hosted Open Source Enterprise deployments (`stripe_integration: false`).
+
+### P4 — Chatwoot `v4.20.1` Upstream Sync (`1c5d15ff30`, schema `20261125100456`)
+
+- [x] **Schema & Feature Flags (`migrations/0008_chatwoot_4_20.sql`, `features.json`)**: Added `conversations.last_message_at` + backfill, `captain_mcp_tools.review_state`, `channel_instagram.auth_type`/`configuration_id`/nullable `expires_at`, `channel_sms.secret`/`callback_auth_enforced`, dropped `captain_mcp_servers.tools_changed_at` & `vector_idx_knowledge_entries_embedding`, added 7 new indexes, and added `last_message_sort` (`feature_flags_ext_1` bit `131072`).
+- [x] **Conversations `last_message_at`, Sort & Rate Limits (`src/conversations.rs`, `src/auth.rs`)**: Monotonic `last_message_at` updates on non-private messages, `last_message_at_asc`/`last_message_at_desc` sort gated on `last_message_sort`, and per-user per-account 60s window rate limits on `index` & `filter` returning `429` + `Retry-After`.
+- [x] **Captain Scenarios & MCP Tool Review (`src/captain.rs`)**: Added `POST /captain/assistants/{id}/scenarios/tool_suggestions` & `POST /captain/mcp_servers/{id}/approve_tool`; replaced `tools_changed_at` with `review_state`/`approved_digest`/`needs_review` + `mcp_definition_digest`.
+- [x] **Help Center & Data Imports (`src/help_center.rs`, `src/listeners/webhooks.rs`, `src/data_imports.rs`)**: Enforced 50,000 Unicode char article limit, added `/preview_token` + `?preview_token=` + `X-Robots-Tag: noindex`, `article.created`/`article.updated`/`article.deleted` webhooks, and `GET /data_imports/{id}/rejected_rows`.
+- [x] **Channels & Integrations (`src/channels/sms.rs`, `src/channels/instagram.rs`, `src/shopify.rs`, `src/bots.rs`, `src/reports.rs`)**: Enforced Bandwidth SMS Basic Auth (`chatwoot:<secret>`), added Instagram unified login `/instagram/accounts` + `/instagram/connections`, added `/integrations/shopify_storefront_widget`, removed Cloud-only `/whatsapp/access_request`, exposed system agent bots cleanly, filtered `reports_bot_metrics` to bot senders, and added `document.hidden` polling guard in `Live.tsx`.
+- [ ] **Cloud-only SaaS skips**: Billing `legal_compliance`, Shopify theme-app-extension packaging, and mailer `app` route scope remain intentionally excluded for self-hosted Pulsar.

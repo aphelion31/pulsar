@@ -54,8 +54,12 @@ export default function Live({ accountId }: { accountId: number }) {
         .catch((err: unknown) => {
           if (active) setError(err instanceof Error ? err.message : "Failed to load live reports");
         });
+    const poll = () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      void load();
+    };
     void load();
-    const timer = setInterval(load, 60000);
+    const timer = setInterval(poll, 60000);
     return () => {
       active = false;
       clearInterval(timer);

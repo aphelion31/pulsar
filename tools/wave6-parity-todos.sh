@@ -25,7 +25,7 @@ trap cleanup EXIT
 
 initdb -D "$work/db" -U fixture -A trust --locale=C --encoding=UTF8 >/dev/null
 pg_ctl -D "$work/db" -l "$work/postgres.log" -o "-h '' -k $work -c timezone=UTC" start >/dev/null
-for f in migrations/0001_schema.sql migrations/0002_pulsar_indexes.sql migrations/0003_pulsar_widget_token_floor.sql migrations/0004_pulsar_draft_messages.sql migrations/0005_pulsar_events.sql migrations/0006_data_exports.sql migrations/0007_parity_extras.sql; do
+for f in migrations/0001_schema.sql migrations/0002_pulsar_indexes.sql migrations/0003_pulsar_widget_token_floor.sql migrations/0004_pulsar_draft_messages.sql migrations/0005_pulsar_events.sql migrations/0006_data_exports.sql migrations/0007_parity_extras.sql migrations/0008_chatwoot_4_20.sql; do
   psql -h "$work" -U fixture -d postgres -v ON_ERROR_STOP=1 -q -f "$f" >/dev/null
 done
 
@@ -392,6 +392,8 @@ st, sms_inbox, _ = req("POST", f"/api/v1/accounts/{aid}/inboxes", {
 }, sa_hdr)
 assert st in (200, 201), (st, sms_inbox)
 sms_inbox_id = sms_inbox["id"]
+import base64
+sms_auth = base64.b64encode(f"chatwoot:{sms_inbox['secret']}".encode()).decode()
 
 st, _, _ = req("POST", "/webhooks/sms/+15550001111", [{
     "type": "message-received",
@@ -402,7 +404,7 @@ st, _, _ = req("POST", "/webhooks/sms/+15550001111", [{
         "text": "Voice note attached",
         "media": [f"http://127.0.0.1:{mock_port}/media/voice.ogg"]
     }
-}])
+}], {"Authorization": f"Basic {sms_auth}"})
 assert st == 200, st
 sms_mid = int(psql_scalar(f"SELECT id FROM messages WHERE account_id={aid} AND inbox_id={sms_inbox_id} ORDER BY id DESC LIMIT 1"))
 sms_conv_did = int(psql_scalar(f"SELECT c.display_id FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.id={sms_mid}"))

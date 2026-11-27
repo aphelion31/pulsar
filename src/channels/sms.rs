@@ -10,7 +10,7 @@ use axum::{
     Router,
     body::Bytes,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::post,
 };
 use serde_json::{Map, Value, json};
@@ -205,41 +205,144 @@ pub(crate) async fn create_channel(
     }
     fetch_token(cfg).await?;
 
+    let secret = crate::auth::random_token(24);
+    let callback_auth_enforced = ch["callback_auth_enforced"].as_bool().unwrap_or(true);
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO channel_sms (account_id, phone_number, provider, provider_config, created_at, updated_at)
-         VALUES ($1, $2, 'default', $3, now(), now()) RETURNING id::bigint",
+        "INSERT INTO channel_sms (account_id, phone_number, provider, provider_config, secret, callback_auth_enforced, created_at, updated_at)
+         VALUES ($1, $2, 'default', $3, $4, $5, now(), now()) RETURNING id::bigint",
     )
     .bind(account_id as i32)
     .bind(&phone)
     .bind(sqlx::types::Json(Value::Object(cfg.clone())))
+    .bind(&secret)
+    .bind(callback_auth_enforced)
     .fetch_one(&mut **tx)
     .await?;
     Ok((id, "Channel::Sms"))
 }
 
 struct SmsChannel {
+    channel_id: i64,
     inbox_id: i64,
     account_id: i64,
     lock_to_single: bool,
+    secret: Option<String>,
+    callback_auth_enforced: bool,
+    application_id: Option<String>,
 }
 
-/// POST /webhooks/sms/{phone_number}. Always 200 like Chatwoot's `head :ok`, so the provider does not retry.
-/// The path phone is unused; the channel is looked up by the payload `to`, as Chatwoot's SmsEventsJob does.
+fn ct_eq(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
+}
+
+fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
+    let raw = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+    let b64 = raw
+        .strip_prefix("Basic ")
+        .or_else(|| raw.strip_prefix("basic "))?;
+    let decoded =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64.trim()).ok()?;
+    let text = String::from_utf8(decoded).ok()?;
+    let (user, pass) = text.split_once(':')?;
+    Some((user.to_string(), pass.to_string()))
+}
+
+fn shares_bw_app(a: &SmsChannel, b: &SmsChannel) -> bool {
+    a.account_id == b.account_id
+        && a.application_id.as_deref().is_some_and(|s| !s.is_empty())
+        && a.application_id == b.application_id
+}
+
+/// POST /webhooks/sms/{phone_number}. Verifies HTTP Basic Auth (`chatwoot:<secret>`) when callback_auth_enforced.
 async fn webhook(
     State(st): State<AppState>,
-    Path(_phone): Path<String>,
+    headers: HeaderMap,
+    Path(phone): Path<String>,
     body: Bytes,
-) -> StatusCode {
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
     let payload: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     // Chatwoot reads params['_json'].first: the provider posts an array of events.
     let event = payload.get(0).cloned().unwrap_or(Value::Null);
-    if let Err(e) = process(&st, &event).await {
+    let Some(to) = event["to"].as_str().filter(|s| !s.is_empty()) else {
+        return StatusCode::OK.into_response();
+    };
+    let Ok(Some(target)) = find_channel(&st.db, to).await else {
+        return StatusCode::OK.into_response();
+    };
+    let route_phone = format!("+{}", phone.trim_start_matches('+'));
+    let route = find_channel(&st.db, &route_phone).await.ok().flatten();
+    if let Some(ref r) = route
+        && r.channel_id != target.channel_id
+        && !shares_bw_app(r, &target)
+    {
+        tracing::warn!(
+            target = target.channel_id,
+            route = r.channel_id,
+            "sms webhook dropped: routed to unrelated channel"
+        );
+        return StatusCode::OK.into_response();
+    }
+
+    let mut callback_channels: Vec<&SmsChannel> = vec![&target];
+    if let Some(ref r) = route
+        && r.channel_id != target.channel_id
+    {
+        callback_channels.push(r);
+    }
+
+    let mut authed = false;
+    if let Some((user, pass)) = parse_basic_auth(&headers)
+        && ct_eq(&user, "chatwoot")
+    {
+        authed = callback_channels
+            .iter()
+            .any(|c| c.secret.as_deref().is_some_and(|sec| !sec.is_empty() && ct_eq(&pass, sec)));
+        if !authed && let Some(ref app_id) = target.application_id.as_deref().filter(|s| !s.is_empty()) {
+            let app_secrets: Vec<Option<String>> = sqlx::query_scalar(
+                "SELECT secret FROM channel_sms
+                 WHERE account_id = $1 AND provider_config->>'application_id' = $2 AND id <> $3
+                 LIMIT 25",
+            )
+            .bind(target.account_id as i32)
+            .bind(*app_id)
+            .bind(target.channel_id)
+            .fetch_all(&st.db)
+            .await
+            .unwrap_or_default();
+            authed = app_secrets
+                .iter()
+                .flatten()
+                .any(|sec| !sec.is_empty() && ct_eq(&pass, sec));
+        }
+    }
+
+    if !authed && callback_channels.iter().any(|c| c.callback_auth_enforced) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(
+                axum::http::header::WWW_AUTHENTICATE,
+                "Basic realm=\"Application\"",
+            )],
+            "HTTP Basic: Access denied.\n",
+        )
+            .into_response();
+    }
+
+    if let Err(e) = process(&st, &target, &event).await {
         tracing::warn!(error = ?e, "sms webhook processing failed");
     }
-    StatusCode::OK
+    StatusCode::OK.into_response()
 }
 
-async fn process(st: &AppState, event: &Value) -> Result<(), ApiError> {
+async fn process(st: &AppState, ch: &SmsChannel, event: &Value) -> Result<(), ApiError> {
     let kind = event["type"].as_str().unwrap_or_default();
     if !matches!(
         kind,
@@ -247,21 +350,17 @@ async fn process(st: &AppState, event: &Value) -> Result<(), ApiError> {
     ) {
         return Ok(());
     }
-    let Some(to) = event["to"].as_str().filter(|s| !s.is_empty()) else {
-        return Ok(());
-    };
-    let Some(ch) = find_channel(&st.db, to).await? else {
-        return Ok(());
-    };
     match kind {
-        "message-received" => incoming(st, &ch, &event["message"]).await,
-        _ => delivery_status(&st.db, &ch, kind, event).await,
+        "message-received" => incoming(st, ch, &event["message"]).await,
+        _ => delivery_status(&st.db, ch, kind, event).await,
     }
 }
 
 async fn find_channel(db: &PgPool, phone: &str) -> Result<Option<SmsChannel>, ApiError> {
     let row = sqlx::query(
-        "SELECT i.id::bigint AS inbox_id, i.account_id::bigint AS account_id, i.lock_to_single_conversation
+        "SELECT cs.id::bigint AS channel_id, i.id::bigint AS inbox_id, i.account_id::bigint AS account_id,
+                i.lock_to_single_conversation, cs.secret, cs.callback_auth_enforced,
+                cs.provider_config->>'application_id' AS application_id
          FROM channel_sms cs
          JOIN inboxes i ON i.channel_id = cs.id AND i.channel_type = 'Channel::Sms'
          WHERE cs.phone_number = $1
@@ -274,9 +373,13 @@ async fn find_channel(db: &PgPool, phone: &str) -> Result<Option<SmsChannel>, Ap
         return Ok(None);
     };
     Ok(Some(SmsChannel {
+        channel_id: r.try_get("channel_id")?,
         inbox_id: r.try_get("inbox_id")?,
         account_id: r.try_get("account_id")?,
         lock_to_single: r.try_get("lock_to_single_conversation")?,
+        secret: r.try_get("secret")?,
+        callback_auth_enforced: r.try_get("callback_auth_enforced")?,
+        application_id: r.try_get("application_id")?,
     }))
 }
 

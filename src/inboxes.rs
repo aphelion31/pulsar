@@ -570,12 +570,15 @@ pub(crate) async fn inbox_json(
             }
         }
         "Channel::Sms" => {
-            // _inbox.json.jbuilder: phone_number for everyone; provider_config (sliced to 3 keys) for admins only
-            let c = sqlx::query("SELECT phone_number, provider_config FROM channel_sms WHERE id::bigint = $1 AND account_id::bigint = $2")
-                .bind(channel_id)
-                .bind(account_id)
-                .fetch_optional(db)
-                .await?;
+            // _inbox.json.jbuilder: phone_number for everyone; provider_config (sliced to 3 keys), callback_auth_enforced, secret for admins
+            let c = sqlx::query(
+                "SELECT phone_number, provider_config, callback_auth_enforced, secret
+                 FROM channel_sms WHERE id::bigint = $1 AND account_id::bigint = $2",
+            )
+            .bind(channel_id)
+            .bind(account_id)
+            .fetch_optional(db)
+            .await?;
             if let Some(c) = c {
                 obj.insert(
                     "phone_number".into(),
@@ -591,6 +594,13 @@ pub(crate) async fn inbox_json(
                         .filter_map(|k| cfg.get(*k).map(|v| (k.to_string(), v.clone())))
                         .collect();
                     obj.insert("provider_config".into(), Value::Object(sliced));
+                    obj.insert(
+                        "callback_auth_enforced".into(),
+                        c.try_get::<bool, _>("callback_auth_enforced")?.into(),
+                    );
+                    if let Some(secret) = c.try_get::<Option<String>, _>("secret")? {
+                        obj.insert("secret".into(), json!(secret));
+                    }
                 }
             }
         }
@@ -697,7 +707,7 @@ pub(crate) async fn inbox_json(
         }
         "Channel::Instagram" => {
             let c = sqlx::query(
-                "SELECT instagram_id, provider_name, access_token, expires_at
+                "SELECT instagram_id, provider_name, auth_type, configuration_id, access_token, expires_at
                  FROM channel_instagram WHERE id::bigint = $1 AND account_id::bigint = $2",
             )
             .bind(channel_id)
@@ -712,6 +722,14 @@ pub(crate) async fn inbox_json(
                 obj.insert(
                     "provider_name".into(),
                     c.try_get::<Option<String>, _>("provider_name")?.into(),
+                );
+                obj.insert(
+                    "auth_type".into(),
+                    c.try_get::<Option<String>, _>("auth_type")?.into(),
+                );
+                obj.insert(
+                    "configuration_id".into(),
+                    c.try_get::<Option<String>, _>("configuration_id")?.into(),
                 );
                 let tok = c.try_get::<Option<String>, _>("access_token")?;
                 let exp = c.try_get::<Option<chrono::NaiveDateTime>, _>("expires_at")?;

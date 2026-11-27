@@ -55,7 +55,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 const CAMPAIGN_SELECT: &str = "SELECT jsonb_build_object('id',c.display_id,'title',c.title,'description',c.description,'account_id',c.account_id,'inbox',to_jsonb(i) - 'account_id','sender',CASE WHEN u.id IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('id',u.id,'name',u.name,'email',u.email,'account_id',c.account_id) END,'message',c.message,'template_params',c.template_params,'campaign_status',(ARRAY['active','completed','processing'])[c.campaign_status+1],'enabled',c.enabled,'campaign_type',(ARRAY['ongoing','one_off'])[c.campaign_type+1],'trigger_rules',c.trigger_rules,'trigger_only_during_business_hours',c.trigger_only_during_business_hours,'created_at',c.created_at,'updated_at',c.updated_at) || CASE WHEN c.campaign_type=1 THEN jsonb_build_object('scheduled_at',COALESCE(EXTRACT(EPOCH FROM c.scheduled_at)::bigint,0),'started_at',EXTRACT(EPOCH FROM c.started_at)::bigint,'completed_at',EXTRACT(EPOCH FROM c.completed_at)::bigint,'audience',c.audience) ELSE '{}'::jsonb END FROM campaigns c JOIN inboxes i ON i.id=c.inbox_id AND i.account_id=c.account_id LEFT JOIN users u ON u.id=c.sender_id AND EXISTS (SELECT 1 FROM account_users au WHERE au.account_id=c.account_id AND au.user_id=u.id) WHERE c.account_id=$1";
-const BOT_SELECT: &str = "SELECT jsonb_build_object('id',b.id,'name',b.name,'description',b.description,'thumbnail',NULL,'outgoing_url',b.outgoing_url,'bot_type',CASE b.bot_type WHEN 0 THEN 'webhook' WHEN 1 THEN 'dialogflow' ELSE 'webhook' END,'bot_config',b.bot_config,'account_id',b.account_id,'system_bot',false) || CASE WHEN $2 THEN jsonb_build_object('access_token',t.token,'secret',b.secret) ELSE '{}'::jsonb END FROM agent_bots b LEFT JOIN access_tokens t ON t.owner_type='AgentBot' AND t.owner_id=b.id WHERE b.account_id=$1";
+const BOT_SELECT: &str = "SELECT jsonb_build_object('id',b.id,'name',b.name,'description',b.description,'thumbnail',NULL,'outgoing_url',b.outgoing_url,'bot_type',CASE b.bot_type WHEN 0 THEN 'webhook' WHEN 1 THEN 'dialogflow' ELSE 'webhook' END,'bot_config',b.bot_config,'account_id',b.account_id,'system_bot',b.account_id IS NULL) || CASE WHEN $2 AND b.account_id=$1 THEN jsonb_build_object('access_token',t.token,'secret',b.secret) ELSE '{}'::jsonb END FROM agent_bots b LEFT JOIN access_tokens t ON t.owner_type='AgentBot' AND t.owner_id=b.id WHERE (b.account_id=$1 OR b.account_id IS NULL)";
 const APP_SELECT: &str = "SELECT jsonb_build_object('id',id,'title',title,'content',content,'created_at',created_at) FROM dashboard_apps WHERE account_id=$1";
 fn payload<'a>(v: &'a Value, key: &str) -> &'a Value {
     v.get(key).filter(|x| x.is_object()).unwrap_or(v)
@@ -354,7 +354,7 @@ async fn inbox_bot(
 ) -> ApiResult {
     let au = require_account(&st.db, &user, a).await?;
     inbox_exists(&st, a, id).await?;
-    let bot:Option<i64>=sqlx::query_scalar("SELECT abi.agent_bot_id::bigint FROM agent_bot_inboxes abi JOIN agent_bots b ON b.id=abi.agent_bot_id AND b.account_id=$1 WHERE abi.inbox_id=$2 AND abi.account_id=$1 ORDER BY abi.id LIMIT 1").bind(a).bind(id).fetch_optional(&st.db).await?;
+    let bot:Option<i64>=sqlx::query_scalar("SELECT abi.agent_bot_id::bigint FROM agent_bot_inboxes abi JOIN agent_bots b ON b.id=abi.agent_bot_id AND (b.account_id=$1 OR b.account_id IS NULL) WHERE abi.inbox_id=$2 AND abi.account_id=$1 ORDER BY abi.id LIMIT 1").bind(a).bind(id).fetch_optional(&st.db).await?;
     Ok(Json(
         json!({"agent_bot":match bot {Some(b)=>Some(bot_get(&st,a,b,au.is_admin()).await?),None=>None}}),
     ))

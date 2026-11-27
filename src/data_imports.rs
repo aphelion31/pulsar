@@ -42,6 +42,7 @@ pub fn routes() -> Router<AppState> {
         .route("/data_imports/{id}/abandon", post(abandon))
         .route("/data_imports/{id}/error_logs", get(error_logs))
         .route("/data_imports/{id}/skip_logs", get(skip_logs))
+        .route("/data_imports/{id}/rejected_rows", get(rejected_rows))
 }
 
 const IMPORT_SELECT: &str = "SELECT d.id, d.name, d.data_type, d.source_type, d.source_provider, d.import_types, d.status,
@@ -562,6 +563,39 @@ async fn skip_logs(
     admin(&st.db, &user, account_id).await?;
     find(&st.db, account_id, id).await?;
     logs_csv(&st.db, id, SKIP, format!("data-import-{id}-skip-logs.csv")).await
+}
+
+async fn rejected_rows(
+    Path((account_id, id)): Path<(i64, i64)>,
+    user: CurrentUser,
+    State(st): State<AppState>,
+) -> ApiResult {
+    admin(&st.db, &user, account_id).await?;
+    find(&st.db, account_id, id).await?;
+    let has_blob: Option<i64> = sqlx::query_scalar(
+        "SELECT blob_id::bigint FROM active_storage_attachments WHERE record_type = 'DataImport' AND record_id = $1 AND name = 'failed_records' ORDER BY id DESC LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(&st.db)
+    .await?;
+    let base = st.frontend_url.trim_end_matches('/');
+    if let Some(blob_id) = has_blob {
+        return Ok(Json(json!({
+            "download_url": format!("{base}{}", crate::storage::blob_url(blob_id, "rejected-rows.csv"))
+        })));
+    }
+    let has_errors: bool = sqlx::query_scalar(&format!(
+        "SELECT EXISTS(SELECT 1 FROM data_import_errors WHERE data_import_id = $1 AND {NON_SKIP})"
+    ))
+    .bind(id)
+    .fetch_one(&st.db)
+    .await?;
+    if !has_errors {
+        return Err(ApiError::not_found());
+    }
+    Ok(Json(json!({
+        "download_url": format!("{base}/api/v1/accounts/{account_id}/data_imports/{id}/error_logs")
+    })))
 }
 
 /// Background entry point. Failures are recorded on the import row instead of being dropped.

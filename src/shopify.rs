@@ -42,6 +42,12 @@ pub fn account_routes() -> Router<AppState> {
         .route("/integrations/shopify/orders", get(orders))
         .route("/integrations/shopify", delete(destroy))
         .route(
+            "/integrations/shopify_storefront_widget",
+            get(storefront_widget_show)
+                .patch(storefront_widget_update)
+                .put(storefront_widget_update),
+        )
+        .route(
             "/integrations/shopify_custom_app",
             get(custom_app_show)
                 .post(custom_app_create)
@@ -1107,4 +1113,103 @@ async fn custom_webhook_events(
             .await?;
     }
     Ok(StatusCode::OK)
+}
+
+async fn shopify_public_hook(db: &PgPool, account_id: i64) -> Result<(i64, String, Value), ApiError> {
+    let row: Option<(i64, Option<String>, Option<Value>)> = sqlx::query_as(
+        "SELECT id::bigint, reference_id, settings FROM integrations_hooks
+         WHERE account_id = $1::bigint AND app_id = 'shopify' AND status = 1
+           AND COALESCE(settings->>'custom_app_id', '') = ''
+         ORDER BY id LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_optional(db)
+    .await?;
+    let (hook_id, shop_opt, settings_opt) = row.ok_or_else(ApiError::not_found)?;
+    let shop = shop_opt.unwrap_or_default();
+    let settings = settings_opt.unwrap_or_else(|| json!({}));
+    Ok((hook_id, shop, settings))
+}
+
+fn shopify_theme_editor_url(shop: &str) -> Option<String> {
+    let s = shop.trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(format!("https://{s}/admin/themes/current/editor?context=apps"))
+    }
+}
+
+async fn storefront_widget_show(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let (_hook_id, shop, settings) = shopify_public_hook(&st.db, account_id).await?;
+    let token = settings["storefront_widget_website_token"]
+        .as_str()
+        .filter(|s| !s.is_empty());
+    let inbox_id: Option<i64> = if let Some(tok) = token {
+        sqlx::query_scalar(
+            "SELECT i.id::bigint FROM inboxes i
+             JOIN channel_web_widgets w ON w.id = i.channel_id AND i.channel_type = 'Channel::WebWidget'
+             WHERE i.account_id = $1::bigint AND w.website_token = $2
+             LIMIT 1",
+        )
+        .bind(account_id)
+        .bind(tok)
+        .fetch_optional(&st.db)
+        .await?
+    } else {
+        None
+    };
+    let theme_editor_url = inbox_id.and_then(|_| shopify_theme_editor_url(&shop));
+    Ok(Json(json!({
+        "inbox_id": inbox_id,
+        "theme_editor_url": theme_editor_url,
+    })))
+}
+
+async fn storefront_widget_update(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(account_id): Path<i64>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    require_account(&st.db, &user, account_id)
+        .await?
+        .require_admin()?;
+    let (hook_id, shop, mut settings) = shopify_public_hook(&st.db, account_id).await?;
+    let inbox_id = body["inbox_id"]
+        .as_i64()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ApiError(StatusCode::UNPROCESSABLE_ENTITY, "inbox_id is invalid".into()))?;
+    let website_token: Option<String> = sqlx::query_scalar(
+        "SELECT w.website_token FROM inboxes i
+         JOIN channel_web_widgets w ON w.id = i.channel_id AND i.channel_type = 'Channel::WebWidget'
+         WHERE i.account_id = $1::bigint AND i.id = $2::bigint
+         LIMIT 1",
+    )
+    .bind(account_id)
+    .bind(inbox_id)
+    .fetch_optional(&st.db)
+    .await?;
+    let website_token = website_token
+        .ok_or_else(|| ApiError(StatusCode::UNPROCESSABLE_ENTITY, "WebWidget inbox not found".into()))?;
+    if !settings.is_object() {
+        settings = json!({});
+    }
+    settings["storefront_widget_website_token"] = json!(website_token);
+    sqlx::query("UPDATE integrations_hooks SET settings = $2, updated_at = now() WHERE id = $1::bigint")
+        .bind(hook_id)
+        .bind(settings)
+        .execute(&st.db)
+        .await?;
+    Ok(Json(json!({
+        "inbox_id": inbox_id,
+        "theme_editor_url": shopify_theme_editor_url(&shop),
+    })))
 }

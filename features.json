@@ -398,5 +398,10 @@
     "name": "captain_mcp_servers",
     "enabled": true,
     "column": "feature_flags_ext_1"
+  },
+  {
+    "name": "last_message_sort",
+    "enabled": true,
+    "column": "feature_flags_ext_1"
   }
 ]
